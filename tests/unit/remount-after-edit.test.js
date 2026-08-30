@@ -115,3 +115,33 @@ test('与提示词字面重合的正文段落不受影响（只删 prompt 内的
     '正文里恰好提到 masterpiece 也不能被误删',
   );
 });
+
+/* 消毒器剥标签 + <br> —— 江的真实结构（1.4.5）
+   酒馆的 HTML 消毒器把 <draw> 整个剥掉只留文字，DOM 里既无 <draw> 元素、
+   文本里也无字面 <draw>；同时单换行渲染成 <br>，而 <br> 不是文本节点，
+   DOM 侧拼出来没有空格，提示词侧规范化后有空格，按空格对齐就永远匹配不上。 */
+const BR_PROMPT = 'masterpiece, best quality.\nRefined stylized illustration.\nMedium shot, a stone-paved street corner.';
+const BR_TAGS = [{ tagId: 'tag-1', prompt: BR_PROMPT, ordinal: 0, count: 1 }];
+
+test('<draw> 被消毒器剥掉、只剩 <br> 分隔的文本时，仍要认出并替换', () => {
+  const { container, renderer } = setup();
+  container.innerHTML = '<p>他把折扇收进腰间。</p>'
+    + '<p>masterpiece, best quality.<br>Refined stylized illustration.'
+    + '<br>Medium shot, a stone-paved street corner.</p>';
+  const result = renderer.mount('0', BR_TAGS);
+  assert.equal(result.fallback, 0, '不该落进楼底 fallback');
+  const cardText = container.querySelector('.stia-card')?.textContent || '';
+  const leaked = container.textContent.replace(cardText, '').replace('他把折扇收进腰间。', '').trim();
+  assert.equal(leaked, '', '提示词不该留在楼里');
+  assert.ok(container.textContent.includes('他把折扇收进腰间。'), '正文必须原样保留');
+});
+
+test('<draw> 作为元素存活时，原路径依然有效', () => {
+  const { container, renderer } = setup();
+  container.innerHTML = '<p>他把折扇收进腰间。</p>'
+    + '<p><draw> masterpiece, best quality.<br>Refined stylized illustration.'
+    + '<br>Medium shot, a stone-paved street corner. </draw></p>';
+  renderer.mount('0', BR_TAGS);
+  assert.equal(container.querySelector('draw'), null, '<draw> 要被替换');
+  assert.ok(container.textContent.includes('他把折扇收进腰间。'), '正文必须原样保留');
+});

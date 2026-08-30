@@ -34,8 +34,8 @@ function makeClient({ count, keepMax, chat = [] } = {}) {
 
 test('超过 100 张时裁到 100，删的是最旧的', async () => {
   const { client, namespace, deleted } = makeClient({ count: 130 });
-  const removed = await client.pruneGallery();
-  assert.equal(removed, 30, '应裁掉 30 张');
+  // 启动时会自动裁一次，所以别断返回值（可能已经裁完了）——断最终状态
+  await client.pruneGallery();
   assert.equal(namespace.gallery.length, 100, '画廊只剩 100 张');
   assert.ok(namespace.gallery.every(item => Number(item.resultId.slice(1)) > 30), '留下的是最新的');
   assert.equal(deleted.length, 30, '图片文件也要删掉，不能只清列表');

@@ -95,16 +95,40 @@ function textRanges(container) {
   }).filter(Boolean);
 }
 
+/* 空白无关匹配 —— Claude Opus 5
+   酒馆的 HTML 消毒器会把 <draw> 这种未知标签整个剥掉，只留下里面的文字，
+   所以 DOM 里既没有 <draw> 元素、文本里也没有字面 <draw>，
+   锚点路径和 textRanges 全部落空，只剩这里按文字匹配。
+
+   而这里原本按「空白折叠成一个空格」比对，正好踩中另一个坑：
+   提示词里的换行渲染成 <br>，<br> 不是文本节点，DOM 侧拼出来是
+   "characters.Refined"（无空格），提示词侧规范化后是 "characters. Refined"（有空格），
+   对不上 → 匹配失败 → 卡片落进楼底 fallback，原文一直露着。
+
+   改成两侧空白全部去掉再比，不要求空白对齐。 */
+function squeezeWithOffsets(text) {
+  let squeezed = '';
+  const starts = [];
+  const ends = [];
+  for (let index = 0; index < text.length; index += 1) {
+    if (/\s/.test(text[index])) continue;
+    squeezed += text[index];
+    starts.push(index);
+    ends.push(index + 1);
+  }
+  return { squeezed, starts, ends };
+}
+
 function promptRanges(container, tags) {
   const nodes = visibleTextNodes(container);
   const combined = nodes.map(node => node.data).join('');
-  const normalized = normalizeWithOffsets(combined);
+  const normalized = squeezeWithOffsets(combined);
   let cursor = 0;
   return tags.map(tag => {
-    const target = normalizeWithOffsets(tag.prompt).normalized;
+    const target = squeezeWithOffsets(tag.prompt).squeezed;
     if (!target) return null;
-    let normalizedStart = normalized.normalized.indexOf(target, cursor);
-    if (normalizedStart < 0) normalizedStart = normalized.normalized.indexOf(target);
+    let normalizedStart = normalized.squeezed.indexOf(target, cursor);
+    if (normalizedStart < 0) normalizedStart = normalized.squeezed.indexOf(target);
     if (normalizedStart < 0) return null;
     const normalizedEnd = normalizedStart + target.length;
     cursor = normalizedEnd;

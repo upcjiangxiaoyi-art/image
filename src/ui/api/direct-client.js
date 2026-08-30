@@ -151,6 +151,10 @@ export function createDirectApiClient({
   const namespace = ensureNamespace(extensionSettings);
   const controllers = new Map();
   const resultIndex = new Map(namespace.gallery.map(result => [result.resultId, result]));
+  /* 加载时先裁一次 —— Claude Opus 5
+     原来只在生成新图之后才裁，装上新版但还没画过图的人，
+     存量照样超着上限不动。启动裁一次，存量当场收敛。 */
+  queueMicrotask(() => { pruneGallery().catch(() => {}); });
   const memoryKeys = new Map();
 
   function presetById(presetId = namespace.activePresetId) {
@@ -237,7 +241,12 @@ export function createDirectApiClient({
      每次存图后按时间从新到旧裁掉超出的部分，图片文件一并删掉，
      并摘掉 tag 上的死引用，免得留下指向空文件的记录。
      galleryKeepMax 设 0 或负数表示不限制。 */
+  let pruning = null;
   async function pruneGallery() {
+    /* 防重入：启动裁剪与存图后裁剪可能并发，不锁的话同一批图会被删两次，
+       删图接口收到重复请求，计数也不准。 */
+    if (pruning) return pruning;
+    pruning = (async () => {
     const limit = Number(namespace.galleryKeepMax ?? 100);
     if (!Number.isFinite(limit) || limit <= 0) return 0;
     if (namespace.gallery.length <= limit) return 0;
@@ -275,6 +284,8 @@ export function createDirectApiClient({
       }
     }
     return doomedIds.size;
+    })();
+    try { return await pruning; } finally { pruning = null; }
   }
 
   async function savePreferences() {
