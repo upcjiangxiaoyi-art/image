@@ -1,6 +1,6 @@
 {
   "name": "st-image-atelier",
-  "version": "1.4.2",
+  "version": "1.4.3",
   "description": "One-click SillyTavern 1.14-1.18 GPT and NovelAI image generation extension",
   "type": "module",
   "private": true,
@@ -19,6 +19,6 @@
   },
   "contributors": [
     "子非鱼不摸鱼（原作者）",
-    "Claude Opus 5（1.4.2 改写重挂载修复 + 画廊保留上限）"
+    "Claude Opus 5（1.4.2 改写重挂载修复 + 画廊上限；1.4.3 空行拆段残肢清扫）"
   ]
 }

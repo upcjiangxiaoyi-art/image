@@ -124,6 +124,32 @@ function comparableText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
 }
 
+/* 跨段落残肢清扫 —— Claude Opus 5
+   提示词模板里若有空行，酒馆会把它渲染成多个 <p>。<draw> 是未知元素，
+   HTML 解析器在第一个 </p> 处就把它隐式闭合了，于是 <draw> 只包住第一行，
+   后面几段变成裸段落——卡片替换掉那个小 <draw> 就收工，剩下的英文一直露在外面，
+   而且不属于任何 <draw>，孤儿检查也发现不了。
+   这里在换完锚点之后，按 prompt 余下的部分在 DOM 里扫一遍，把残肢一并吃掉。
+   只删与 prompt 逐字对得上的文本，绝不碰正文。 */
+function sweepSplitRemains(container, prompt) {
+  const target = comparableText(prompt);
+  if (!target) return 0;
+
+  let removed = 0;
+  for (let guard = 0; guard < 40; guard += 1) {
+    const paragraphs = [...container.querySelectorAll('p')]
+      .filter(node => !node.closest('.stia-card') && node.textContent.trim());
+    const doomed = paragraphs.find(node => {
+      const text = comparableText(node.textContent);
+      return text.length > 0 && target.includes(text);
+    });
+    if (!doomed) break;
+    doomed.remove();
+    removed += 1;
+  }
+  return removed;
+}
+
 function replaceRange(range, replacement, raw) {
   const common = range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
     ? range.commonAncestorContainer
@@ -206,6 +232,7 @@ export function createMessageRenderer(dependencies) {
         if (!anchor) continue;
         const card = makeCard(tag);
         anchor.replaceWith(card.root);
+        sweepSplitRemains(container, tag.prompt);
         mounted += 1;
       }
       unresolved = unresolved.slice(anchored.length);
