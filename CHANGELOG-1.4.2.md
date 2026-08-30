@@ -75,3 +75,24 @@ HTML 解析器在第一个 `</p>` 处就把它隐式闭合——于是 `<draw>` 
 
 服务端画廊上限（1.4.2 加的）只在装了 server-plugin 时生效。
 云酒馆走 direct-client、没有后端，那条裁剪跑不到——若图片在客户端堆积，需另想办法。
+
+## 追加：客户端画廊上限（云酒馆适用）
+
+1.4.2 那条上限写在 `server-plugin` 里，直连模式根本跑不到——云酒馆没有后端，
+图片数量照样不受控。这次补在 `api/direct-client.js`：
+
+- `pruneGallery()`：每次存图后按 `createdAt` 裁到上限，调酒馆的
+  `/api/images/delete` 删掉真实文件，并清掉 `tag.results` / `resultIds` /
+  `latestResultId` 里的死引用。删图接口失败也照样裁列表，不留指向空文件的记录。
+- 默认 100；`namespace.galleryKeepMax` 可改，设 0 或负数表示不限制。
+- 挂到 client 上对外可见，方便以后做「手动清理画廊」按钮。
+- 测试 `tests/unit/gallery-prune-direct.test.js`（5 项）。
+
+## 工程杂项
+
+- `package.json` 补 `devDependencies: jsdom` —— 新增的渲染层测试要它，
+  原有测试都不依赖，不声明的话 clone 下来 `npm test` 会红。
+- 渲染层测试夹具改为每个用例重挂浏览器全局。`node --test` 并行跑多文件时，
+  只在模块顶层挂一次会被其他文件覆盖，出现「单跑绿、合跑红」。
+
+全套 69 项通过。

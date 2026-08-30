@@ -12,8 +12,13 @@ const TAGS = [{ tagId: 'tag-1', prompt: 'masterpiece, a young lord on the thresh
 
 function setup() {
   const dom = new JSDOM('<!DOCTYPE html><div id="chat"></div>', { url: 'http://localhost' });
+  /* 每个用例都重挂一次全局：node --test 会并行跑多个文件，
+     只在模块顶层挂一次的话会被别的测试文件覆盖，出现「单跑绿、合跑红」。 */
   for (const key of ['window', 'document', 'Node', 'NodeFilter', 'CSS', 'HTMLElement', 'Element', 'Range']) {
     globalThis[key] = key === 'window' ? dom.window : dom.window[key];
+  }
+  if (!globalThis.CSS?.escape) {
+    globalThis.CSS = { escape: value => String(value).replace(/[^\w-]/g, ch => `\\${ch}`) };
   }
   const message = dom.window.document.createElement('div');
   message.className = 'mes';

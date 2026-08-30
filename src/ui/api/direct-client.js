@@ -231,6 +231,52 @@ export function createDirectApiClient({
     };
   }
 
+  /* 客户端画廊保留上限 —— Claude Opus 5
+     直连模式没有 server-plugin，服务端那条裁剪跑不到，
+     namespace.gallery 只进不出，酒馆设置会越存越大、读画廊越来越卡。
+     每次存图后按时间从新到旧裁掉超出的部分，图片文件一并删掉，
+     并摘掉 tag 上的死引用，免得留下指向空文件的记录。
+     galleryKeepMax 设 0 或负数表示不限制。 */
+  async function pruneGallery() {
+    const limit = Number(namespace.galleryKeepMax ?? 100);
+    if (!Number.isFinite(limit) || limit <= 0) return 0;
+    if (namespace.gallery.length <= limit) return 0;
+
+    const ordered = [...namespace.gallery].sort((a, b) =>
+      String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+    const doomed = ordered.slice(limit);
+    if (!doomed.length) return 0;
+
+    for (const result of doomed) {
+      try {
+        await removeFile(result);
+      } catch (error) {
+        console.warn('[Image Atelier] 旧图删除失败，仍从画廊移除', result.resultId, error?.message);
+      }
+    }
+
+    const doomedIds = new Set(doomed.map(item => item.resultId));
+    namespace.gallery = namespace.gallery.filter(item => !doomedIds.has(item.resultId));
+    for (const id of doomedIds) resultIndex.delete(id);
+
+    for (const message of compat.chat()) {
+      const metadata = message?.extra?.stImageAtelier;
+      if (!metadata?.tags) continue;
+      for (const tag of metadata.tags) {
+        if (Array.isArray(tag.results)) {
+          tag.results = tag.results.filter(item => !doomedIds.has(item.resultId));
+        }
+        if (Array.isArray(tag.resultIds)) {
+          tag.resultIds = tag.resultIds.filter(id => !doomedIds.has(id));
+        }
+        if (doomedIds.has(tag.latestResultId)) {
+          tag.latestResultId = tag.resultIds?.at(-1) || null;
+        }
+      }
+    }
+    return doomedIds.size;
+  }
+
   async function savePreferences() {
     await Promise.resolve(saveSettingsDebounced?.());
   }
@@ -527,6 +573,7 @@ export function createDirectApiClient({
         .map(result => result.resultId);
       found.tag.latestResultId = saved.at(-1)?.resultId || found.tag.latestResultId || null;
       namespace.gallery.push(...saved);
+      await pruneGallery();
       for (const result of saved) resultIndex.set(result.resultId, result);
       attempt.status = 'succeeded';
       attempt.resultIds = saved.map(result => result.resultId);
@@ -608,9 +655,10 @@ export function createDirectApiClient({
 
   return {
     mode: () => namespace.settings.executionMode || 'direct',
+    pruneGallery,                       // 暴露出来便于测试与手动清理（Claude Opus 5）
     health: async () => ({
       mode: 'direct',
-      version: '1.4.1',
+      version: '1.4.3',
       corsRequired: true,
       storage: 'sillytavern-images',
     }),
