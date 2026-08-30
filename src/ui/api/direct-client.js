@@ -154,7 +154,7 @@ export function createDirectApiClient({
   /* 加载时先裁一次 —— Claude Opus 5
      原来只在生成新图之后才裁，装上新版但还没画过图的人，
      存量照样超着上限不动。启动裁一次，存量当场收敛。 */
-  queueMicrotask(() => { pruneGallery().catch(() => {}); });
+  queueMicrotask(() => { pruneGallery().then(() => dropBrokenEntries()).catch(() => {}); });
   const memoryKeys = new Map();
 
   function presetById(presetId = namespace.activePresetId) {
@@ -241,6 +241,36 @@ export function createDirectApiClient({
      每次存图后按时间从新到旧裁掉超出的部分，图片文件一并删掉，
      并摘掉 tag 上的死引用，免得留下指向空文件的记录。
      galleryKeepMax 设 0 或负数表示不限制。 */
+  /* 清掉指向空文件的破记录 —— Claude Opus 5
+     1.4.4 的裁剪删了文件却没落盘，刷新后列表从设置里读回完整的一份，
+     于是留下一批指向已删文件的条目，画廊里显示成破图。
+     这里在启动时探一遍：文件真的没了就把记录一起摘掉。
+     只探超出上限那部分，不给正常图片增加请求。 */
+  async function dropBrokenEntries() {
+    const limit = Number(namespace.galleryKeepMax ?? 100);
+    const ordered = [...namespace.gallery].sort((a, b) =>
+      String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+    const suspects = Number.isFinite(limit) && limit > 0 ? ordered.slice(limit) : [];
+    if (!suspects.length) return 0;
+
+    const broken = new Set();
+    for (const result of suspects) {
+      if (!result.localRelativePath) { broken.add(result.resultId); continue; }
+      try {
+        const response = await fetch(normalizePath(result.localRelativePath), { method: 'HEAD' });
+        if (!response.ok) broken.add(result.resultId);
+      } catch (error) {
+        broken.add(result.resultId);
+      }
+    }
+    if (!broken.size) return 0;
+
+    namespace.gallery = namespace.gallery.filter(item => !broken.has(item.resultId));
+    for (const id of broken) resultIndex.delete(id);
+    await savePreferences();
+    return broken.size;
+  }
+
   let pruning = null;
   async function pruneGallery() {
     /* 防重入：启动裁剪与存图后裁剪可能并发，不锁的话同一批图会被删两次，
@@ -283,6 +313,9 @@ export function createDirectApiClient({
         }
       }
     }
+    /* 必须落盘：不存的话刷新后 namespace.gallery 又从设置里读回完整列表，
+       可文件已经删了，于是整片破图。裁剪不落盘等于没裁。 */
+    await savePreferences();
     return doomedIds.size;
     })();
     try { return await pruning; } finally { pruning = null; }
@@ -667,6 +700,7 @@ export function createDirectApiClient({
   return {
     mode: () => namespace.settings.executionMode || 'direct',
     pruneGallery,                       // 暴露出来便于测试与手动清理（Claude Opus 5）
+    dropBrokenEntries,                  // 清掉指向空文件的破记录
     health: async () => ({
       mode: 'direct',
       version: '1.4.3',

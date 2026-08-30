@@ -23,13 +23,14 @@ function makeClient({ count, keepMax, chat = [] } = {}) {
     return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
   };
 
+  const saves = [];
   const client = createDirectApiClient({
     compat: { chat: () => chat, currentChatId: () => 'c1', headers: () => ({}) },
     extensionSettings,
-    saveSettingsDebounced: () => {},
+    saveSettingsDebounced: () => { saves.push(1); },
     keyStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
   });
-  return { client, namespace: extensionSettings.stImageAtelier, deleted };
+  return { client, namespace: extensionSettings.stImageAtelier, deleted, saves };
 }
 
 test('超过 100 张时裁到 100，删的是最旧的', async () => {
@@ -78,4 +79,29 @@ test('删图接口失败也要把画廊清干净，不留指向空文件的记�
   globalThis.fetch = async () => { throw new Error('网络断了'); };
   await client.pruneGallery();
   assert.equal(namespace.gallery.length, 2, '文件删不掉也要裁画廊');
+});
+
+test('裁剪必须落盘，否则刷新后列表回来了而文件已删，全成破图', async () => {
+  const { client, saves } = makeClient({ count: 120, keepMax: 100 });
+  saves.length = 0;
+  await client.pruneGallery();
+  assert.ok(saves.length > 0, '裁完必须调用 saveSettingsDebounced 把结果存下来');
+});
+
+test('文件已不存在的破记录要从画廊摘掉', async () => {
+  const { client, namespace } = makeClient({ count: 120, keepMax: 100 });
+  globalThis.fetch = async (url, options) => {
+    if (options?.method === 'HEAD') return new Response('', { status: 404 });
+    return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+  const dropped = await client.dropBrokenEntries();
+  assert.equal(dropped, 20, '超出上限那 20 条探到 404，应被摘掉');
+  assert.equal(namespace.gallery.length, 100, '画廊只剩能打开的 100 张');
+});
+
+test('文件还在的记录一条都不动', async () => {
+  const { client, namespace } = makeClient({ count: 120, keepMax: 100 });
+  globalThis.fetch = async () => new Response('', { status: 200 });
+  assert.equal(await client.dropBrokenEntries(), 0, '文件都在就不该摘任何记录');
+  assert.equal(namespace.gallery.length, 120);
 });

@@ -6,7 +6,7 @@
   "js": "index.js",
   "css": "style.css",
   "author": "phyllis-0612 · fork patched by Claude Opus 5",
-  "version": "1.4.5",
+  "version": "1.4.6",
   "homePage": "https://github.com/upcjiangxiaoyi-art/image",
   "auto_update": false,
   "minimum_client_version": "1.14.0"
