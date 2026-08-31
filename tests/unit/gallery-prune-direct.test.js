@@ -13,7 +13,8 @@ function makeClient({ count, keepMax, chat = [] } = {}) {
     localRelativePath: `user/images/r${index + 1}.png`,
     createdAt: new Date(Date.UTC(2026, 0, 1) + index * 60_000).toISOString(),
   }));
-  const extensionSettings = { stImageAtelier: { gallery, galleryKeepMax: keepMax } };
+  const extensionSettings = { stImageAtelier: { gallery, settings: {} } };
+  if (keepMax !== undefined) extensionSettings.stImageAtelier.settings.galleryKeepMax = keepMax;
 
   globalThis.fetch = async (url, options) => {
     if (String(url).includes('/api/images/delete')) {
@@ -104,4 +105,84 @@ test('文件还在的记录一条都不动', async () => {
   globalThis.fetch = async () => new Response('', { status: 200 });
   assert.equal(await client.dropBrokenEntries(), 0, '文件都在就不该摘任何记录');
   assert.equal(namespace.gallery.length, 120);
+});
+
+/* ---- 彻底抛弃：上游也要抹掉，否则刷新就长回来 ---- */
+
+function makeWithChat({ count, keepMax = 2 } = {}) {
+  const saved = { chat: 0, prefs: 0 };
+  const results = Array.from({ length: count }, (unused, index) => ({
+    resultId: `r${String(index + 1).padStart(4, '0')}`,
+    status: 'available',
+    localRelativePath: `user/images/r${index + 1}.png`,
+    createdAt: new Date(Date.UTC(2026, 0, 1) + index * 60_000).toISOString(),
+  }));
+  const chat = [{
+    extra: { stImageAtelier: { tags: [{
+      tagId: 't1',
+      results: results.map(item => ({ ...item })),
+      resultIds: results.map(item => item.resultId),
+      latestResultId: results.at(-1).resultId,
+    }] } },
+  }];
+  const extensionSettings = {
+    stImageAtelier: { gallery: results.map(item => ({ ...item })), settings: { galleryKeepMax: keepMax } },
+  };
+  globalThis.fetch = async () => new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+  const client = createDirectApiClient({
+    compat: {
+      chat: () => chat,
+      currentChatId: () => 'c1',
+      headers: () => ({}),
+      save: async () => { saved.chat += 1; },
+    },
+    extensionSettings,
+    saveSettingsDebounced: () => { saved.prefs += 1; },
+    keyStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
+  });
+  return { client, chat, namespace: extensionSettings.stImageAtelier, saved };
+}
+
+test('裁剪要连聊天记录里的 results 一起抹掉（不留墓碑）', async () => {
+  const { client, chat } = makeWithChat({ count: 5, keepMax: 2 });
+  await client.pruneGallery();
+  const tag = chat[0].extra.stImageAtelier.tags[0];
+  assert.equal(tag.results.length, 2, '楼里的 results 也要裁到 2 条');
+  assert.equal(tag.resultIds.length, 2, 'resultIds 同步');
+  assert.ok(!tag.results.some(item => item.resultId === 'r0001'), '最旧那条要消失');
+});
+
+test('上游改动必须写回聊天存档，否则刷新后原样读回来', async () => {
+  const { client, saved } = makeWithChat({ count: 5, keepMax: 2 });
+  saved.chat = 0;
+  await client.pruneGallery();
+  assert.ok(saved.chat > 0, '改了 tag.results 就必须调 compat.save()');
+});
+
+test('抹干净之后，重新解析该层不会把图塞回画廊', async () => {
+  const { client, namespace } = makeWithChat({ count: 5, keepMax: 2 });
+  await client.pruneGallery();
+  assert.equal(namespace.gallery.length, 2);
+  await client.resolveTags(['t1']);          // 模拟刷新后重新渲染这一层
+  assert.equal(namespace.gallery.length, 2, '被抛弃的图不该复活');
+});
+
+test('手动清理可以临时收得更狠，并把新上限存下来', async () => {
+  const { client, namespace } = makeWithChat({ count: 10, keepMax: 100 });
+  const report = await client.cleanupGallery(3);
+  assert.equal(report.after, 3, '应清到 3 张');
+  assert.equal(report.removed, 7);
+  assert.equal(namespace.settings.galleryKeepMax, 3, '新上限要落进设置');
+});
+
+test('上限设 0 时手动清理也不删东西', async () => {
+  const { client, namespace } = makeWithChat({ count: 10, keepMax: 100 });
+  await client.cleanupGallery(0);
+  assert.equal(namespace.gallery.length, 10, '0 表示不限制');
+});
+
+test('compat.save 缺失时裁剪仍要跑完，不能半途炸掉', async () => {
+  const { client, namespace } = makeClient({ count: 5, keepMax: 2 });
+  await client.pruneGallery();
+  assert.equal(namespace.gallery.length, 2, '存档写不了也要把画廊裁完');
 });

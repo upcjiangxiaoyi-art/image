@@ -47,6 +47,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   executionMode: 'direct',
   allowHttp: false,
   maxImageBytes: 30 * 1024 * 1024,
+  galleryKeepMax: 100,          // 画廊保留张数，0 或负数＝不限制（Claude Opus 5）
   downloadTimeoutMs: 60_000,
 });
 

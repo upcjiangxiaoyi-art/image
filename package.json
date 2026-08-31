@@ -1,6 +1,6 @@
 {
   "name": "st-image-atelier",
-  "version": "1.4.6",
+  "version": "1.5.0",
   "description": "One-click SillyTavern 1.14-1.18 GPT and NovelAI image generation extension",
   "type": "module",
   "private": true,

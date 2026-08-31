@@ -1,1 +1,15 @@
 @import url('./src/ui/styles/atelier.css');
+
+/* 画廊清理工具条 —— Claude Opus 5 */
+.stia-gallery-tools {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin: 6px 0 10px; font-size: 13px;
+}
+.stia-gallery-tools label { display: flex; align-items: center; gap: 6px; opacity: .85; }
+.stia-gallery-tools input[type="number"] {
+  width: 76px; padding: 4px 6px; border-radius: 6px;
+  border: 1px solid rgba(127,127,127,.35); background: transparent;
+  color: inherit; font: inherit;
+}
+.stia-gallery-tools button { min-height: 32px; padding: 4px 12px; }
+.stia-gallery-tools-note { opacity: .7; }

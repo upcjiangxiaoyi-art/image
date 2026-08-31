@@ -247,10 +247,10 @@ export function createDirectApiClient({
      这里在启动时探一遍：文件真的没了就把记录一起摘掉。
      只探超出上限那部分，不给正常图片增加请求。 */
   async function dropBrokenEntries() {
-    const limit = Number(namespace.galleryKeepMax ?? 100);
+    const limit = galleryLimit();
     const ordered = [...namespace.gallery].sort((a, b) =>
       String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
-    const suspects = Number.isFinite(limit) && limit > 0 ? ordered.slice(limit) : [];
+    const suspects = limit > 0 ? ordered.slice(limit) : [];
     if (!suspects.length) return 0;
 
     const broken = new Set();
@@ -271,14 +271,34 @@ export function createDirectApiClient({
     return broken.size;
   }
 
+  /* 上限来源：优先正式设置，回落到旧的 namespace 野字段，最后默认 100。
+     0 或负数＝不限制。（Claude Opus 5） */
+  function galleryLimit() {
+    const raw = namespace.settings?.galleryKeepMax ?? namespace.galleryKeepMax ?? 100;
+    const value = Number(raw);
+    return Number.isFinite(value) ? value : 100;
+  }
+
+  /* 手动清理：面板按钮用。keepMax 可临时覆盖上限，
+     让用户一次清到更狠的数字而不必改设置。 */
+  async function cleanupGallery(keepMax) {
+    const before = namespace.gallery.length;
+    if (Number.isFinite(Number(keepMax)) && Number(keepMax) >= 0) {
+      namespace.settings.galleryKeepMax = Number(keepMax);
+      await savePreferences();
+    }
+    await pruneGallery();
+    return { before, after: namespace.gallery.length, removed: before - namespace.gallery.length };
+  }
+
   let pruning = null;
   async function pruneGallery() {
     /* 防重入：启动裁剪与存图后裁剪可能并发，不锁的话同一批图会被删两次，
        删图接口收到重复请求，计数也不准。 */
     if (pruning) return pruning;
     pruning = (async () => {
-    const limit = Number(namespace.galleryKeepMax ?? 100);
-    if (!Number.isFinite(limit) || limit <= 0) return 0;
+    const limit = galleryLimit();
+    if (limit <= 0) return 0;
     if (namespace.gallery.length <= limit) return 0;
 
     const ordered = [...namespace.gallery].sort((a, b) =>
@@ -298,10 +318,17 @@ export function createDirectApiClient({
     namespace.gallery = namespace.gallery.filter(item => !doomedIds.has(item.resultId));
     for (const id of doomedIds) resultIndex.delete(id);
 
+    /* 上游才是源头：图片记录同时存在画廊数组和每层消息的
+       extra.stImageAtelier.tags[].results 里。resolveTags() 渲染每层时会把上游中
+       status==='available' 而画廊没有的重新 push 回画廊——只清画廊，刷新就长回来。
+       彻底抛弃：不留墓碑、不记 deletedResultIds，直接把上游记录抹掉，
+       等于这张图从没存在过。（Claude Opus 5） */
+    let chatTouched = false;
     for (const message of compat.chat()) {
       const metadata = message?.extra?.stImageAtelier;
       if (!metadata?.tags) continue;
       for (const tag of metadata.tags) {
+        const before = (tag.results?.length || 0) + (tag.resultIds?.length || 0);
         if (Array.isArray(tag.results)) {
           tag.results = tag.results.filter(item => !doomedIds.has(item.resultId));
         }
@@ -310,8 +337,18 @@ export function createDirectApiClient({
         }
         if (doomedIds.has(tag.latestResultId)) {
           tag.latestResultId = tag.resultIds?.at(-1) || null;
+          chatTouched = true;
         }
+        if (before !== (tag.results?.length || 0) + (tag.resultIds?.length || 0)) chatTouched = true;
       }
+    }
+    /* 上游住在聊天存档里，savePreferences() 只写扩展设置，写不到它。
+       不调 compat.save() 的话刷新后 tag.results 原样读回来，图又被塞进画廊。 */
+    if (chatTouched) {
+      /* 包一层：save 缺失或抛错不能让裁剪半途中断——
+         那会留下"画廊清了、聊天没清"的不一致状态，比不裁还糟。 */
+      try { await compat.save?.(); }
+      catch (error) { console.warn('[Image Atelier] 聊天存档写入失败，画廊已裁但刷新后可能回涨', error?.message); }
     }
     /* 必须落盘：不存的话刷新后 namespace.gallery 又从设置里读回完整列表，
        可文件已经删了，于是整片破图。裁剪不落盘等于没裁。 */
@@ -700,6 +737,7 @@ export function createDirectApiClient({
   return {
     mode: () => namespace.settings.executionMode || 'direct',
     pruneGallery,                       // 暴露出来便于测试与手动清理（Claude Opus 5）
+    cleanupGallery,                     // 面板「清理画廊」按钮走这条
     dropBrokenEntries,                  // 清掉指向空文件的破记录
     health: async () => ({
       mode: 'direct',
