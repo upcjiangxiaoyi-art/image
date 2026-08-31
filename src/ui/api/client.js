@@ -155,6 +155,15 @@ export function createApiClient({
     cancel: attemptId => selected().cancel(attemptId),
     gallery: options => selected().gallery(options),
     deleteResult: resultId => selected().deleteResult(resultId),
+    /* 画廊清理 —— Claude Opus 5
+       只有 direct 端实现了裁剪；server 端的上限在 server-plugin 里自己管，
+       这里不转发给它，直接告诉调用方不支持，免得报一个看不懂的错。 */
+    cleanupGallery: keepMax => (typeof direct.cleanupGallery === 'function'
+      ? direct.cleanupGallery(keepMax)
+      : Promise.reject(new Error('当前模式不支持手动清理'))),
+    pruneGallery: () => (typeof direct.pruneGallery === 'function'
+      ? direct.pruneGallery()
+      : Promise.resolve(0)),
     fileUrl: resultId => direct.hasResult(resultId)
       ? direct.fileUrl(resultId)
       : server.fileUrl(resultId),

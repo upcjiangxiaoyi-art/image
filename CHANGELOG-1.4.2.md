@@ -186,3 +186,21 @@ push 回画廊，所以只裁画廊，刷新就长回来。
 
 **测试**　6 项，含最关键的「抹干净后重新解析该层不会把图塞回画廊」。
 反向验证：撤回上游清理，这三条立刻变红。全套 80 项通过。
+
+---
+
+# 1.5.1
+
+## 急修：`api.cleanupGallery is not a function`
+
+1.5.0 把 `cleanupGallery` / `pruneGallery` 加在了 `direct-client` 上，
+但上层 `client.js` 是逐个方法显式转发的（`selected().xxx()`），没转发就等于没有——
+画廊页拿到的 `api` 上根本没这两个方法，一按就报错。
+只管加、没确认调用方够不够得着，跟 1.4.6 里 `resolveAssetUrl` 是同一个毛病。
+
+- `client.js` 补转发。server 模式没有对应实现，`cleanupGallery` 直接返回
+  「当前模式不支持手动清理」，不硬转给它报一个看不懂的错。
+- 新增 `tests/unit/api-forwarding.test.js`：静态断言 direct 端导出的清理方法
+  必须在上层 client 里出现。撤回转发即变红。
+
+全套 81 项通过。
