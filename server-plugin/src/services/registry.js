@@ -27,7 +27,6 @@ class ServiceRegistry {
     const preset = await new PresetService(root).initialize();
     const metadata = await new MetadataStore(root).initialize();
     const storage = await new StorageService(root, () => preset.getSettings()).initialize();
-    metadata.storage = storage;          // 画廊裁剪要删文件，把线接上（Claude Opus 5）
     const generation = new GenerationService({ metadata, preset, storage });
     const gallery = new GalleryService({ metadata, storage });
     return { root, preset, metadata, storage, generation, gallery };

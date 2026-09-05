@@ -131,47 +131,7 @@ class MetadataStore {
     await this.transaction(index => {
       index.results[record.resultId] = structuredClone(record);
     });
-    await this.pruneResults();
     return record;
-  }
-
-  /* 画廊保留上限 —— Claude Opus 5
-     图片只进不出会把索引和磁盘一起撑大，酒馆读画廊时明显变卡。
-     每存一张就按 createdAt 从新到旧排序，裁掉超出的部分，文件和索引一起清，
-     免得留下指向空文件的死记录。默认 100 张；galleryKeepMax 设 0 或负数表示不限制。 */
-  async pruneResults(keepMax = this.galleryKeepMax) {
-    const limit = Number(keepMax ?? 100);
-    if (!Number.isFinite(limit) || limit <= 0) return { removed: 0 };
-
-    const all = Object.values(this.index.results)
-      .filter(result => result.status === 'available')
-      .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
-    const doomed = all.slice(limit);
-    if (!doomed.length) return { removed: 0 };
-
-    for (const result of doomed) {
-      if (!result.localRelativePath) continue;
-      try {
-        await this.storage?.remove(result.localRelativePath);
-      } catch (error) {
-        console.warn('[Image Atelier] 旧图文件删除失败，仍从索引移除', result.resultId, error?.message);
-      }
-    }
-
-    const doomedIds = new Set(doomed.map(item => item.resultId));
-    await this.transaction(index => {
-      for (const id of doomedIds) delete index.results[id];
-      for (const attempt of Object.values(index.attempts || {})) {
-        if (Array.isArray(attempt.resultIds)) {
-          attempt.resultIds = attempt.resultIds.filter(id => !doomedIds.has(id));
-        }
-      }
-      for (const tag of Object.values(index.tags || {})) {
-        if (Array.isArray(tag.resultIds)) tag.resultIds = tag.resultIds.filter(id => !doomedIds.has(id));
-        if (doomedIds.has(tag.latestResultId)) tag.latestResultId = tag.resultIds?.at(-1) || null;
-      }
-    });
-    return { removed: doomedIds.size };
   }
 
   async transaction(mutator) {
@@ -196,6 +156,12 @@ class MetadataStore {
       items,
       nextCursor: start + items.length < all.length ? items.at(-1)?.resultId : null,
     };
+  }
+
+  availableResults() {
+    return Object.values(this.index.results)
+      .filter(result => result.status === 'available')
+      .map(result => structuredClone(result));
   }
 }
 

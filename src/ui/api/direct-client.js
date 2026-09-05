@@ -15,6 +15,12 @@ import {
   listModelsDirect,
 } from './openai-direct.js';
 import { generateNovelAiImages } from './novelai-direct.js';
+import {
+  createArtistPresetExport,
+  parseArtistPresetImport,
+} from './artist-preset-transfer.js';
+import { normalizeRetentionSettings, selectCleanupCandidates } from '../gallery/retention.js';
+import { normalizeThemeMode } from '../theme/theme.js';
 
 const LEGACY_API_KEY_STORAGE = 'stImageAtelier.directApiKey.v1';
 const API_KEY_STORAGE_PREFIX = 'stImageAtelier.directApiKey.v2:';
@@ -72,18 +78,39 @@ function normalizeArtistPreset(value = {}) {
   preset.id = String(preset.id || uuid());
   preset.name = String(preset.name || '未命名画师串').trim() || '未命名画师串';
   preset.prompt = String(preset.prompt || '').trim();
+  preset.negativePrompt = String(preset.negativePrompt || '').trim();
   return preset;
+}
+
+function artistPresetSignature(value) {
+  return [value.name, value.prompt, value.negativePrompt]
+    .map(part => String(part || '').trim())
+    .join('\u0000');
+}
+
+function uniqueImportedName(name, presets) {
+  const names = new Set(presets.map(item => item.name));
+  if (!names.has(name)) return name;
+  let suffix = 2;
+  while (names.has(`${name}（导入 ${suffix}）`)) suffix += 1;
+  return `${name}（导入 ${suffix}）`;
+}
+
+function normalizeSettings(value = {}) {
+  const merged = { ...clone(DEFAULT_SETTINGS), ...value };
+  return {
+    ...merged,
+    generationProvider: merged.generationProvider === 'novelai' ? 'novelai' : 'openai',
+    executionMode: merged.executionMode === 'server' ? 'server' : 'direct',
+    themeMode: normalizeThemeMode(merged.themeMode),
+    ...normalizeRetentionSettings(merged),
+  };
 }
 
 function ensureNamespace(extensionSettings) {
   const previous = extensionSettings[MODULE_NAME];
   const namespace = previous && typeof previous === 'object' ? previous : {};
-  namespace.settings = {
-    ...clone(DEFAULT_SETTINGS),
-    ...(namespace.settings || {}),
-    generationProvider: namespace.settings?.generationProvider === 'novelai' ? 'novelai' : 'openai',
-    executionMode: namespace.settings?.executionMode || 'direct',
-  };
+  namespace.settings = normalizeSettings(namespace.settings);
   const sourcePresets = Array.isArray(namespace.presets) && namespace.presets.length
     ? namespace.presets
     : [namespace.preset || DEFAULT_PRESET];
@@ -151,11 +178,8 @@ export function createDirectApiClient({
   const namespace = ensureNamespace(extensionSettings);
   const controllers = new Map();
   const resultIndex = new Map(namespace.gallery.map(result => [result.resultId, result]));
-  /* 加载时先裁一次 —— Claude Opus 5
-     原来只在生成新图之后才裁，装上新版但还没画过图的人，
-     存量照样超着上限不动。启动裁一次，存量当场收敛。 */
-  queueMicrotask(() => { pruneGallery().then(() => dropBrokenEntries()).catch(() => {}); });
   const memoryKeys = new Map();
+  let cleanupPromise = null;
 
   function presetById(presetId = namespace.activePresetId) {
     return namespace.presets.find(item => item.id === presetId) || null;
@@ -233,129 +257,6 @@ export function createDirectApiClient({
       hasApiKey: Boolean(apiKey),
       apiKeyMask: maskKey(apiKey),
     };
-  }
-
-  /* 客户端画廊保留上限 —— Claude Opus 5
-     直连模式没有 server-plugin，服务端那条裁剪跑不到，
-     namespace.gallery 只进不出，酒馆设置会越存越大、读画廊越来越卡。
-     每次存图后按时间从新到旧裁掉超出的部分，图片文件一并删掉，
-     并摘掉 tag 上的死引用，免得留下指向空文件的记录。
-     galleryKeepMax 设 0 或负数表示不限制。 */
-  /* 清掉指向空文件的破记录 —— Claude Opus 5
-     1.4.4 的裁剪删了文件却没落盘，刷新后列表从设置里读回完整的一份，
-     于是留下一批指向已删文件的条目，画廊里显示成破图。
-     这里在启动时探一遍：文件真的没了就把记录一起摘掉。
-     只探超出上限那部分，不给正常图片增加请求。 */
-  async function dropBrokenEntries() {
-    const limit = galleryLimit();
-    const ordered = [...namespace.gallery].sort((a, b) =>
-      String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
-    const suspects = limit > 0 ? ordered.slice(limit) : [];
-    if (!suspects.length) return 0;
-
-    const broken = new Set();
-    for (const result of suspects) {
-      if (!result.localRelativePath) { broken.add(result.resultId); continue; }
-      try {
-        const response = await fetch(normalizePath(result.localRelativePath), { method: 'HEAD' });
-        if (!response.ok) broken.add(result.resultId);
-      } catch (error) {
-        broken.add(result.resultId);
-      }
-    }
-    if (!broken.size) return 0;
-
-    namespace.gallery = namespace.gallery.filter(item => !broken.has(item.resultId));
-    for (const id of broken) resultIndex.delete(id);
-    await savePreferences();
-    return broken.size;
-  }
-
-  /* 上限来源：优先正式设置，回落到旧的 namespace 野字段，最后默认 100。
-     0 或负数＝不限制。（Claude Opus 5） */
-  function galleryLimit() {
-    const raw = namespace.settings?.galleryKeepMax ?? namespace.galleryKeepMax ?? 100;
-    const value = Number(raw);
-    return Number.isFinite(value) ? value : 100;
-  }
-
-  /* 手动清理：面板按钮用。keepMax 可临时覆盖上限，
-     让用户一次清到更狠的数字而不必改设置。 */
-  async function cleanupGallery(keepMax) {
-    const before = namespace.gallery.length;
-    if (Number.isFinite(Number(keepMax)) && Number(keepMax) >= 0) {
-      namespace.settings.galleryKeepMax = Number(keepMax);
-      await savePreferences();
-    }
-    await pruneGallery();
-    return { before, after: namespace.gallery.length, removed: before - namespace.gallery.length };
-  }
-
-  let pruning = null;
-  async function pruneGallery() {
-    /* 防重入：启动裁剪与存图后裁剪可能并发，不锁的话同一批图会被删两次，
-       删图接口收到重复请求，计数也不准。 */
-    if (pruning) return pruning;
-    pruning = (async () => {
-    const limit = galleryLimit();
-    if (limit <= 0) return 0;
-    if (namespace.gallery.length <= limit) return 0;
-
-    const ordered = [...namespace.gallery].sort((a, b) =>
-      String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
-    const doomed = ordered.slice(limit);
-    if (!doomed.length) return 0;
-
-    for (const result of doomed) {
-      try {
-        await removeFile(result);
-      } catch (error) {
-        console.warn('[Image Atelier] 旧图删除失败，仍从画廊移除', result.resultId, error?.message);
-      }
-    }
-
-    const doomedIds = new Set(doomed.map(item => item.resultId));
-    namespace.gallery = namespace.gallery.filter(item => !doomedIds.has(item.resultId));
-    for (const id of doomedIds) resultIndex.delete(id);
-
-    /* 上游才是源头：图片记录同时存在画廊数组和每层消息的
-       extra.stImageAtelier.tags[].results 里。resolveTags() 渲染每层时会把上游中
-       status==='available' 而画廊没有的重新 push 回画廊——只清画廊，刷新就长回来。
-       彻底抛弃：不留墓碑、不记 deletedResultIds，直接把上游记录抹掉，
-       等于这张图从没存在过。（Claude Opus 5） */
-    let chatTouched = false;
-    for (const message of compat.chat()) {
-      const metadata = message?.extra?.stImageAtelier;
-      if (!metadata?.tags) continue;
-      for (const tag of metadata.tags) {
-        const before = (tag.results?.length || 0) + (tag.resultIds?.length || 0);
-        if (Array.isArray(tag.results)) {
-          tag.results = tag.results.filter(item => !doomedIds.has(item.resultId));
-        }
-        if (Array.isArray(tag.resultIds)) {
-          tag.resultIds = tag.resultIds.filter(id => !doomedIds.has(id));
-        }
-        if (doomedIds.has(tag.latestResultId)) {
-          tag.latestResultId = tag.resultIds?.at(-1) || null;
-          chatTouched = true;
-        }
-        if (before !== (tag.results?.length || 0) + (tag.resultIds?.length || 0)) chatTouched = true;
-      }
-    }
-    /* 上游住在聊天存档里，savePreferences() 只写扩展设置，写不到它。
-       不调 compat.save() 的话刷新后 tag.results 原样读回来，图又被塞进画廊。 */
-    if (chatTouched) {
-      /* 包一层：save 缺失或抛错不能让裁剪半途中断——
-         那会留下"画廊清了、聊天没清"的不一致状态，比不裁还糟。 */
-      try { await compat.save?.(); }
-      catch (error) { console.warn('[Image Atelier] 聊天存档写入失败，画廊已裁但刷新后可能回涨', error?.message); }
-    }
-    /* 必须落盘：不存的话刷新后 namespace.gallery 又从设置里读回完整列表，
-       可文件已经删了，于是整片破图。裁剪不落盘等于没裁。 */
-    await savePreferences();
-    return doomedIds.size;
-    })();
-    try { return await pruning; } finally { pruning = null; }
   }
 
   async function savePreferences() {
@@ -490,6 +391,7 @@ export function createDirectApiClient({
       messageUuid: input.messageUuid,
       prompt: input.prompt,
       resolvedPrompt: attempt.resolvedPrompt || input.prompt,
+      resolvedNegativePrompt: attempt.resolvedNegativePrompt || '',
       provider: attempt.provider || 'openai',
       presetId: attempt.presetId,
       presetNameSnapshot: attempt.presetNameSnapshot,
@@ -618,6 +520,7 @@ export function createDirectApiClient({
           config: novelAi,
           apiKey,
           artistPrompt: artistPreset.prompt,
+          artistNegativePrompt: artistPreset.negativePrompt,
           prompt: input.prompt,
           parameters: attempt.parameters,
           settings: namespace.settings,
@@ -625,6 +528,7 @@ export function createDirectApiClient({
         });
         sources = generated.sources;
         attempt.resolvedPrompt = generated.resolvedPrompt;
+        attempt.resolvedNegativePrompt = generated.resolvedNegativePrompt;
         attempt.generationSeed = generated.seed;
       } else {
         sources = await generateImages({
@@ -654,7 +558,6 @@ export function createDirectApiClient({
         .map(result => result.resultId);
       found.tag.latestResultId = saved.at(-1)?.resultId || found.tag.latestResultId || null;
       namespace.gallery.push(...saved);
-      await pruneGallery();
       for (const result of saved) resultIndex.set(result.resultId, result);
       attempt.status = 'succeeded';
       attempt.resultIds = saved.map(result => result.resultId);
@@ -728,6 +631,82 @@ export function createDirectApiClient({
     return { resultId, status: 'deleted' };
   }
 
+  async function performGalleryCleanup() {
+    const selection = selectCleanupCandidates(namespace.gallery, namespace.settings);
+    if (!selection.settings.galleryCleanupByAge && !selection.settings.galleryCleanupByCount) {
+      return {
+        enabled: false,
+        candidateCount: 0,
+        deletedCount: 0,
+        failedCount: 0,
+        keptCount: selection.availableCount,
+        byAgeCount: 0,
+        byCountCount: 0,
+        deletedResultIds: [],
+      };
+    }
+
+    const deletedResultIds = [];
+    const affectedTags = new Set();
+    for (const result of selection.candidates) {
+      try {
+        await removeFile(result);
+      } catch (error) {
+        console.warn('[Image Atelier] 自动清理图片失败', result.resultId, error);
+        continue;
+      }
+      result.status = 'deleted';
+      result.deletedAt = now();
+      if (!namespace.deletedResultIds.includes(result.resultId)) {
+        namespace.deletedResultIds.push(result.resultId);
+      }
+      deletedResultIds.push(result.resultId);
+      affectedTags.add(result.tagId);
+    }
+
+    let chatChanged = false;
+    const deleted = new Set(deletedResultIds);
+    for (const tagId of affectedTags) {
+      const found = findTag(tagId);
+      if (!found) continue;
+      for (const messageResult of found.tag.results || []) {
+        if (!deleted.has(messageResult.resultId)) continue;
+        const galleryResult = namespace.gallery
+          .find(item => item.resultId === messageResult.resultId);
+        Object.assign(messageResult, {
+          status: 'deleted',
+          deletedAt: galleryResult?.deletedAt || now(),
+        });
+      }
+      found.tag.resultIds = (found.tag.resultIds || [])
+        .filter(resultId => !deleted.has(resultId));
+      found.tag.latestResultId = found.tag.resultIds.at(-1) || null;
+      found.tag.autoSuppressed = true;
+      chatChanged = true;
+    }
+    if (chatChanged) await compat.save();
+    if (deletedResultIds.length) await savePreferences();
+
+    return {
+      enabled: true,
+      candidateCount: selection.candidates.length,
+      deletedCount: deletedResultIds.length,
+      failedCount: selection.candidates.length - deletedResultIds.length,
+      keptCount: selection.availableCount - deletedResultIds.length,
+      byAgeCount: selection.byAgeCount,
+      byCountCount: selection.byCountCount,
+      deletedResultIds,
+    };
+  }
+
+  function cleanupGallery() {
+    if (cleanupPromise) return cleanupPromise;
+    cleanupPromise = performGalleryCleanup().finally(() => {
+      cleanupPromise = null;
+    });
+    return cleanupPromise;
+  }
+
   function fileUrl(resultId) {
     const result = resultIndex.get(resultId)
       || namespace.gallery.find(item => item.resultId === resultId);
@@ -736,18 +715,20 @@ export function createDirectApiClient({
 
   return {
     mode: () => namespace.settings.executionMode || 'direct',
-    pruneGallery,                       // 暴露出来便于测试与手动清理（Claude Opus 5）
-    cleanupGallery,                     // 面板「清理画廊」按钮走这条
-    dropBrokenEntries,                  // 清掉指向空文件的破记录
     health: async () => ({
       mode: 'direct',
-      version: '1.4.3',
+      version: '1.5.0',
       corsRequired: true,
       storage: 'sillytavern-images',
     }),
     getSettings: async () => clone(namespace.settings),
     updateSettings: async patch => {
-      Object.assign(namespace.settings, patch, { updatedAt: now(), schemaVersion: SCHEMA_VERSION });
+      namespace.settings = normalizeSettings({
+        ...namespace.settings,
+        ...patch,
+        updatedAt: now(),
+        schemaVersion: SCHEMA_VERSION,
+      });
       await savePreferences();
       return clone(namespace.settings);
     },
@@ -782,12 +763,17 @@ export function createDirectApiClient({
       await savePreferences();
       return clone(preset);
     },
-    createArtistPreset: async ({ name = '新画师串', prompt = '' } = {}) => {
+    createArtistPreset: async ({
+      name = '新画师串',
+      prompt = '',
+      negativePrompt = '',
+    } = {}) => {
       const timestamp = now();
       const preset = normalizeArtistPreset({
         id: uuid(),
         name,
         prompt,
+        negativePrompt,
         createdAt: timestamp,
         updatedAt: timestamp,
         schemaVersion: SCHEMA_VERSION,
@@ -807,6 +793,66 @@ export function createDirectApiClient({
       });
       await savePreferences();
       return clone(preset);
+    },
+    exportArtistPresets: async ({ presetIds } = {}) => {
+      const selectedIds = Array.isArray(presetIds) && presetIds.length
+        ? new Set(presetIds.map(String))
+        : null;
+      const selectedPresets = selectedIds
+        ? namespace.artistPresets.filter(preset => selectedIds.has(preset.id))
+        : namespace.artistPresets;
+      if (!selectedPresets.length) {
+        throw new DirectError('VALIDATION_FAILED', '没有找到可导出的画师串预设');
+      }
+      return createArtistPresetExport(selectedPresets);
+    },
+    importArtistPresets: async payload => {
+      let imported;
+      try {
+        imported = parseArtistPresetImport(payload);
+      } catch (error) {
+        throw new DirectError('VALIDATION_FAILED', error.message || '画师串分享文件无效');
+      }
+      const signatures = new Set(namespace.artistPresets.map(artistPresetSignature));
+      const uniqueImports = [];
+      let skippedCount = 0;
+      for (const value of imported) {
+        const signature = artistPresetSignature(value);
+        if (signatures.has(signature)) {
+          skippedCount += 1;
+          continue;
+        }
+        signatures.add(signature);
+        uniqueImports.push(value);
+      }
+      if (namespace.artistPresets.length + uniqueImports.length > 200) {
+        throw new DirectError('VALIDATION_FAILED', '画师串预设总数不能超过 200 条');
+      }
+
+      const added = [];
+      for (const value of uniqueImports) {
+        const timestamp = now();
+        const preset = normalizeArtistPreset({
+          ...value,
+          id: uuid(),
+          name: uniqueImportedName(value.name, namespace.artistPresets),
+          createdAt: timestamp,
+          updatedAt: timestamp,
+          schemaVersion: SCHEMA_VERSION,
+        });
+        namespace.artistPresets.push(preset);
+        signatures.add(artistPresetSignature(preset));
+        added.push(preset);
+      }
+      if (added.length) namespace.activeArtistPresetId = added[0].id;
+      await savePreferences();
+      return {
+        importedCount: added.length,
+        skippedCount,
+        activeArtistPresetId: namespace.activeArtistPresetId,
+        activeArtistPreset: clone(activeArtistPreset()),
+        artistPresets: clone(namespace.artistPresets),
+      };
     },
     deleteArtistPreset: async presetId => {
       if (namespace.artistPresets.length <= 1) {
@@ -923,6 +969,7 @@ export function createDirectApiClient({
     },
     cancel,
     gallery,
+    cleanupGallery,
     deleteResult,
     fileUrl,
     downloadUrl: fileUrl,

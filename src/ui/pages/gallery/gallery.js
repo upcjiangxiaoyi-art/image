@@ -21,49 +21,6 @@ export function createGalleryPage(api) {
   const count = document.createElement('span');
   count.textContent = '0 张';
   heading.append(title, count);
-
-  /* 保留上限 + 手动清理 —— Claude Opus 5
-     以前上限只能改代码。放在画廊页顶部，改完立刻能看见效果。 */
-  const tools = document.createElement('div');
-  tools.className = 'stia-gallery-tools';
-  const keepLabel = document.createElement('label');
-  keepLabel.textContent = '保留张数';
-  const keepInput = document.createElement('input');
-  keepInput.type = 'number';
-  keepInput.min = '0';
-  keepInput.step = '10';
-  keepInput.title = '超出的旧图会被真删掉（含文件）。0 表示不限制。';
-  keepLabel.append(keepInput);
-  const cleanBtn = document.createElement('button');
-  cleanBtn.type = 'button';
-  cleanBtn.className = 'stia-btn';
-  cleanBtn.textContent = '清理旧图';
-  const toolNote = document.createElement('span');
-  toolNote.className = 'stia-gallery-tools-note';
-  tools.append(keepLabel, cleanBtn, toolNote);
-
-  api.getSettings?.().then(settings => {
-    keepInput.value = String(settings?.galleryKeepMax ?? 100);
-  }).catch(() => { keepInput.value = '100'; });
-
-  cleanBtn.addEventListener('click', async () => {
-    const keep = Number(keepInput.value);
-    if (!Number.isFinite(keep) || keep < 0) { toolNote.textContent = '请填 0 或正整数'; return; }
-    if (keep > 0 && !confirm(`只保留最新 ${keep} 张，其余旧图连同文件一起删除，不可撤销。继续？`)) return;
-    cleanBtn.disabled = true;
-    toolNote.textContent = '清理中…';
-    try {
-      const report = await api.cleanupGallery(keep);
-      toolNote.textContent = report.removed > 0
-        ? `已清掉 ${report.removed} 张，现存 ${report.after} 张`
-        : '没有需要清理的';
-      await load({ reset: true });
-    } catch (error) {
-      toolNote.textContent = `清理失败：${error?.message || '未知错误'}`;
-    } finally {
-      cleanBtn.disabled = false;
-    }
-  });
   const grid = document.createElement('div');
   grid.className = 'stia-gallery-grid';
   const empty = document.createElement('p');
@@ -130,6 +87,11 @@ export function createGalleryPage(api) {
       empty.remove();
     }
     try {
+      if (reset) {
+        await api.cleanupGallery().catch(error => {
+          console.warn('[Image Atelier] 打开画廊时自动清理失败', error);
+        });
+      }
       const page = await api.gallery({ cursor });
       page.items.forEach(addCard);
       count.textContent = `${grid.children.length} 张`;
@@ -146,6 +108,6 @@ export function createGalleryPage(api) {
   }
 
   loadMore.addEventListener('click', () => load());
-  root.append(heading, tools, grid, loadMore);
+  root.append(heading, grid, loadMore);
   return { root, load };
 }

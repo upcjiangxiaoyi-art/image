@@ -145,3 +145,98 @@ test('<draw> 作为元素存活时，原路径依然有效', () => {
   assert.equal(container.querySelector('draw'), null, '<draw> 要被替换');
   assert.ok(container.textContent.includes('他把折扇收进腰间。'), '正文必须原样保留');
 });
+
+/* 提示词被酒馆当 Markdown 渲染 —— 江的截图（1.5.2）
+   改写后酒馆用 mes 重建这一层：<draw> 被消毒器剥掉，提示词模板里的 "1. Hand count"
+   变成 <ol><li>，序号文本没了；"**加粗**" 的星号也被吃掉。提示词侧有这些字符、DOM 侧没有，
+   按字面比对永远对不上 → 卡片落到楼底、原文露在外面。 */
+const MARKDOWN_PROMPT = [
+  'Medium and style (hard rules): a high-quality refined 2.5D anime-inspired illustration.',
+  '',
+  'Quality: rich detail, coherent perspective. No watermark, no text, no borders.',
+  '',
+  '**Hands and limbs** (hard rules, highest priority):',
+  '',
+  '1. Hand count: the total number of hands in the frame equals exactly two per visible character.',
+  '2. Every visible hand belongs to exactly one named character.',
+].join('\n');
+const MARKDOWN_TAGS = [{ tagId: 'tag-1', prompt: MARKDOWN_PROMPT, ordinal: 0, count: 1 }];
+const MARKDOWN_HTML = '<p>她把手机扣在桌上，转头望向窗外。</p>'
+  + '<p>Medium and style (hard rules): a high-quality refined 2.5D anime-inspired illustration.</p>'
+  + '<p>Quality: rich detail, coherent perspective. No watermark, no text, no borders.</p>'
+  + '<p><strong>Hands and limbs</strong> (hard rules, highest priority):</p>'
+  + '<ol><li>Hand count: the total number of hands in the frame equals exactly two per visible character.</li>'
+  + '<li>Every visible hand belongs to exactly one named character.</li></ol>';
+
+test('提示词被渲染成 Markdown 列表和加粗后，仍要认出并整段替换成卡片', () => {
+  const { container, renderer } = setup();
+  container.innerHTML = MARKDOWN_HTML;
+  const result = renderer.mount('0', MARKDOWN_TAGS);
+  assert.equal(result.fallback, 0, '不该落进楼底 fallback');
+  assert.equal(result.mounted, 1);
+  const cardText = container.querySelector('.stia-card')?.textContent || '';
+  const leaked = container.textContent.replace(cardText, '').replace('她把手机扣在桌上，转头望向窗外。', '').trim();
+  assert.equal(leaked, '', `提示词不该留在楼里，实际残留：${leaked}`);
+  assert.equal(container.querySelector(':scope > ol, :scope > li, :scope > p > strong'), null, '空的列表壳也要清掉');
+  assert.ok(container.textContent.includes('她把手机扣在桌上，转头望向窗外。'), '正文必须原样保留');
+  assert.equal(container.querySelectorAll('p').length, 1, '正文段落保留，提示词段落全部清掉');
+});
+
+test('改写后 DOM 重建、卡片先落到楼底，下一轮挂载要把它接回原地', () => {
+  const { container, renderer } = setup();
+  container.innerHTML = '<p>她把手机扣在桌上，转头望向窗外。</p>';
+  const first = renderer.mount('0', MARKDOWN_TAGS);
+  assert.equal(first.fallback, 1, '原文还没回来，只能先落楼底');
+  container.querySelector('p').remove();
+  container.insertAdjacentHTML('afterbegin', MARKDOWN_HTML);
+  const second = renderer.mount('0', MARKDOWN_TAGS);
+  assert.equal(second.fallback, 0, '原文回来了就该回原地');
+  assert.equal(container.querySelectorAll('.stia-card').length, 1, '只能有一张卡');
+  assert.equal(container.querySelector('.stia-card-list'), null, '楼底列表要清掉');
+  const cardText = container.querySelector('.stia-card')?.textContent || '';
+  const leaked = container.textContent.replace(cardText, '').replace('她把手机扣在桌上，转头望向窗外。', '').trim();
+  assert.equal(leaked, '', '提示词不该留在楼里');
+});
+
+test('卡片已在原地、提示词原文又以 Markdown 形态冒出来时，只清原文不动卡片', () => {
+  const { container, renderer } = setup();
+  container.innerHTML = MARKDOWN_HTML;
+  renderer.mount('0', MARKDOWN_TAGS);
+  const card = container.querySelector('.stia-card');
+  container.insertAdjacentHTML('beforeend', MARKDOWN_HTML.replace('<p>她把手机扣在桌上，转头望向窗外。</p>', ''));
+  const result = renderer.mount('0', MARKDOWN_TAGS);
+  assert.equal(result.mounted, 0);
+  assert.equal(container.querySelector('.stia-card'), card, '卡片对象不该被换掉');
+  const leaked = container.textContent.replace(card.textContent, '').replace('她把手机扣在桌上，转头望向窗外。', '').trim();
+  assert.equal(leaked, '', '重复冒出来的原文要清掉');
+});
+
+test('提示词中间被改了几个字符（宏替换）时，头尾锚点仍能定位', () => {
+  const { container, renderer } = setup();
+  const prompt = 'masterpiece, best quality, {{user}} standing at the gate of the old academy, '
+    + 'soft morning light, detailed background, cinematic composition, highly detailed face';
+  container.innerHTML = '<p>她把手机扣在桌上。</p><p>'
+    + prompt.replace('{{user}}', '江江')
+    + '</p>';
+  const result = renderer.mount('0', [{ tagId: 'tag-1', prompt, ordinal: 0, count: 1 }]);
+  assert.equal(result.fallback, 0, '不该落进楼底 fallback');
+  const cardText = container.querySelector('.stia-card')?.textContent || '';
+  const leaked = container.textContent.replace(cardText, '').replace('她把手机扣在桌上。', '').trim();
+  assert.equal(leaked, '', '提示词不该留在楼里');
+});
+
+test('正文里恰好引用了提示词开头一小段，不能被误认成提示词', () => {
+  const { container, renderer } = setup();
+  container.innerHTML = '<p>她念着 Medium and style (hard rules): a high 这几个词，笑了。</p>';
+  const result = renderer.mount('0', MARKDOWN_TAGS);
+  assert.equal(result.fallback, 1, '找不到完整提示词就该落楼底');
+  assert.ok(container.textContent.includes('她念着 Medium and style (hard rules): a high 这几个词，笑了。'), '正文不能被删');
+});
+
+test('小铅笔打开、这一层正在改写时不动 DOM', () => {
+  const { container, renderer } = setup();
+  container.innerHTML = '<textarea class="edit_textarea">改写中</textarea>';
+  const result = renderer.mount('0', MARKDOWN_TAGS);
+  assert.deepEqual(result, { mounted: 0, fallback: 0 });
+  assert.equal(container.querySelector('.stia-card, .stia-card-list'), null, '改写中不该塞卡片');
+});
