@@ -427,6 +427,7 @@ export function createMessageRenderer(dependencies) {
       onGenerate: actions.generate,
       onOpenGallery: actions.openGallery,
       onCancel: actions.cancel,
+      onRemove: actions.remove,
     });
     cards.set(tag.tagId, card);
     card.render();
@@ -538,11 +539,24 @@ export function createMessageRenderer(dependencies) {
     cards.get(tagId)?.render();
   }
 
+  /* 把卡片从楼里摘掉，并清掉它留下的空壳（只剩它一个的 <p>、空的楼底列表）。 */
+  function removeCard(tagId) {
+    const card = cards.get(tagId);
+    cards.delete(tagId);
+    const root = card?.root;
+    if (!root?.isConnected) return false;
+    const container = root.closest('.mes_text');
+    const parent = root.parentElement;
+    root.remove();
+    if (container && parent) pruneEmptyAncestors(parent, container);
+    return true;
+  }
+
   store.subscribe(() => {
     for (const card of cards.values()) {
       if (card.root.isConnected) card.render();
     }
   });
 
-  return { mount, renderTag };
+  return { mount, renderTag, removeCard };
 }

@@ -240,3 +240,15 @@ test('小铅笔打开、这一层正在改写时不动 DOM', () => {
   assert.deepEqual(result, { mounted: 0, fallback: 0 });
   assert.equal(container.querySelector('.stia-card, .stia-card-list'), null, '改写中不该塞卡片');
 });
+
+/* 一键删除：卡片摘掉之后不能留下空壳，正文原样 */
+test('removeCard 摘掉卡片并清掉只剩它一个的段落壳', () => {
+  const { container, renderer } = setup();
+  container.innerHTML = MARKDOWN_HTML;
+  renderer.mount('0', MARKDOWN_TAGS);
+  assert.ok(container.querySelector('.stia-card'));
+  assert.equal(renderer.removeCard('tag-1'), true);
+  assert.equal(container.querySelector('.stia-card'), null, '卡片要没了');
+  assert.equal(container.innerHTML, '<p>她把手机扣在桌上，转头望向窗外。</p>', '只剩正文，不留空壳');
+  assert.equal(renderer.removeCard('tag-1'), false, '再删一次应当无事发生');
+});

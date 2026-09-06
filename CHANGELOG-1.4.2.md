@@ -258,3 +258,27 @@ push 回画廊，所以只裁画廊，刷新就长回来。
 改写中不塞卡片。反向验证：去掉 Markdown 语法剥离，列表那条立刻变红。
 
 全套 78 项通过（单元 60 + 集成 18）。
+
+---
+
+# 1.5.3
+
+改写人：Claude Fable 5.1　｜　提议：ripple（江，「点一下直接删除，注入词一起删，保持画面干净」）
+
+## 新增：卡片一键删除
+
+失败卡片和待生成卡片多一个「删除」。点下去做四件事，顺序有讲究：
+
+1. `tag-removal.js` 从 `message.mes` 里按 ordinal（对不上再按提示词原文）找到这一个 `<draw>…</draw>`
+   的字面范围剪掉，前后空行收成一个；同一行的用空格接上。`swipes` 里每一条同样处理，
+   否则酒馆左右滑一下 `syncSwipeToMes` 又把标签写回来（小海螺 2.9.2 踩过同一个坑）。
+2. 元数据里摘掉这条标签、重排 ordinal；一条不剩就把 `extra.stImageAtelier` 整个删掉。
+3. `renderer.removeCard()` 把卡片摘掉并清空壳；`store.removeTag()` 清内存状态。
+4. `compat.save()` 落盘，再走一遍 `processMessage` 刷新来源缓存，免得 1.5 秒扫描把它当成新来源。
+
+生成中的卡片不给删除按钮（先取消），已出图的仍走画廊删除——那边有墓碑和文件清理，这里不重复做。
+
+**测试**　`tag-removal.test.js` 8 项（楼尾 / 夹中间 / 同行 / 多标签只删一个 / ordinal 错位兜底 /
+swipes 同步 / 找不到不动 / 只剩元数据）、`card.test.js` 2 项、`remount-after-edit.test.js` 1 项。
+全套 92 项通过。
+
