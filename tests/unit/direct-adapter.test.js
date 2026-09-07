@@ -120,7 +120,7 @@ test('上游内容审核拒绝显示针对性提示', async t => {
     fetchJson('https://api.example.com/v1/images/generations', {}, 1000),
     error => error.code === 'UPSTREAM_HTTP_ERROR'
       && /内容审核拒绝/.test(error.message)
-      && !/关闭 size/.test(error.message),
+      && !/不发送/.test(error.message),
   );
 });
 

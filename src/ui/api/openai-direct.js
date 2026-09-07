@@ -149,7 +149,7 @@ function mapStatus(status, bodyText) {
     : moderationRejected
       ? '；提示词被上游内容审核拒绝，请减少强迫、暴力、露骨或高风险内容后重试'
       : status === 400
-        ? '；若上游提示参数不支持，可在“高级设置”关闭 size、quality 或 n'
+        ? '；若上游提示参数不支持，可把「默认尺寸 / 默认质量 / 默认数量」改成「不发送」'
         : '';
   return new DirectError(
     'UPSTREAM_HTTP_ERROR',
