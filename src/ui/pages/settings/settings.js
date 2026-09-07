@@ -184,6 +184,11 @@ export function createToolPanel({ api, store }) {
   const sendSize = input('checkbox');
   const sendQuality = input('checkbox');
   const sendN = input('checkbox');
+  const responseFormat = select([
+    ['b64_json', 'b64_json（内嵌返回，推荐）'],
+    ['url', 'url（图床地址，需图床允许 CORS）'],
+    ['', '不发送（由上游决定）'],
+  ]);
 
   const novelAiBaseUrl = input('url');
   novelAiBaseUrl.placeholder = '例如：https://中转站/api（填 /api/v1 也会自动兼容）';
@@ -480,6 +485,7 @@ export function createToolPanel({ api, store }) {
     sendSize.checked = preset.sendSize !== false;
     sendQuality.checked = preset.sendQuality !== false;
     sendN.checked = preset.sendN !== false;
+    setSelectValue(responseFormat, preset.responseFormat ?? 'b64_json');
     apiKey.value = '';
     apiKey.placeholder = preset.hasApiKey
       ? `当前预设已保存：${preset.apiKeyMask}`
@@ -523,6 +529,7 @@ export function createToolPanel({ api, store }) {
       sendSize: sendSize.checked,
       sendQuality: sendQuality.checked,
       sendN: sendN.checked,
+      responseFormat: responseFormat.value,
       extraBody: parseExtraBody(),
     });
     apiKey.value = '';
@@ -994,6 +1001,7 @@ export function createToolPanel({ api, store }) {
     field('模型列表路径', modelsPath),
     field('生图路径', generationPath),
     field('超时（秒）', timeout),
+    field('图片返回格式', responseFormat),
     field('额外请求参数 JSON', extraBody),
     warning,
   );
