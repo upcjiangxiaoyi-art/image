@@ -89,21 +89,21 @@ class GalleryService {
         keptCount: selection.availableCount,
         byAgeCount: 0,
         byCountCount: 0,
-        deletedResultIds: [],
+        removedResultIds: [],
       };
     }
 
-    const deletedResultIds = [];
+    const removedResultIds = [];
     for (const result of selection.candidates) {
       try {
         await this.storage.remove(result.localRelativePath);
-        deletedResultIds.push(result.resultId);
+        removedResultIds.push(result.resultId);
       } catch (error) {
         console.warn('[Image Atelier] 自动清理图片失败', result.resultId, error);
       }
     }
-    if (deletedResultIds.length) {
-      const deleted = new Set(deletedResultIds);
+    if (removedResultIds.length) {
+      const deleted = new Set(removedResultIds);
       const timestamp = new Date().toISOString();
       await this.metadata.transaction(index => {
         const affectedTags = new Set();
@@ -132,12 +132,12 @@ class GalleryService {
     return {
       enabled: true,
       candidateCount: selection.candidates.length,
-      deletedCount: deletedResultIds.length,
-      failedCount: selection.candidates.length - deletedResultIds.length,
-      keptCount: selection.availableCount - deletedResultIds.length,
+      deletedCount: removedResultIds.length,
+      failedCount: selection.candidates.length - removedResultIds.length,
+      keptCount: selection.availableCount - removedResultIds.length,
       byAgeCount: selection.byAgeCount,
       byCountCount: selection.byCountCount,
-      deletedResultIds,
+      removedResultIds,
     };
   }
 }

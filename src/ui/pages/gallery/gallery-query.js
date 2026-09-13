@@ -16,12 +16,11 @@ export function normalizeGalleryItem(value = {}) {
 
 export function gallerySearchText(value) {
   const item = normalizeGalleryItem(value);
+  /* 只存一份提示词之后，搜索按 promptSnapshot + 画师串各自匹配，
+     等价于以前对拼接后的 resolvedPrompt 搜索。 */
   return [
     item.promptSnapshot,
-    item.prompt,
-    item.resolvedPrompt,
     item.negativePromptSnapshot,
-    item.resolvedNegativePrompt,
     item.apiModel,
     item.presetNameSnapshot,
     item.artistPresetNameSnapshot,

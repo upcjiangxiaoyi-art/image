@@ -26,12 +26,14 @@
  *
  * @typedef {object} ResultRecord
  * @property {string} resultId
- * @property {string} promptSnapshot 实际使用的基础提示词；旧记录回退到 prompt/resolvedPrompt
- * @property {string|undefined} negativePromptSnapshot NovelAI 实际使用的基础负面提示词
+ * @property {string} promptSnapshot 实际使用的基础提示词（唯一落盘的一份；prompt / resolvedPrompt 按需派生）
+ * @property {string} negativePromptSnapshot NovelAI 实际使用的基础负面提示词
  * @property {boolean} favorite 旧记录默认为 false
  * @property {GenerationProvider} provider
+ * @property {'available'} status 画廊索引里只有可用记录；删除即从索引移除，聊天元数据留 tombstoneFields 墓碑
  *
  * GPT API 预设与 NovelAI 画师串预设分别保存在 extension_settings；密钥仅保存在
- * accountStorage。参考图与成本字段仍保留给后续版本。
+ * accountStorage。画廊索引保存在酒馆用户文件 user/files/st-image-atelier-gallery.json，
+ * 不进 settings.json。参考图与成本字段仍保留给后续版本。
  */
 export {};

@@ -321,3 +321,55 @@ swipes 同步 / 找不到不动 / 只剩元数据）、`card.test.js` 2 项、`r
 
 全套 97 项通过。
 
+---
+
+# 1.6.2
+
+改写人：Claude Fable 5.1　｜　事故报告：ripple（江）与 VPS 管理员
+
+## 事故：settings.json 22.9MB，酒馆保存失败、全局设置被重置
+
+根因在 `extension_settings.stImageAtelier.gallery`：926 条元数据，每条把同一段约 4500 字的提示词
+存了三遍（`prompt` / `resolvedPrompt` / `promptSnapshot`），其中 876 条 `status` 是 `deleted`——
+删除只打标、只往 `deletedResultIds` 里追加，元数据从不清理。图片文件那层是干净的，只有元数据层泄漏。
+而 `settings.json` 是酒馆每次 `saveSettingsDebounced()` 整体写盘的文件，画廊住在里面等于每张图都在给它加重。
+
+## 三处改动
+
+1. **删除改真删。** `deleteResult()` 和自动清理都从索引里 `remove()`，文件照删；聊天元数据里那条改成
+   `tombstoneFields()`：只有 resultId / attemptId / tagId / status / deletedAt，不带提示词。
+   墓碑的唯一作用是拦住 `resolveTags()` 把"聊天里可用、画廊里没有"的记录回填进画廊。
+   `deletedResultIds` 整个字段废弃，只在迁移时读一次用于过滤旧数据，然后删掉。
+2. **提示词只存一份。** 留 `promptSnapshot`（实际发出的基础提示词，含临时覆盖）和
+   `negativePromptSnapshot`。`prompt` 是标签原文，需要时从 `tag.prompt` 拿；`resolvedPrompt` 是 NAI
+   拼上画师串和质量标签之后的串，`deriveResultPrompts()` 可以重新拼。`slimGalleryResult()` 负责压缩，
+   聊天元数据里的旧记录读到时 `slimInPlace()` 就地瘦身，下次存档自然变小。
+3. **画廊搬出 settings.json。** 新模块 `src/ui/gallery/gallery-store.js`：索引存成酒馆用户文件
+   `user/files/st-image-atelier-gallery.json`，`POST /api/files/upload` 写（Data Bank 同一接口，
+   覆盖写、原子落盘）、`GET /user/files/<name>?t=` 读，`cache: no-store`。写入串行化：进行中再改动
+   只合并成下一轮写。`ensureGallery()` 首次需要时加载并迁移：旧 `gallery` 里 `status === 'available'`
+   且不在 `deletedResultIds` 里的搬过去、逐条瘦身，**文件写成功之后**才 `delete namespace.gallery`
+   并落盘 settings；写失败则旧数据原样留着，下次重试。`generate()` 开头先 `ensureGallery()`，
+   索引不可用就不扣费，免得图片存下来没人登记。`schemaVersion` 5 → 7（6 是上游 1.6.0 用掉的）。
+
+## 验证「新增一条画廊记录后 settings.json 体积不变」
+
+自动化：`tests/unit/gallery-store.test.js` 最后一条「验证方式」——连续回填 5 条记录，
+每一条之后断言 `JSON.stringify(extensionSettings).length` 与基线逐字节相等；
+`tests/integration/direct-client.test.js` 第一条在真实 `generate()` 前后做同样的断言。
+
+服务器上手动：
+
+```bash
+S=data/<用户>/settings.json
+G=data/<用户>/user/files/st-image-atelier-gallery.json
+stat -c %s "$S"; stat -c %s "$G"        # 生图前
+# 在酒馆里生成一张图，等卡片出图
+stat -c %s "$S"; stat -c %s "$G"        # 生图后：settings 不变，gallery 文件变大
+node scripts/inspect-settings.mjs "$S" "$G"   # 命名空间里应无 gallery / deletedResultIds
+```
+
+浏览器控制台：`Object.keys(SillyTavern.getContext().extensionSettings.stImageAtelier)` 不含 `gallery`。
+
+全套 130 项通过。
+

@@ -1,7 +1,7 @@
 export const MODULE_NAME = 'stImageAtelier';
 export const DISPLAY_NAME = 'Image Atelier';
 export const API_ROOT = '/api/plugins/st-image-atelier';
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7; // 7：画廊元数据搬出 extension_settings，单份提示词，删除即移除
 
 export const ATTEMPT_STATUS = Object.freeze({
   IDLE: 'idle',

@@ -5,6 +5,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DEFAULT_SETTINGS } from '../../src/shared/constants.js';
 import { createDirectApiClient } from '../../src/ui/api/direct-client.js';
+import { createGalleryStore } from '../../src/ui/gallery/gallery-store.js';
+import { createFilesApiMock } from '../mocks/files-api.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -53,11 +55,13 @@ test('全量元数据接口不受旧画廊每页 30 张限制', async () => {
     prompt: `prompt ${index}`,
     createdAt: new Date(Date.parse('2026-09-07T00:00:00.000Z') - index * 1000).toISOString(),
   }));
+  const files = createFilesApiMock();
   const client = createDirectApiClient({
     compat: { chat: () => [], save: async () => {}, headers: () => ({}) },
     extensionSettings: { stImageAtelier: { gallery } },
     saveSettingsDebounced: () => {},
     keyStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+    galleryStore: createGalleryStore({ fetchImpl: files.handle }),
   });
   assert.equal((await client.gallery()).items.length, 30);
   assert.equal((await client.galleryMetadata()).items.length, 35);

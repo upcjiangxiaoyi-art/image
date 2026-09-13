@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.6.2 - 2026-09-13
+
+- 画廊元数据搬出 `settings.json`：改存酒馆用户文件 `user/files/st-image-atelier-gallery.json`（走 `/api/files/upload` 写、`GET /user/files/…` 读），`extension_settings.stImageAtelier` 只保留 settings / presets / artistPresets / novelAi / activePresetId / activeArtistPresetId / schemaVersion。首次读画廊时自动把旧数据搬过去，文件写成功后才从 settings 删除；`schemaVersion` 升到 7。
+- 删除改真删：从索引里移除并删文件，聊天元数据只留一块不含提示词的小墓碑；`deletedResultIds` 字段废弃，迁移时读一次后删掉。
+- 提示词只存一份：记录只保留 `promptSnapshot`（实际发出的基础提示词）与 `negativePromptSnapshot`，`prompt` / `resolvedPrompt` / `resolvedNegativePrompt` / `deletedAt` 不再落盘，需要时按需派生；旧记录（含聊天元数据里的）读到时就地瘦身。
+- 新增 `scripts/inspect-settings.mjs`，在服务器上直接看 settings.json 里命名空间的体积构成和画廊索引文件的健康度。
+- 新增 12 项存储 / 迁移 / 真删 / 体积不变测试，全套 130 项通过。
+
 ## 1.6.1 - 2026-09-12
 
 - 修复画廊批量模式中点击缩略图仍打开原图、导致看起来“选不上”的问题；现在缩略图、文字区和复选框都可选中或取消。

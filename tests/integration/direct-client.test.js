@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import { createDirectApiClient } from '../../src/ui/api/direct-client.js';
+import { createFilesApiMock } from '../mocks/files-api.js';
+import { GALLERY_FILE_NAME } from '../../src/ui/gallery/gallery-store.js';
 import { PNG_BASE64, startMockUpstream } from '../mocks/mock-upstream.js';
 
 function response(status, payload) {
@@ -42,9 +44,12 @@ function storedZip(name, data) {
 test('仓库链接直装模式完成生成、幂等、画廊与删除', async t => {
   const upstream = await startMockUpstream();
   const originalFetch = globalThis.fetch;
+  const files = createFilesApiMock();
   const uploads = new Map();
   let deleteCalls = 0;
   globalThis.fetch = async (url, options = {}) => {
+    const filesResponse = await files.handle(url, options);
+    if (filesResponse) return filesResponse;
     if (url === '/api/images/upload') {
       const body = JSON.parse(options.body);
       const path = `user/images/st-image-atelier/${body.filename}.${body.format}`;
@@ -123,12 +128,16 @@ test('仓库链接直装模式完成生成、幂等、画廊与删除', async t 
     tagOrdinal: 0,
     parameters: { count: 1, ratio: 'square' },
   };
+  const settingsBytesBefore = JSON.stringify(extensionSettings).length;
   const attempt = await client.generate(input);
   assert.equal(attempt.status, 'succeeded');
   assert.equal(attempt.resultIds.length, 1);
   assert.equal(uploads.size, 1);
   assert.ok(chatSaves >= 4);
   assert.ok(settingsSaves >= 3);
+  assert.equal(JSON.stringify(extensionSettings).length, settingsBytesBefore, '新增画廊记录后 settings 体积不变');
+  assert.equal('gallery' in extensionSettings.stImageAtelier, false, '画廊不进 extension_settings');
+  assert.equal(files.read(GALLERY_FILE_NAME).items.length, 1, '画廊记录落在独立文件里');
 
   const duplicate = await client.generate(input);
   assert.equal(duplicate.attemptId, attemptId);
@@ -160,7 +169,12 @@ test('仓库链接直装模式完成生成、幂等、画廊与删除', async t 
   await client.deleteResult(state.results[0].resultId);
   assert.equal(deleteCalls, 1);
   assert.equal((await client.gallery()).items.length, 0);
+  assert.equal(files.read(GALLERY_FILE_NAME).items.length, 0, '删除是真删，索引文件里不留记录');
+  assert.equal('deletedResultIds' in extensionSettings.stImageAtelier, false);
   assert.equal((await client.resolveTags([tagId]))[0].tag.autoSuppressed, true);
+  const tombstone = message.extra.stImageAtelier.tags[0].results[0];
+  assert.equal(tombstone.status, 'deleted');
+  assert.equal('promptSnapshot' in tombstone, false, '聊天墓碑不带提示词');
 
   const serializedSettings = JSON.stringify(extensionSettings);
   assert.doesNotMatch(serializedSettings, /sk-test/);
@@ -174,7 +188,10 @@ test('仓库链接直装模式完成生成、幂等、画廊与删除', async t 
 test('保存触发消息重绘时不会把当前自动任务误判为 interrupted', async t => {
   const upstream = await startMockUpstream();
   const originalFetch = globalThis.fetch;
+  const files = createFilesApiMock();
   globalThis.fetch = async (url, options = {}) => {
+    const filesResponse = await files.handle(url, options);
+    if (filesResponse) return filesResponse;
     if (url === '/api/images/upload') {
       const body = JSON.parse(options.body);
       return response(200, { path: `user/images/st-image-atelier/${body.filename}.${body.format}` });
@@ -269,8 +286,11 @@ test('保存触发消息重绘时不会把当前自动任务误判为 interrupte
 
 test('GPT 临时提示词覆盖只用于本次请求，保存快照且不改原标签，并可持久收藏', async t => {
   const originalFetch = globalThis.fetch;
+  const files = createFilesApiMock();
   const requestBodies = [];
   globalThis.fetch = async (url, options = {}) => {
+    const filesResponse = await files.handle(url, options);
+    if (filesResponse) return filesResponse;
     if (url === 'https://api.example.com/v1/images/generations') {
       requestBodies.push(JSON.parse(options.body));
       if (requestBodies.length === 1) {
@@ -347,7 +367,12 @@ test('GPT 临时提示词覆盖只用于本次请求，保存快照且不改原�
 
   await client.setFavorite(result.resultId, true);
   assert.equal((await client.galleryMetadata()).items[0].favorite, true);
-  assert.equal(extensionSettings.stImageAtelier.gallery[0].favorite, true);
+  assert.equal(extensionSettings.stImageAtelier.gallery, undefined);
+  const stored = files.read(GALLERY_FILE_NAME).items[0];
+  assert.equal(stored.favorite, true);
+  assert.equal(stored.promptSnapshot, 'temporary changed prompt');
+  assert.equal('prompt' in stored, false, '提示词只存一份');
+  assert.equal('resolvedPrompt' in stored, false, '提示词只存一份');
   const reloaded = createDirectApiClient(options);
   assert.equal((await reloaded.galleryMetadata()).items[0].favorite, true);
 });
@@ -412,10 +437,13 @@ test('旧版单预设迁移为多预设，且每个预设独立保存密钥', as
 
 test('NovelAI 引擎使用独立 Token、画师串预设并保存生成结果', async t => {
   const originalFetch = globalThis.fetch;
+  const files = createFilesApiMock();
   const png = Buffer.from(PNG_BASE64, 'base64');
   const zip = storedZip('image_0.png', png);
   let novelAiRequest;
   globalThis.fetch = async (url, options = {}) => {
+    const filesResponse = await files.handle(url, options);
+    if (filesResponse) return filesResponse;
     if (url === 'https://nai.example/ai/generate-image') {
       novelAiRequest = { options, body: JSON.parse(options.body) };
       return new Response(zip, {
@@ -526,6 +554,7 @@ test('NovelAI 引擎使用独立 Token、画师串预设并保存生成结果', 
 
 test('直连画廊按时间或数量自动清理，合并并发检查且同步消息墓碑', async t => {
   const originalFetch = globalThis.fetch;
+  const files = createFilesApiMock();
   const now = Date.now();
   const tagId = crypto.randomUUID();
   const values = [
@@ -545,6 +574,8 @@ test('直连画廊按时间或数量自动清理，合并并发检查且同步�
   }));
   const deletedPaths = [];
   globalThis.fetch = async (url, options = {}) => {
+    const filesResponse = await files.handle(url, options);
+    if (filesResponse) return filesResponse;
     assert.equal(url, '/api/images/delete');
     deletedPaths.push(JSON.parse(options.body).path);
     return response(200, {});
@@ -592,7 +623,9 @@ test('直连画廊按时间或数量自动清理，合并并发检查且同步�
   assert.equal(first.byCountCount, 2);
   assert.deepEqual(deletedPaths, values.slice(0, 2).map(item => item.localRelativePath));
   assert.equal(chatSaves, 1);
-  assert.equal(settingsSaves, 1);
+  assert.equal(settingsSaves, 1, '只有把旧画廊搬出 settings 那一次落盘');
+  assert.equal(extensionSettings.stImageAtelier.gallery, undefined, '旧画廊已从 settings 搬走');
+  assert.equal(files.read(GALLERY_FILE_NAME).items.length, 2, '索引文件里只剩两条活的');
   assert.equal(tag.autoSuppressed, true);
   assert.deepEqual(tag.resultIds, values.slice(2).map(item => item.resultId));
   assert.equal(tag.latestResultId, values.at(-1).resultId);
