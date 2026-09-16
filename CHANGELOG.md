@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.6.3 - 2026-09-16
+
+- 修复楼底备用生图卡片的 DOM 自循环：找不到提示词原位置时保留现有卡片与列表，不再反复拆装触发自身观察器。旧行为即使关闭自动生图也会持续查询标签状态并重跑挂载。
+- 提示词原位置恢复后仍可把对应卡片迁回，复用原卡片、保留交互状态，并清理空的备用列表；多卡片可分别迁回。
+- 新增真实 MutationObserver 回归，覆盖静止备用卡片、原位置恢复、IPE 楼内账本追加后的稳定性。此修复消除已复现的循环，设备端偶发白屏是否解决仍需实测。
+
 ## 1.6.2 - 2026-09-13
 
 - 画廊元数据搬出 `settings.json`：改存酒馆用户文件 `user/files/st-image-atelier-gallery.json`（走 `/api/files/upload` 写、`GET /user/files/…` 读），`extension_settings.stImageAtelier` 只保留 settings / presets / artistPresets / novelAi / activePresetId / activeArtistPresetId / schemaVersion。首次读画廊时自动把旧数据搬过去，文件写成功后才从 settings 删除；`schemaVersion` 升到 7。

@@ -259,7 +259,8 @@ function comparableText(value) {
 }
 
 function hasCard(container, tagId) {
-  return Boolean(container.querySelector(`.stia-card[data-tag-id="${CSS.escape(tagId)}"]`));
+  const card = container.querySelector(`.stia-card[data-tag-id="${CSS.escape(tagId)}"]`);
+  return Boolean(card && !card.closest('.stia-card-list'));
 }
 
 function orphanDrawElements(container) {
@@ -444,6 +445,13 @@ export function createMessageRenderer(dependencies) {
        等重建完成再由 DOM 监听重新挂载。 */
     if (container.querySelector('textarea')) return { mounted: 0, fallback: 0 };
 
+    function finish(result) {
+      for (const list of container.querySelectorAll(':scope > .stia-card-list')) {
+        if (!list.childNodes.length) list.remove();
+      }
+      return result;
+    }
+
     const activeTagIds = new Set(tags.map(tag => tag.tagId));
     for (const card of [...container.querySelectorAll('.stia-card[data-tag-id]')]) {
       const tagId = card.getAttribute('data-tag-id');
@@ -452,16 +460,22 @@ export function createMessageRenderer(dependencies) {
       cards.delete(tagId);
     }
 
-    /* 楼底 fallback 里的卡片不算"挂好了"：每轮都先摘下来，让它有机会回到原地
-       （比如上一轮 DOM 还没重建完、提示词原文还没回来时它才被迫落到楼底）。
-       仍然找不到锚点时原样放回去，不重建元素。 */
-    const detached = new Map();
+    /* 楼底卡片仍可在提示词原位置恢复时迁回，但找不到新位置时保持原节点不动。
+       先拆再装会触发正文观察器 → 再 mount → 再拆装，即使关闭自动生图也一直循环。 */
+    const fallbackCards = new Map();
     for (const list of [...container.querySelectorAll(':scope > .stia-card-list')]) {
       for (const card of [...list.querySelectorAll('.stia-card[data-tag-id]')]) {
-        detached.set(card.getAttribute('data-tag-id'), card);
-        card.remove();
+        fallbackCards.set(card.getAttribute('data-tag-id'), card);
       }
-      list.remove();
+    }
+
+    function cardFor(tag) {
+      const previous = fallbackCards.get(tag.tagId);
+      const card = cards.get(tag.tagId);
+      if (previous && card?.root === previous) return card;
+      // DOM 中有孤儿卡片、内存中没有对应实例时，创建受管理的卡片替换它。
+      previous?.remove();
+      return makeCard(tag);
     }
 
     cleanupExistingSources(container, tags);
@@ -469,7 +483,7 @@ export function createMessageRenderer(dependencies) {
     const missing = tags
       .map((tag, index) => ({ tag, index }))
       .filter(({ tag }) => !hasCard(container, tag.tagId));
-    if (!missing.length) return { mounted: 0, fallback: 0 };
+    if (!missing.length) return finish({ mounted: 0, fallback: 0 });
 
     let unresolved = missing;
     let mounted = 0;
@@ -478,12 +492,12 @@ export function createMessageRenderer(dependencies) {
       const anchored = unresolved.slice(0, drawElements.length);
       for (const [{ tag }, anchor] of anchored.map((item, index) => [item, drawElements[index]])) {
         if (!anchor) continue;
-        const card = makeCard(tag);
+        const card = cardFor(tag);
         consumeDrawElement(container, anchor, tag, card.root);
         mounted += 1;
       }
       unresolved = unresolved.slice(anchored.length);
-      if (!unresolved.length) return { mounted, fallback: 0 };
+      if (!unresolved.length) return finish({ mounted, fallback: 0 });
     }
 
     const ranges = textRanges(container);
@@ -495,7 +509,7 @@ export function createMessageRenderer(dependencies) {
       }))
       .filter(item => item.range);
     for (const { tag, range, raw } of replacements.reverse()) {
-      const card = makeCard(tag);
+      const card = cardFor(tag);
       replaceRange(range, card.root, raw, container);
     }
 
@@ -503,7 +517,7 @@ export function createMessageRenderer(dependencies) {
     const mountedIds = new Set(replacements.map(item => item.tag.tagId));
     unresolved = unresolved.filter(({ tag }) => !mountedIds.has(tag.tagId)
       && !hasCard(container, tag.tagId));
-    if (!unresolved.length) return { mounted, fallback: 0 };
+    if (!unresolved.length) return finish({ mounted, fallback: 0 });
 
     const promptMatches = promptRanges(container, unresolved.map(item => item.tag));
     const promptReplacements = unresolved
@@ -514,27 +528,26 @@ export function createMessageRenderer(dependencies) {
       }))
       .filter(item => item.range);
     for (const { tag, range, raw } of promptReplacements.reverse()) {
-      const card = makeCard(tag);
+      const card = cardFor(tag);
       replaceRange(range, card.root, raw, container);
     }
     mounted += promptReplacements.length;
     const promptMountedIds = new Set(promptReplacements.map(item => item.tag.tagId));
     unresolved = unresolved.filter(({ tag }) => !promptMountedIds.has(tag.tagId)
       && !hasCard(container, tag.tagId));
-    if (!unresolved.length) return { mounted, fallback: 0 };
+    if (!unresolved.length) return finish({ mounted, fallback: 0 });
 
-    const fallback = document.createElement('div');
-    fallback.className = 'stia-card-list';
-    container.append(fallback);
-    for (const { tag } of unresolved) {
-      const previous = detached.get(tag.tagId);
-      if (previous && cards.has(tag.tagId)) {
-        fallback.append(previous);
-      } else {
-        fallback.append(makeCard(tag).root);
-      }
+    let fallback = container.querySelector(':scope > .stia-card-list');
+    if (!fallback) {
+      fallback = document.createElement('div');
+      fallback.className = 'stia-card-list';
+      container.append(fallback);
     }
-    return { mounted, fallback: unresolved.length };
+    for (const { tag } of unresolved) {
+      const card = cardFor(tag);
+      if (card.root.parentElement !== fallback) fallback.append(card.root);
+    }
+    return finish({ mounted, fallback: unresolved.length });
   }
 
   function renderTag(tagId) {
