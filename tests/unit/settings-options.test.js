@@ -9,6 +9,8 @@ test('常用尺寸选项包含 512x768，且使用接口兼容格式', () => {
   assert.ok(values.includes('768x512'));
   assert.ok(values.includes('576x1024'));
   assert.ok(values.includes('1024x576'));
+  assert.ok(values.includes('2400x3200'), '超大竖图');
+  assert.ok(values.includes('3200x2400'), '超大横图配对');
   assert.ok(values.length >= 20);
   for (const value of values.filter(item => item !== 'auto')) {
     assert.match(value, /^\d+x\d+$/);
