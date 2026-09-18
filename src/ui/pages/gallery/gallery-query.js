@@ -1,26 +1,34 @@
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 export function normalizeGalleryItem(value = {}) {
+  const {
+    promptSnapshot,
+    resolvedPrompt,
+    negativePromptSnapshot,
+    resolvedNegativePrompt,
+    ...rest
+  } = value;
   const provider = value.provider === 'novelai'
     || value.presetId === 'novelai'
     || value.artistPresetId
     ? 'novelai'
     : 'openai';
   return {
-    ...value,
+    ...rest,
     provider,
     favorite: value.favorite === true,
-    promptSnapshot: String(value.promptSnapshot || value.prompt || value.resolvedPrompt || ''),
+    prompt: String(promptSnapshot || value.prompt || resolvedPrompt || ''),
+    negativePrompt: String(
+      negativePromptSnapshot || value.negativePrompt || resolvedNegativePrompt || '',
+    ),
   };
 }
 
 export function gallerySearchText(value) {
   const item = normalizeGalleryItem(value);
-  /* 只存一份提示词之后，搜索按 promptSnapshot + 画师串各自匹配，
-     等价于以前对拼接后的 resolvedPrompt 搜索。 */
   return [
-    item.promptSnapshot,
-    item.negativePromptSnapshot,
+    item.prompt,
+    item.negativePrompt,
     item.apiModel,
     item.presetNameSnapshot,
     item.artistPresetNameSnapshot,

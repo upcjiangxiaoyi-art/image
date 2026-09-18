@@ -1,18 +1,37 @@
 # Changelog
 
-## 1.6.3 - 2026-09-16
+## 1.6.5 - 2026-09-18
+
+- 合流：并入上游 1.6.2（画廊独立文件，以上游实现为准）、1.6.3（中文名「画笺」）、1.6.4（NAI V5 质量词 / 负面预设，`schemaVersion` 8），同时保留本仓库 1.6.3 的楼底卡片观察器自循环修复。
+- 兼容本仓库 1.6.2（9-13）已经迁移出的画廊索引文件：同名文件的 `{ items: [...] }` 数组格式与 `promptSnapshot` / `negativePromptSnapshot` 字段都能读入并自动归一，不会被空文档覆盖丢失。
+- 聊天元数据里仍保留整份记录的旧标签，在清理前会把"可用但索引里没有"的图片补回索引，避免升级后卡片上的图消失。
+- `scripts/inspect-settings.mjs` 改为按上游的索引格式检查。
+
+## 1.6.3-fork - 2026-09-16
 
 - 修复楼底备用生图卡片的 DOM 自循环：找不到提示词原位置时保留现有卡片与列表，不再反复拆装触发自身观察器。旧行为即使关闭自动生图也会持续查询标签状态并重跑挂载。
 - 提示词原位置恢复后仍可把对应卡片迁回，复用原卡片、保留交互状态，并清理空的备用列表；多卡片可分别迁回。
-- 新增真实 MutationObserver 回归，覆盖静止备用卡片、原位置恢复、IPE 楼内账本追加后的稳定性。此修复消除已复现的循环，设备端偶发白屏是否解决仍需实测。
+- 新增真实 MutationObserver 回归，覆盖静止备用卡片、原位置恢复、IPE 楼内账本追加后的稳定性。
 
-## 1.6.2 - 2026-09-13
+## 1.6.4 - 2026-09-15
 
-- 画廊元数据搬出 `settings.json`：改存酒馆用户文件 `user/files/st-image-atelier-gallery.json`（走 `/api/files/upload` 写、`GET /user/files/…` 读），`extension_settings.stImageAtelier` 只保留 settings / presets / artistPresets / novelAi / activePresetId / activeArtistPresetId / schemaVersion。首次读画廊时自动把旧数据搬过去，文件写成功后才从 settings 删除；`schemaVersion` 升到 7。
-- 删除改真删：从索引里移除并删文件，聊天元数据只留一块不含提示词的小墓碑；`deletedResultIds` 字段废弃，迁移时读一次后删掉。
-- 提示词只存一份：记录只保留 `promptSnapshot`（实际发出的基础提示词）与 `negativePromptSnapshot`，`prompt` / `resolvedPrompt` / `resolvedNegativePrompt` / `deletedAt` 不再落盘，需要时按需派生；旧记录（含聊天元数据里的）读到时就地瘦身。
-- 新增 `scripts/inspect-settings.mjs`，在服务器上直接看 settings.json 里命名空间的体积构成和画廊索引文件的健康度。
-- 新增 12 项存储 / 迁移 / 真删 / 体积不变测试，全套 130 项通过。
+- 仅在选择 NAI Diffusion V5 Full / Curated 时显示 V5 专属质量词预设：关闭、Light、Standard；实际提示词与请求中的质量档保持一致。
+- 新增 V5 专属负面预设：无、Light、Heavy、Human Focus，并在客户端明确合并到实际负面提示词，兼容原生站与中转站且避免重复套用。
+- V4.5 及更早模型继续使用原有质量标签开关，不受 V5 新设置影响；旧配置会自动迁移到安全默认值。
+- `schemaVersion` 升至 8。
+
+## 1.6.3 - 2026-09-14
+
+- 插件正式启用中文名「画笺」；扩展列表、魔法棒菜单、工具窗口、辅助标签、分享提示和可选 Server Plugin 均统一使用中文显示名。
+- 保留 `st-image-atelier`、`stImageAtelier` 等内部标识和数据路径，确保老用户原有设置、画廊、画师串与自动更新链路无缝继承。
+
+## 1.6.2 - 2026-09-14
+
+- 修复直连画廊元数据持续撑大 `settings.json`：画廊现独立保存为当前 ST 用户文件 `st-image-atelier-gallery.json`，`extension_settings.stImageAtelier` 只保留真正的配置项。
+- `schemaVersion` 升至 7；首次加载会把旧画廊中的可用记录安全迁移到独立文件，成功后移除旧 `gallery` 与删除墓碑字段。迁移可重试，不会先删后搬。
+- 画廊记录的正面提示词统一只保存为 `prompt`，旧 `promptSnapshot` / `resolvedPrompt` 自动合并；负面提示词同样归一为 `negativePrompt`。
+- 手动删除和自动清理改为真正移除元数据，不再累积 `deleted` 记录或结果 ID 墓碑；聊天卡片只保存结果 ID，不再复制整份画廊记录。
+- 新增回归验证：模拟迁移 50 条三份长提示词记录后再生成 1 张，断言 `extension_settings` 序列化内容逐字不变。
 
 ## 1.6.1 - 2026-09-12
 

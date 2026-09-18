@@ -5,13 +5,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DEFAULT_SETTINGS } from '../../src/shared/constants.js';
 import { createDirectApiClient } from '../../src/ui/api/direct-client.js';
-import { createGalleryStore } from '../../src/ui/gallery/gallery-store.js';
-import { createFilesApiMock } from '../mocks/files-api.js';
+import { createMemoryGalleryMetadataStore } from '../../src/ui/api/gallery-metadata-store.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 test('扩展主页和自动更新固定指向目标仓库', async () => {
   const manifest = JSON.parse(await fs.readFile(path.join(root, 'manifest.json'), 'utf8'));
+  assert.equal(manifest.display_name, '画笺');
   assert.equal(manifest.homePage, 'https://github.com/phyllis-0612/st-image-atelier');
   assert.equal(manifest.auto_update, true);
 });
@@ -28,10 +28,12 @@ test('两个新开关默认关闭且设置界面提供中文入口', async () =>
 
 test('两个新开关在直连设置中持久化，旧设置自动补默认值', async () => {
   const extensionSettings = { stImageAtelier: { settings: { enabled: true } } };
+  const galleryStore = createMemoryGalleryMetadataStore();
   const create = () => createDirectApiClient({
     compat: { chat: () => [], save: async () => {}, headers: () => ({}) },
     extensionSettings,
     saveSettingsDebounced: () => {},
+    galleryStore,
     keyStorage: { getItem: () => null, setItem() {}, removeItem() {} },
   });
   let client = create();
@@ -55,13 +57,12 @@ test('全量元数据接口不受旧画廊每页 30 张限制', async () => {
     prompt: `prompt ${index}`,
     createdAt: new Date(Date.parse('2026-09-07T00:00:00.000Z') - index * 1000).toISOString(),
   }));
-  const files = createFilesApiMock();
   const client = createDirectApiClient({
     compat: { chat: () => [], save: async () => {}, headers: () => ({}) },
     extensionSettings: { stImageAtelier: { gallery } },
     saveSettingsDebounced: () => {},
+    galleryStore: createMemoryGalleryMetadataStore(),
     keyStorage: { getItem: () => null, setItem() {}, removeItem() {} },
-    galleryStore: createGalleryStore({ fetchImpl: files.handle }),
   });
   assert.equal((await client.gallery()).items.length, 30);
   assert.equal((await client.galleryMetadata()).items.length, 35);

@@ -16,18 +16,30 @@ import {
 } from './openai-direct.js';
 import { generateNovelAiImages } from './novelai-direct.js';
 import {
+  createSillyTavernGalleryMetadataStore,
+  normalizeGalleryRecord,
+} from './gallery-metadata-store.js';
+import {
   createArtistPresetExport,
   parseArtistPresetImport,
 } from './artist-preset-transfer.js';
 import { normalizeRetentionSettings, selectCleanupCandidates } from '../gallery/retention.js';
 import { normalizeThemeMode } from '../theme/theme.js';
-import { createGalleryStore, slimGalleryResult, tombstoneFields } from '../gallery/gallery-store.js';
 
 const LEGACY_API_KEY_STORAGE = 'stImageAtelier.directApiKey.v1';
 const API_KEY_STORAGE_PREFIX = 'stImageAtelier.directApiKey.v2:';
 const NOVELAI_KEY_STORAGE = 'stImageAtelier.novelAiApiKey.v1';
 const ACTIVE_STATUSES = new Set(['queued', 'generating', 'downloading', 'saving']);
 const TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'interrupted', 'cancelled']);
+const NAMESPACE_KEYS = new Set([
+  'settings',
+  'presets',
+  'artistPresets',
+  'novelAi',
+  'activePresetId',
+  'activeArtistPresetId',
+  'schemaVersion',
+]);
 
 function clone(value) {
   return typeof structuredClone === 'function'
@@ -64,7 +76,7 @@ function normalizePreset(value = {}) {
 }
 
 function normalizeNovelAiConfig(value = {}) {
-  return {
+  const config = {
     ...clone(DEFAULT_NOVELAI_CONFIG),
     ...value,
     ratioMap: {
@@ -72,6 +84,15 @@ function normalizeNovelAiConfig(value = {}) {
       ...(value.ratioMap || {}),
     },
   };
+  const qualityPreset = String(value.v5QualityPreset || '');
+  config.v5QualityPreset = ['none', 'light', 'standard'].includes(qualityPreset)
+    ? qualityPreset
+    : value.qualityTags === false ? 'none' : 'standard';
+  const ucPreset = String(value.v5UcPreset || '');
+  config.v5UcPreset = ['none', 'light', 'heavy', 'human_focus'].includes(ucPreset)
+    ? ucPreset
+    : 'none';
+  return config;
 }
 
 function normalizeArtistPreset(value = {}) {
@@ -109,31 +130,13 @@ function normalizeSettings(value = {}) {
 }
 
 export function normalizeGalleryResult(value = {}) {
-  return slimGalleryResult(value);
-}
-
-/* 就地瘦身：聊天元数据里的旧记录还带着三份提示词，读到时顺手改成单份，下次 compat.save() 落盘。 */
-function slimInPlace(target) {
-  const slim = slimGalleryResult(target);
-  let changed = false;
-  for (const key of Object.keys(target)) {
-    if (!(key in slim)) {
-      delete target[key];
-      changed = true;
-    }
-  }
-  for (const [key, value] of Object.entries(slim)) {
-    if (target[key] !== value) {
-      target[key] = value;
-      changed = true;
-    }
-  }
-  return changed;
+  return normalizeGalleryRecord(value);
 }
 
 function ensureNamespace(extensionSettings) {
   const previous = extensionSettings[MODULE_NAME];
   const namespace = previous && typeof previous === 'object' ? previous : {};
+  const legacyGallery = Array.isArray(namespace.gallery) ? clone(namespace.gallery) : [];
   namespace.settings = normalizeSettings(namespace.settings);
   const sourcePresets = Array.isArray(namespace.presets) && namespace.presets.length
     ? namespace.presets
@@ -164,11 +167,8 @@ function ensureNamespace(extensionSettings) {
     .some(item => item.id === namespace.activeArtistPresetId)
     ? namespace.activeArtistPresetId
     : namespace.artistPresets[0].id;
-  /* 画廊不再住在 extension_settings 里。旧版留下的 gallery / deletedResultIds 原样放着，
-     等 initGallery() 迁到独立文件成功之后再删。 */
-  namespace.schemaVersion = SCHEMA_VERSION;
   extensionSettings[MODULE_NAME] = namespace;
-  return namespace;
+  return { namespace, legacyGallery };
 }
 
 function maskKey(value) {
@@ -196,66 +196,15 @@ export function createDirectApiClient({
   extensionSettings,
   saveSettingsDebounced,
   keyStorage = globalThis.localStorage,
-  galleryStore = null,
+  galleryStore,
 }) {
-  const namespace = ensureNamespace(extensionSettings);
+  const { namespace, legacyGallery } = ensureNamespace(extensionSettings);
+  const metadataStore = galleryStore || createSillyTavernGalleryMetadataStore(compat);
   const controllers = new Map();
   const resultIndex = new Map();
   const memoryKeys = new Map();
   let cleanupPromise = null;
-  const store = galleryStore || createGalleryStore({ headers: () => compat.headers() });
-  let galleryPromise = null;
-
-  /* 画廊索引：首次需要时从用户文件读进来；文件不存在就从空开始。
-     旧版 extension_settings 里的 gallery 一并搬过去：只搬 status 为 available 的，
-     每条压成单份提示词；文件写成功之后才把 settings 里那份删掉并落盘。
-     任何一步失败都不删旧数据，下次调用重试。 */
-  async function initGallery() {
-    const loaded = await store.load();
-    const legacy = Array.isArray(namespace.gallery) ? namespace.gallery : [];
-    const legacyDeleted = new Set(Array.isArray(namespace.deletedResultIds) ? namespace.deletedResultIds : []);
-    const hasLegacy = 'gallery' in namespace || 'deletedResultIds' in namespace;
-    let changed = false;
-
-    const known = new Set(loaded.items.map(item => item.resultId));
-    const merged = loaded.items.map(item => {
-      const slim = slimGalleryResult(item);
-      if (JSON.stringify(slim) !== JSON.stringify(item)) changed = true;
-      return slim;
-    });
-    for (const value of legacy) {
-      if (!value?.resultId || known.has(value.resultId)) continue;
-      if (value.status !== 'available' || legacyDeleted.has(value.resultId)) continue;
-      merged.push(slimGalleryResult(value));
-      known.add(value.resultId);
-      changed = true;
-    }
-    store.replace(merged);
-    for (const item of merged) resultIndex.set(item.resultId, item);
-    if (changed || (loaded.missing && merged.length)) await store.persist();
-    if (hasLegacy) {
-      delete namespace.gallery;
-      delete namespace.deletedResultIds;
-      await savePreferences();
-    }
-    return merged;
-  }
-
-  function ensureGallery() {
-    if (!galleryPromise) {
-      galleryPromise = initGallery().catch(error => {
-        galleryPromise = null;
-        throw new DirectError(
-          'LOCAL_SAVE_FAILED',
-          error?.message || String(error),
-          0,
-          true,
-          `画廊索引文件不可用：${error?.message || error}`,
-        );
-      });
-    }
-    return galleryPromise;
-  }
+  let galleryReadyPromise = null;
 
   function presetById(presetId = namespace.activePresetId) {
     return namespace.presets.find(item => item.id === presetId) || null;
@@ -335,7 +284,31 @@ export function createDirectApiClient({
     };
   }
 
+  async function ensureGalleryReady() {
+    if (galleryReadyPromise) return galleryReadyPromise;
+    galleryReadyPromise = (async () => {
+      await metadataStore.initialize({
+        legacyItems: legacyGallery,
+      });
+      resultIndex.clear();
+      for (const result of metadataStore.values()) resultIndex.set(result.resultId, result);
+      for (const key of Object.keys(namespace)) {
+        if (!NAMESPACE_KEYS.has(key)) delete namespace[key];
+      }
+      namespace.schemaVersion = SCHEMA_VERSION;
+      await Promise.resolve(saveSettingsDebounced?.());
+      return metadataStore;
+    })();
+    try {
+      return await galleryReadyPromise;
+    } catch (error) {
+      galleryReadyPromise = null;
+      throw error;
+    }
+  }
+
   async function savePreferences() {
+    await ensureGalleryReady();
     await Promise.resolve(saveSettingsDebounced?.());
   }
 
@@ -351,12 +324,9 @@ export function createDirectApiClient({
   function stateOf(tagId) {
     const found = findTag(tagId);
     if (!found) return { tagId, tag: null, attempts: [], results: [] };
-    const results = (found.tag.results || []).map(result => {
-      slimInPlace(result);
-      resultIndex.set(result.resultId, result);
-      return result;
-    });
-    const resultIds = results.filter(result => result.status === 'available').map(result => result.resultId);
+    const resultIds = [...new Set(found.tag.resultIds || [])]
+      .filter(resultId => resultIndex.has(resultId));
+    const results = resultIds.map(resultId => resultIndex.get(resultId));
     const latestResultId = resultIds.includes(found.tag.latestResultId)
       ? found.tag.latestResultId
       : resultIds.at(-1) || null;
@@ -466,8 +436,8 @@ export function createDirectApiClient({
       generationIndex: source.generationIndex,
       chatId: input.chatId,
       messageUuid: input.messageUuid,
-      promptSnapshot: attempt.promptSnapshot || input.prompt,
-      negativePromptSnapshot: attempt.negativePromptSnapshot || '',
+      prompt: input.prompt,
+      negativePrompt: attempt.negativePromptSnapshot || '',
       provider: attempt.provider || 'openai',
       presetId: attempt.presetId,
       presetNameSnapshot: attempt.presetNameSnapshot,
@@ -500,10 +470,9 @@ export function createDirectApiClient({
   }
 
   async function resolveTags(tagIds) {
-    await ensureGallery();
+    await ensureGalleryReady();
     const values = [];
     let changed = false;
-    let galleryChanged = false;
     for (const tagId of tagIds) {
       const found = findTag(tagId);
       if (found) {
@@ -516,30 +485,42 @@ export function createDirectApiClient({
             changed = true;
           }
         }
-        for (const result of found.tag.results || []) {
-          if (slimInPlace(result)) changed = true;
-          if (result.status === 'available' && !store.has(result.resultId)) {
-            const copy = clone(result);
-            store.add([copy]);
-            resultIndex.set(copy.resultId, copy);
-            galleryChanged = true;
+        if (Object.hasOwn(found.tag, 'results')) {
+          /* 旧版把整份记录复制在聊天里。删之前先把"聊天里可用、索引里没有"的补回索引，
+             否则 resultIds 一过滤这张图就从卡片上消失了（文件其实还在）。 */
+          const orphans = (Array.isArray(found.tag.results) ? found.tag.results : [])
+            .filter(result => result?.resultId
+              && result.status === 'available'
+              && result.localRelativePath
+              && !resultIndex.has(result.resultId));
+          if (orphans.length) {
+            const restored = await metadataStore.putMany(orphans.map(result => ({ ...result, tagId })));
+            for (const result of restored) resultIndex.set(result.resultId, result);
           }
+          delete found.tag.results;
+          changed = true;
+        }
+        const availableIds = [...new Set(found.tag.resultIds || [])]
+          .filter(resultId => resultIndex.has(resultId));
+        if (JSON.stringify(availableIds) !== JSON.stringify(found.tag.resultIds || [])) changed = true;
+        found.tag.resultIds = availableIds;
+        if (!availableIds.includes(found.tag.latestResultId)) {
+          found.tag.latestResultId = availableIds.at(-1) || null;
+          changed = true;
         }
       }
       values.push(stateOf(tagId));
     }
     if (changed) await compat.save();
-    if (galleryChanged) await store.persist();
     return values;
   }
 
   async function generate(input) {
+    await ensureGalleryReady();
     let found = findTag(input.tagId);
     if (!found) throw new DirectError('VALIDATION_FAILED', '找不到对应的生图标签');
     const existing = found.tag.attempts?.find(item => item.attemptId === input.attemptId);
     if (existing) return clone(existing);
-    /* 画廊索引不可用就别扣费：图片存下来没人登记等于孤儿文件。 */
-    await ensureGallery();
     const provider = input.provider || namespace.settings.generationProvider || 'openai';
     const preset = provider === 'novelai'
       ? null
@@ -641,24 +622,32 @@ export function createDirectApiClient({
 
       attempt.status = 'saving';
       found = await persistAttempt(found, attempt);
+      const normalizedSaved = await metadataStore.putMany(saved);
+      saved.splice(0, saved.length, ...normalizedSaved);
       found = findTag(input.tagId) || found;
-      found.tag.results ??= [];
-      found.tag.results.push(...saved);
-      found.tag.resultIds = found.tag.results
-        .filter(result => result.status === 'available')
-        .map(result => result.resultId);
+      delete found.tag.results;
+      found.tag.resultIds = [...new Set([
+        ...(found.tag.resultIds || []).filter(resultId => resultIndex.has(resultId)),
+        ...saved.map(result => result.resultId),
+      ])];
       found.tag.latestResultId = saved.at(-1)?.resultId || found.tag.latestResultId || null;
-      const galleryCopies = saved.map(clone);
-      store.add(galleryCopies);
-      for (const result of galleryCopies) resultIndex.set(result.resultId, result);
+      for (const result of saved) resultIndex.set(result.resultId, result);
       attempt.status = 'succeeded';
       attempt.resultIds = saved.map(result => result.resultId);
       attempt.completedAt = now();
       found = await persistAttempt(found, attempt);
-      await store.persist();
       return clone(attempt);
     } catch (error) {
       await Promise.allSettled(saved.map(removeFile));
+      await metadataStore.removeMany(saved.map(result => result.resultId)).catch(() => {});
+      for (const result of saved) resultIndex.delete(result.resultId);
+      if (found?.tag) {
+        const discarded = new Set(saved.map(result => result.resultId));
+        found.tag.resultIds = (found.tag.resultIds || []).filter(resultId => !discarded.has(resultId));
+        if (discarded.has(found.tag.latestResultId)) {
+          found.tag.latestResultId = found.tag.resultIds.at(-1) || null;
+        }
+      }
       const cancelled = controller.signal.aborted;
       attempt.status = cancelled ? 'cancelled' : 'failed';
       attempt.errorCode = cancelled ? null : (error.code || 'UPSTREAM_HTTP_ERROR');
@@ -691,16 +680,11 @@ export function createDirectApiClient({
     return null;
   }
 
-  function availableItems() {
-    return store.items()
-      .filter(result => result.status === 'available')
-      .sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)));
-  }
-
   async function gallery({ cursor, limit = 30 } = {}) {
-    await ensureGallery();
+    await ensureGalleryReady();
     const start = Math.max(0, Number.parseInt(cursor || '0', 10) || 0);
-    const items = availableItems();
+    const items = metadataStore.values()
+      .sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)));
     const page = items.slice(start, start + limit);
     page.forEach(result => resultIndex.set(result.resultId, result));
     return {
@@ -710,66 +694,48 @@ export function createDirectApiClient({
   }
 
   async function galleryMetadata() {
-    await ensureGallery();
-    const items = availableItems();
-    items.forEach(result => resultIndex.set(result.resultId, result));
+    await ensureGalleryReady();
+    const items = metadataStore.values()
+      .sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)));
+    items.forEach(result => {
+      Object.assign(result, normalizeGalleryResult(result));
+      resultIndex.set(result.resultId, result);
+    });
     return { items: clone(items), total: items.length };
   }
 
   async function setFavorite(resultId, favorite) {
-    await ensureGallery();
-    const galleryResult = store.find(resultId);
-    const indexedResult = resultIndex.get(resultId);
-    const result = galleryResult || indexedResult;
+    await ensureGalleryReady();
+    const result = resultIndex.get(resultId);
     if (!result || result.status !== 'available') {
       throw new DirectError('VALIDATION_FAILED', '找不到图片');
     }
-    result.favorite = favorite === true;
-    if (indexedResult && indexedResult !== result) indexedResult.favorite = result.favorite;
-    resultIndex.set(resultId, result);
-    const found = findTag(result.tagId);
-    const messageResult = found?.tag?.results?.find(item => item.resultId === resultId);
-    if (messageResult) messageResult.favorite = result.favorite;
-    if (found) await compat.save();
-    if (galleryResult) await store.persist();
-    return clone(slimGalleryResult(result));
+    const updated = await metadataStore.update(resultId, { favorite: favorite === true });
+    resultIndex.set(resultId, updated);
+    return clone(updated);
   }
 
-  /* 聊天元数据里那条改成墓碑：只留识别信息，提示词不带。
-     墓碑的作用是拦住 resolveTags 把它当作"可用但画廊没有"再塞回画廊。 */
-  function tombstoneMessageResult(found, resultId, deletedAt) {
-    const messageResult = found.tag.results?.find(item => item.resultId === resultId);
-    if (messageResult) {
-      const fields = tombstoneFields(messageResult, deletedAt);
-      for (const key of Object.keys(messageResult)) delete messageResult[key];
-      Object.assign(messageResult, fields);
-    }
-    found.tag.resultIds = (found.tag.resultIds || []).filter(id => id !== resultId);
-    found.tag.latestResultId = found.tag.resultIds.at(-1) || null;
-    found.tag.autoSuppressed = true;
-  }
-
-  /* 删除改真删：文件删掉、索引里这条移除、聊天里留一块小墓碑。不再有 deletedResultIds。 */
   async function deleteResult(resultId) {
-    await ensureGallery();
-    const result = store.find(resultId) || resultIndex.get(resultId);
+    await ensureGalleryReady();
+    const result = resultIndex.get(resultId);
     if (!result) throw new DirectError('VALIDATION_FAILED', '找不到图片');
     await removeFile(result);
-    const deletedAt = now();
-    const removed = Boolean(store.remove(resultId));
+    await metadataStore.remove(resultId);
     resultIndex.delete(resultId);
     const found = findTag(result.tagId);
     if (found) {
-      tombstoneMessageResult(found, resultId, deletedAt);
+      delete found.tag.results;
+      found.tag.resultIds = (found.tag.resultIds || []).filter(id => id !== resultId);
+      found.tag.latestResultId = found.tag.resultIds.at(-1) || null;
+      found.tag.autoSuppressed = true;
       await compat.save();
     }
-    if (removed) await store.persist();
     return { resultId, status: 'deleted' };
   }
 
   async function performGalleryCleanup() {
-    await ensureGallery();
-    const selection = selectCleanupCandidates(store.items(), namespace.settings);
+    await ensureGalleryReady();
+    const selection = selectCleanupCandidates(metadataStore.values(), namespace.settings);
     if (!selection.settings.galleryCleanupByAge && !selection.settings.galleryCleanupByCount) {
       return {
         enabled: false,
@@ -779,46 +745,49 @@ export function createDirectApiClient({
         keptCount: selection.availableCount,
         byAgeCount: 0,
         byCountCount: 0,
-        removedResultIds: [],
+        deletedIds: [],
       };
     }
 
-    const removedResultIds = [];
-    const affectedTags = new Map();
-    const deletedAt = now();
+    const deletedIds = [];
+    const affectedTags = new Set();
     for (const result of selection.candidates) {
       try {
         await removeFile(result);
       } catch (error) {
-        console.warn('[Image Atelier] 自动清理图片失败', result.resultId, error);
+        console.warn('[画笺] 自动清理图片失败', result.resultId, error);
         continue;
       }
-      store.remove(result.resultId);
-      resultIndex.delete(result.resultId);
-      removedResultIds.push(result.resultId);
-      if (!affectedTags.has(result.tagId)) affectedTags.set(result.tagId, []);
-      affectedTags.get(result.tagId).push(result.resultId);
+      deletedIds.push(result.resultId);
+      affectedTags.add(result.tagId);
     }
 
+    await metadataStore.removeMany(deletedIds);
+    for (const resultId of deletedIds) resultIndex.delete(resultId);
+
     let chatChanged = false;
-    for (const [tagId, resultIds] of affectedTags) {
+    const deleted = new Set(deletedIds);
+    for (const tagId of affectedTags) {
       const found = findTag(tagId);
       if (!found) continue;
-      for (const resultId of resultIds) tombstoneMessageResult(found, resultId, deletedAt);
+      delete found.tag.results;
+      found.tag.resultIds = (found.tag.resultIds || [])
+        .filter(resultId => !deleted.has(resultId));
+      found.tag.latestResultId = found.tag.resultIds.at(-1) || null;
+      found.tag.autoSuppressed = true;
       chatChanged = true;
     }
     if (chatChanged) await compat.save();
-    if (removedResultIds.length) await store.persist();
 
     return {
       enabled: true,
       candidateCount: selection.candidates.length,
-      deletedCount: removedResultIds.length,
-      failedCount: selection.candidates.length - removedResultIds.length,
-      keptCount: selection.availableCount - removedResultIds.length,
+      deletedCount: deletedIds.length,
+      failedCount: selection.candidates.length - deletedIds.length,
+      keptCount: selection.availableCount - deletedIds.length,
       byAgeCount: selection.byAgeCount,
       byCountCount: selection.byCountCount,
-      removedResultIds,
+      deletedIds,
     };
   }
 
@@ -831,7 +800,7 @@ export function createDirectApiClient({
   }
 
   function fileUrl(resultId) {
-    const result = resultIndex.get(resultId) || store.find(resultId);
+    const result = resultIndex.get(resultId);
     return normalizePath(result?.localRelativePath);
   }
 
@@ -839,14 +808,14 @@ export function createDirectApiClient({
     mode: () => namespace.settings.executionMode || 'direct',
     health: async () => ({
       mode: 'direct',
-      version: '1.6.2',
+      version: '1.6.5',
       corsRequired: true,
       storage: 'sillytavern-images',
-      galleryStorage: 'user-files',
-      galleryFile: store.fileName,
     }),
-    ready: ensureGallery,
-    getSettings: async () => clone(namespace.settings),
+    getSettings: async () => {
+      await ensureGalleryReady();
+      return clone(namespace.settings);
+    },
     updateSettings: async patch => {
       namespace.settings = normalizeSettings({
         ...namespace.settings,
@@ -1100,6 +1069,6 @@ export function createDirectApiClient({
     setFavorite,
     fileUrl,
     downloadUrl: fileUrl,
-    hasResult: resultId => resultIndex.has(resultId) || store.has(resultId),
+    hasResult: resultId => resultIndex.has(resultId),
   };
 }

@@ -373,3 +373,35 @@ node scripts/inspect-settings.mjs "$S" "$G"   # 命名空间里应无 gallery / 
 
 全套 130 项通过。
 
+---
+
+# 1.6.5
+
+改写人：Claude Fable 5.1　｜　合流：本仓库 1.6.2 / 1.6.3 与上游 1.6.2 / 1.6.3 / 1.6.4
+
+## 两边各做了一版画廊搬家
+
+9-13 我在本仓库做了 1.6.2（`src/ui/gallery/gallery-store.js`），9-14 鱼仔那边的 Codex 在上游也做了 1.6.2
+（`src/ui/api/gallery-metadata-store.js`）。目标一样、文件名一样，格式不一样：
+
+| | 本仓库 1.6.2 | 上游 1.6.2 |
+|---|---|---|
+| 文件封装 | `{ version, items: [record] }` | `{ schemaVersion, results: { [id]: record } }` |
+| 提示词字段 | `promptSnapshot` / `negativePromptSnapshot` | `prompt` / `negativePrompt` |
+| 聊天里的记录 | 整份瘦身记录 + 墓碑 | 只留 `resultIds` |
+
+取舍：以上游为准，我那版删掉，之后两边都在同一个实现上走。但江的 VPS 已经按我那版迁移过、
+用了五天，上游的 `normalizeDocument()` 只认 `results` 对象——读到 `items` 数组会当成空文档，
+`initialize()` 紧接着把空文档写回去，五天的画廊就没了。补两处：
+
+1. `documentRecords()`：`results` 对象、`items` 数组、裸数组三种都认，字段差异交给已有的
+   `normalizeGalleryRecord()`（它本来就把 `promptSnapshot` 合并进 `prompt`）。
+2. `resolveTags()` 删聊天里旧的 `tag.results` 之前，把"可用、有文件路径、索引里没有"的先
+   `putMany()` 回索引。上游原逻辑直接删，`resultIds` 一过滤这张图就从卡片上消失。
+
+另外本仓库 9-17 的 1.6.3（楼底卡片观察器自循环修复，`fallback-stability.test.js`）上游没有，
+渲染器以本仓库版本为准；上游 1.6.3 是改中文名「画笺」，不冲突。版本号跳到 1.6.5 避免和两边的 1.6.3 撞。
+
+**测试**　`gallery-metadata-store.test.js` 加两项：fork 格式文件读入后记录齐全、字段归一；
+聊天孤儿记录在清理前补回索引。全套通过。
+

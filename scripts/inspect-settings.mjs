@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-/* 检查酒馆 settings.json 里 Image Atelier 命名空间的体积构成。
-   用法：node scripts/inspect-settings.mjs /path/to/data/<user>/settings.json [gallery.json]
+/* 检查酒馆 settings.json 里 Image Atelier 命名空间的体积构成，以及画廊索引文件的健康度。
+   用法：node scripts/inspect-settings.mjs /path/to/data/<user>/settings.json [user/files/st-image-atelier-gallery.json]
    期望（1.6.2 起）：命名空间里没有 gallery / deletedResultIds，只有设置项；
-   画廊记录在 user/files/st-image-atelier-gallery.json 里。 */
+   画廊记录在 user/files/st-image-atelier-gallery.json，格式 { schemaVersion, results: { [id]: record } }。 */
 import fs from 'node:fs';
 
 const [settingsPath, galleryPath] = process.argv.slice(2);
@@ -33,9 +33,12 @@ console.log(leaks.length
 
 if (galleryPath) {
   const gallery = JSON.parse(fs.readFileSync(galleryPath, 'utf8'));
-  const items = Array.isArray(gallery?.items) ? gallery.items : [];
-  const redundant = items.filter(item => 'prompt' in item || 'resolvedPrompt' in item || 'deletedAt' in item).length;
-  const deleted = items.filter(item => item.status !== 'available').length;
-  console.log(`画廊索引文件：${(fs.statSync(galleryPath).size / 1024).toFixed(1)} KB，${items.length} 条，`
-    + `冗余提示词字段 ${redundant} 条，非 available ${deleted} 条（期望都是 0）`);
+  const records = gallery?.results && typeof gallery.results === 'object'
+    ? Object.values(gallery.results)
+    : (Array.isArray(gallery?.items) ? gallery.items : []);
+  const format = gallery?.results ? '上游格式（results 对象）' : (Array.isArray(gallery?.items) ? 'fork 1.6.2 格式（items 数组，下次加载会自动转换）' : '未知格式');
+  const redundant = records.filter(item => 'promptSnapshot' in item || 'resolvedPrompt' in item || 'deletedAt' in item).length;
+  const notAvailable = records.filter(item => item.status !== 'available').length;
+  console.log(`画廊索引文件：${(fs.statSync(galleryPath).size / 1024).toFixed(1)} KB，${records.length} 条，${format}`);
+  console.log(`  冗余提示词字段 ${redundant} 条，非 available ${notAvailable} 条（期望都是 0）`);
 }

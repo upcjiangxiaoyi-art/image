@@ -2,8 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import { createDirectApiClient } from '../../src/ui/api/direct-client.js';
-import { createFilesApiMock } from '../mocks/files-api.js';
-import { GALLERY_FILE_NAME } from '../../src/ui/gallery/gallery-store.js';
+import { createMemoryGalleryMetadataStore } from '../../src/ui/api/gallery-metadata-store.js';
 import { PNG_BASE64, startMockUpstream } from '../mocks/mock-upstream.js';
 
 function response(status, payload) {
@@ -44,12 +43,9 @@ function storedZip(name, data) {
 test('仓库链接直装模式完成生成、幂等、画廊与删除', async t => {
   const upstream = await startMockUpstream();
   const originalFetch = globalThis.fetch;
-  const files = createFilesApiMock();
   const uploads = new Map();
   let deleteCalls = 0;
   globalThis.fetch = async (url, options = {}) => {
-    const filesResponse = await files.handle(url, options);
-    if (filesResponse) return filesResponse;
     if (url === '/api/images/upload') {
       const body = JSON.parse(options.body);
       const path = `user/images/st-image-atelier/${body.filename}.${body.format}`;
@@ -101,6 +97,7 @@ test('仓库链接直装模式完成生成、幂等、画廊与删除', async t 
     },
     extensionSettings,
     saveSettingsDebounced: () => { settingsSaves += 1; },
+    galleryStore: createMemoryGalleryMetadataStore(),
     keyStorage: {
       getItem: key => storage.get(key) || null,
       setItem: (key, value) => storage.set(key, value),
@@ -128,16 +125,12 @@ test('仓库链接直装模式完成生成、幂等、画廊与删除', async t 
     tagOrdinal: 0,
     parameters: { count: 1, ratio: 'square' },
   };
-  const settingsBytesBefore = JSON.stringify(extensionSettings).length;
   const attempt = await client.generate(input);
   assert.equal(attempt.status, 'succeeded');
   assert.equal(attempt.resultIds.length, 1);
   assert.equal(uploads.size, 1);
   assert.ok(chatSaves >= 4);
   assert.ok(settingsSaves >= 3);
-  assert.equal(JSON.stringify(extensionSettings).length, settingsBytesBefore, '新增画廊记录后 settings 体积不变');
-  assert.equal('gallery' in extensionSettings.stImageAtelier, false, '画廊不进 extension_settings');
-  assert.equal(files.read(GALLERY_FILE_NAME).items.length, 1, '画廊记录落在独立文件里');
 
   const duplicate = await client.generate(input);
   assert.equal(duplicate.attemptId, attemptId);
@@ -169,12 +162,7 @@ test('仓库链接直装模式完成生成、幂等、画廊与删除', async t 
   await client.deleteResult(state.results[0].resultId);
   assert.equal(deleteCalls, 1);
   assert.equal((await client.gallery()).items.length, 0);
-  assert.equal(files.read(GALLERY_FILE_NAME).items.length, 0, '删除是真删，索引文件里不留记录');
-  assert.equal('deletedResultIds' in extensionSettings.stImageAtelier, false);
   assert.equal((await client.resolveTags([tagId]))[0].tag.autoSuppressed, true);
-  const tombstone = message.extra.stImageAtelier.tags[0].results[0];
-  assert.equal(tombstone.status, 'deleted');
-  assert.equal('promptSnapshot' in tombstone, false, '聊天墓碑不带提示词');
 
   const serializedSettings = JSON.stringify(extensionSettings);
   assert.doesNotMatch(serializedSettings, /sk-test/);
@@ -188,10 +176,7 @@ test('仓库链接直装模式完成生成、幂等、画廊与删除', async t 
 test('保存触发消息重绘时不会把当前自动任务误判为 interrupted', async t => {
   const upstream = await startMockUpstream();
   const originalFetch = globalThis.fetch;
-  const files = createFilesApiMock();
   globalThis.fetch = async (url, options = {}) => {
-    const filesResponse = await files.handle(url, options);
-    if (filesResponse) return filesResponse;
     if (url === '/api/images/upload') {
       const body = JSON.parse(options.body);
       return response(200, { path: `user/images/st-image-atelier/${body.filename}.${body.format}` });
@@ -246,6 +231,7 @@ test('保存触发消息重绘时不会把当前自动任务误判为 interrupte
     compat,
     extensionSettings: {},
     saveSettingsDebounced: () => {},
+    galleryStore: createMemoryGalleryMetadataStore(),
     keyStorage: {
       getItem: key => storage.get(key) || null,
       setItem: (key, value) => storage.set(key, value),
@@ -286,11 +272,8 @@ test('保存触发消息重绘时不会把当前自动任务误判为 interrupte
 
 test('GPT 临时提示词覆盖只用于本次请求，保存快照且不改原标签，并可持久收藏', async t => {
   const originalFetch = globalThis.fetch;
-  const files = createFilesApiMock();
   const requestBodies = [];
   globalThis.fetch = async (url, options = {}) => {
-    const filesResponse = await files.handle(url, options);
-    if (filesResponse) return filesResponse;
     if (url === 'https://api.example.com/v1/images/generations') {
       requestBodies.push(JSON.parse(options.body));
       if (requestBodies.length === 1) {
@@ -332,6 +315,7 @@ test('GPT 临时提示词覆盖只用于本次请求，保存快照且不改原�
     },
     extensionSettings,
     saveSettingsDebounced: () => {},
+    galleryStore: createMemoryGalleryMetadataStore(),
     keyStorage: {
       getItem: key => storage.get(key) || null,
       setItem: (key, value) => storage.set(key, value),
@@ -362,17 +346,14 @@ test('GPT 临时提示词覆盖只用于本次请求，保存快照且不改原�
   assert.equal(message.mes, originalMes);
   const [state] = await client.resolveTags([tagId]);
   const result = state.results.find(value => value.resultId === attempt.resultIds[0]);
-  assert.equal(result.promptSnapshot, 'temporary changed prompt');
+  assert.equal(result.prompt, 'temporary changed prompt');
+  assert.equal('promptSnapshot' in result, false);
+  assert.equal('resolvedPrompt' in result, false);
   assert.deepEqual(result.compatibilityRetry.adjustedParameters, ['response_format']);
 
   await client.setFavorite(result.resultId, true);
   assert.equal((await client.galleryMetadata()).items[0].favorite, true);
-  assert.equal(extensionSettings.stImageAtelier.gallery, undefined);
-  const stored = files.read(GALLERY_FILE_NAME).items[0];
-  assert.equal(stored.favorite, true);
-  assert.equal(stored.promptSnapshot, 'temporary changed prompt');
-  assert.equal('prompt' in stored, false, '提示词只存一份');
-  assert.equal('resolvedPrompt' in stored, false, '提示词只存一份');
+  assert.equal('gallery' in extensionSettings.stImageAtelier, false);
   const reloaded = createDirectApiClient(options);
   assert.equal((await reloaded.galleryMetadata()).items[0].favorite, true);
 });
@@ -397,6 +378,7 @@ test('旧版单预设迁移为多预设，且每个预设独立保存密钥', as
     },
     extensionSettings,
     saveSettingsDebounced: () => {},
+    galleryStore: createMemoryGalleryMetadataStore(),
     keyStorage: {
       getItem: key => storage.get(key) || null,
       setItem: (key, value) => storage.set(key, value),
@@ -437,13 +419,10 @@ test('旧版单预设迁移为多预设，且每个预设独立保存密钥', as
 
 test('NovelAI 引擎使用独立 Token、画师串预设并保存生成结果', async t => {
   const originalFetch = globalThis.fetch;
-  const files = createFilesApiMock();
   const png = Buffer.from(PNG_BASE64, 'base64');
   const zip = storedZip('image_0.png', png);
   let novelAiRequest;
   globalThis.fetch = async (url, options = {}) => {
-    const filesResponse = await files.handle(url, options);
-    if (filesResponse) return filesResponse;
     if (url === 'https://nai.example/ai/generate-image') {
       novelAiRequest = { options, body: JSON.parse(options.body) };
       return new Response(zip, {
@@ -493,6 +472,7 @@ test('NovelAI 引擎使用独立 Token、画师串预设并保存生成结果', 
     },
     extensionSettings,
     saveSettingsDebounced: () => {},
+    galleryStore: createMemoryGalleryMetadataStore(),
     keyStorage: {
       getItem: key => storage.get(key) || null,
       setItem: (key, value) => storage.set(key, value),
@@ -543,8 +523,8 @@ test('NovelAI 引擎使用独立 Token、画师串预设并保存生成结果', 
   const [state] = await client.resolveTags([tagId]);
   assert.equal(state.results.length, 1);
   assert.equal(state.results[0].provider, 'novelai');
-  assert.equal(state.results[0].promptSnapshot, '1girl, moonlight');
-  assert.equal(state.results[0].negativePromptSnapshot, 'bad hands, lowres');
+  assert.equal(state.results[0].prompt, '1girl, moonlight');
+  assert.equal(state.results[0].negativePrompt, 'bad hands, lowres');
   assert.equal(message.extra.stImageAtelier.tags[0].prompt, '1girl, sunset');
   assert.equal(message.mes, '<draw>1girl, sunset</draw>');
   assert.equal(state.results[0].artistPresetNameSnapshot, '柔光画师串');
@@ -552,9 +532,8 @@ test('NovelAI 引擎使用独立 Token、画师串预设并保存生成结果', 
   assert.doesNotMatch(JSON.stringify(extensionSettings), /nai-secret-token/);
 });
 
-test('直连画廊按时间或数量自动清理，合并并发检查且同步消息墓碑', async t => {
+test('直连画廊按时间或数量自动清理，合并并发检查且真删元数据', async t => {
   const originalFetch = globalThis.fetch;
-  const files = createFilesApiMock();
   const now = Date.now();
   const tagId = crypto.randomUUID();
   const values = [
@@ -574,8 +553,6 @@ test('直连画廊按时间或数量自动清理，合并并发检查且同步�
   }));
   const deletedPaths = [];
   globalThis.fetch = async (url, options = {}) => {
-    const filesResponse = await files.handle(url, options);
-    if (filesResponse) return filesResponse;
     assert.equal(url, '/api/images/delete');
     deletedPaths.push(JSON.parse(options.body).path);
     return response(200, {});
@@ -612,6 +589,7 @@ test('直连画廊按时间或数量自动清理，合并并发检查且同步�
     },
     extensionSettings,
     saveSettingsDebounced: () => { settingsSaves += 1; },
+    galleryStore: createMemoryGalleryMetadataStore(),
     keyStorage: { getItem: () => null, setItem() {}, removeItem() {} },
   });
 
@@ -623,9 +601,7 @@ test('直连画廊按时间或数量自动清理，合并并发检查且同步�
   assert.equal(first.byCountCount, 2);
   assert.deepEqual(deletedPaths, values.slice(0, 2).map(item => item.localRelativePath));
   assert.equal(chatSaves, 1);
-  assert.equal(settingsSaves, 1, '只有把旧画廊搬出 settings 那一次落盘');
-  assert.equal(extensionSettings.stImageAtelier.gallery, undefined, '旧画廊已从 settings 搬走');
-  assert.equal(files.read(GALLERY_FILE_NAME).items.length, 2, '索引文件里只剩两条活的');
+  assert.equal(settingsSaves, 1);
   assert.equal(tag.autoSuppressed, true);
   assert.deepEqual(tag.resultIds, values.slice(2).map(item => item.resultId));
   assert.equal(tag.latestResultId, values.at(-1).resultId);
@@ -633,5 +609,209 @@ test('直连画廊按时间或数量自动清理，合并并发检查且同步�
     values[3].resultId,
     values[2].resultId,
   ]);
-  assert.equal((await client.resolveTags([tagId]))[0].results.filter(item => item.status === 'deleted').length, 2);
+  assert.equal((await client.resolveTags([tagId]))[0].results.length, 2);
+  assert.equal('results' in tag, false);
+  assert.equal('gallery' in extensionSettings.stImageAtelier, false);
+  assert.equal('deletedResultIds' in extensionSettings.stImageAtelier, false);
 });
+
+test('画廊元数据迁移后新增记录不改写 extension_settings', async t => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options = {}) => {
+    if (url === 'https://api.example.com/v1/images/generations') {
+      return response(200, { data: [{ b64_json: PNG_BASE64 }] });
+    }
+    if (url === '/api/images/upload') {
+      const body = JSON.parse(options.body);
+      return response(200, { path: `user/images/st-image-atelier/${body.filename}.${body.format}` });
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const longPrompt = 'artist style, detailed lighting, '.repeat(150);
+  const gallery = Array.from({ length: 50 }, (_, index) => ({
+    resultId: crypto.randomUUID(),
+    tagId: crypto.randomUUID(),
+    prompt: longPrompt,
+    promptSnapshot: longPrompt,
+    resolvedPrompt: longPrompt,
+    localRelativePath: `user/images/st-image-atelier/legacy-${index}.png`,
+    mimeType: 'image/png',
+    status: 'available',
+    createdAt: new Date(Date.parse('2026-09-01T00:00:00.000Z') + index * 1000).toISOString(),
+  }));
+  const tagId = crypto.randomUUID();
+  const message = {
+    mes: '<draw>new prompt</draw>',
+    extra: {
+      stImageAtelier: {
+        tags: [{
+          tagId,
+          prompt: 'new prompt',
+          attempts: [],
+          resultIds: [],
+          latestResultId: null,
+        }],
+      },
+    },
+  };
+  const extensionSettings = {
+    stImageAtelier: {
+      settings: { enabled: true },
+      presets: [{
+        id: 'default',
+        name: '主站',
+        baseUrl: 'https://api.example.com',
+        selectedModel: 'gpt-image-1',
+      }],
+      artistPresets: [{ id: 'default', name: '默认画师串', prompt: '', negativePrompt: '' }],
+      novelAi: {},
+      activePresetId: 'default',
+      activeArtistPresetId: 'default',
+      gallery,
+      deletedResultIds: [],
+      schemaVersion: 6,
+    },
+  };
+  const galleryStore = createMemoryGalleryMetadataStore();
+  const client = createDirectApiClient({
+    compat: {
+      chat: () => [message],
+      save: async () => {},
+      headers: () => ({ 'Content-Type': 'application/json' }),
+    },
+    extensionSettings,
+    saveSettingsDebounced: () => {},
+    galleryStore,
+    keyStorage: {
+      getItem: key => key === 'stImageAtelier.directApiKey.v2:default' ? 'sk-test' : null,
+      setItem() {},
+      removeItem() {},
+    },
+  });
+
+  await client.getSettings();
+  assert.deepEqual(Object.keys(extensionSettings.stImageAtelier).sort(), [
+    'activeArtistPresetId',
+    'activePresetId',
+    'artistPresets',
+    'novelAi',
+    'presets',
+    'schemaVersion',
+    'settings',
+  ]);
+  assert.equal(extensionSettings.stImageAtelier.schemaVersion, 8);
+  const migrated = Object.values(galleryStore.document.results);
+  assert.equal(migrated.length, 50);
+  assert.equal(migrated[0].prompt, longPrompt);
+  assert.equal('promptSnapshot' in migrated[0], false);
+  assert.equal('resolvedPrompt' in migrated[0], false);
+
+  const settingsBefore = JSON.stringify(extensionSettings);
+  await client.generate({
+    tagId,
+    attemptId: crypto.randomUUID(),
+    requestMode: 'manual',
+    prompt: 'new prompt',
+    chatId: 'chat-1',
+    messageUuid: crypto.randomUUID(),
+    tagOrdinal: 0,
+    parameters: { count: 1 },
+  });
+  const settingsAfter = JSON.stringify(extensionSettings);
+  assert.equal(settingsAfter, settingsBefore);
+  assert.equal(Object.keys(galleryStore.document.results).length, 51);
+});
+
+test('独立画廊文件写入失败时保留旧 settings 数据以便重试', async () => {
+  const legacy = {
+    resultId: crypto.randomUUID(),
+    prompt: 'must survive',
+    status: 'available',
+  };
+  const extensionSettings = {
+    stImageAtelier: { gallery: [legacy], schemaVersion: 6 },
+  };
+  const client = createDirectApiClient({
+    compat: { chat: () => [], save: async () => {}, headers: () => ({}) },
+    extensionSettings,
+    saveSettingsDebounced: () => {},
+    galleryStore: {
+      initialize: async () => { throw new Error('disk full'); },
+    },
+    keyStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+  });
+  await assert.rejects(client.getSettings(), /disk full/);
+  assert.deepEqual(extensionSettings.stImageAtelier.gallery, [legacy]);
+  assert.equal(extensionSettings.stImageAtelier.schemaVersion, 6);
+});
+
+test('已迁移版本不会从旧聊天副本复活已删除的画廊记录', async () => {
+  const resultId = crypto.randomUUID();
+  const tagId = crypto.randomUUID();
+  const tag = {
+    tagId,
+    attempts: [],
+    resultIds: [resultId],
+    latestResultId: resultId,
+    results: [{ resultId, tagId, prompt: 'stale', status: 'available' }],
+  };
+  const client = createDirectApiClient({
+    compat: {
+      chat: () => [{ extra: { stImageAtelier: { tags: [tag] } } }],
+      save: async () => {},
+      headers: () => ({}),
+    },
+    extensionSettings: { stImageAtelier: { schemaVersion: 8 } },
+    saveSettingsDebounced: () => {},
+    galleryStore: createMemoryGalleryMetadataStore(),
+    keyStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+  });
+  const [state] = await client.resolveTags([tagId]);
+  assert.equal(state.results.length, 0);
+  assert.equal('results' in tag, false);
+  assert.deepEqual(tag.resultIds, []);
+  assert.equal((await client.galleryMetadata()).total, 0);
+});
+
+/* 合流兼容（1.6.5）：旧版把整份记录复制在聊天 tag.results 里。升级后清理这份复制品之前，
+   "可用、有文件、索引里没有"的要先补回索引，不然图从卡片上消失。 */
+test('聊天里可用但索引里没有的旧记录，清理前补回画廊索引', async () => {
+  const tagId = crypto.randomUUID();
+  const orphan = {
+    resultId: 'orphan-1',
+    tagId,
+    status: 'available',
+    promptSnapshot: 'orphan prompt',
+    localRelativePath: 'user/images/st-image-atelier/orphan-1.png',
+    createdAt: '2026-09-13T00:00:00.000Z',
+  };
+  const tag = {
+    tagId,
+    prompt: 'orphan prompt',
+    results: [orphan, { resultId: 'dead', status: 'deleted' }],
+    resultIds: ['orphan-1'],
+    latestResultId: 'orphan-1',
+    attempts: [],
+  };
+  const message = { extra: { stImageAtelier: { tags: [tag] } } };
+  const galleryStore = createMemoryGalleryMetadataStore();
+  let chatSaves = 0;
+  const client = createDirectApiClient({
+    compat: { chat: () => [message], save: async () => { chatSaves += 1; }, headers: () => ({}) },
+    extensionSettings: {},
+    saveSettingsDebounced: () => {},
+    keyStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+    galleryStore,
+  });
+  const [state] = await client.resolveTags([tagId]);
+  assert.equal(tag.results, undefined, '聊天里的整份记录清掉');
+  assert.deepEqual(tag.resultIds, ['orphan-1'], '可用记录保留在 resultIds 里');
+  assert.equal(state.results.length, 1);
+  assert.equal(state.results[0].prompt, 'orphan prompt');
+  assert.equal(client.fileUrl('orphan-1'), '/user/images/st-image-atelier/orphan-1.png');
+  assert.equal(Object.keys(galleryStore.document.results).length, 1, '补回了索引文件');
+  assert.equal(chatSaves, 1);
+});
+

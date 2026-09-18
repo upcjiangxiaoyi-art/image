@@ -29,7 +29,7 @@ function registerRoutes(router, registry = new ServiceRegistry()) {
     await registry.get(request);
     ok(response, {
       id: 'st-image-atelier',
-      version: '1.6.2',
+      version: '1.6.5',
       status: 'ready',
       schemaVersion: 1,
     });

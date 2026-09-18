@@ -1,7 +1,7 @@
 export const MODULE_NAME = 'stImageAtelier';
-export const DISPLAY_NAME = 'Image Atelier';
+export const DISPLAY_NAME = '画笺';
 export const API_ROOT = '/api/plugins/st-image-atelier';
-export const SCHEMA_VERSION = 7; // 7：画廊元数据搬出 extension_settings，单份提示词，删除即移除
+export const SCHEMA_VERSION = 8;
 
 export const ATTEMPT_STATUS = Object.freeze({
   IDLE: 'idle',
@@ -74,6 +74,8 @@ export const DEFAULT_NOVELAI_CONFIG = Object.freeze({
   seed: -1,
   negativePrompt: '',
   qualityTags: true,
+  v5QualityPreset: 'standard',
+  v5UcPreset: 'none',
   smea: false,
   smeaDyn: false,
   variety: true,
@@ -90,6 +92,7 @@ export const DEFAULT_ARTIST_PRESET = Object.freeze({
   id: 'default',
   name: '默认画师串',
   prompt: '',
+  negativePrompt: '',
   schemaVersion: 1
 });
 
