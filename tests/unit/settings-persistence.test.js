@@ -147,6 +147,16 @@ test('总开关即时持久化，独立保存生图参数后立即更新当前�
   assert.equal(quality.value, 'high');
   assert.equal(count.value, '2');
 
+  quality.value = 'max';
+  assert.equal(quality.value, 'max', '下拉里直接有 max 可选');
+  quality.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+  saveParameters.click();
+  await waitFor(() => presetPatches.at(-1)?.defaultQuality === 'max', 'max 没有保存');
+  assert.equal(presetPatches.at(-1).sendQuality, true);
+  await panel.load();
+  assert.equal(quality.value, 'max');
+  assert.equal([...quality.options].filter(option => option.value === 'max').length, 1);
+
   const novelAiSection = document.querySelector('.stia-section--novelai');
   const novelAiField = text => [...novelAiSection.querySelectorAll('label')]
     .find(label => label.firstElementChild?.textContent === text);

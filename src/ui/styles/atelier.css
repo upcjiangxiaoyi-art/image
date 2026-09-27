@@ -1074,6 +1074,109 @@
   resize: vertical;
 }
 
+.stia-error-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483010;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  color: var(--stia-text);
+  background: rgb(0 0 0 / 58%);
+  backdrop-filter: blur(3px);
+  font: 400 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+.stia-error-dialog__panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  max-width: 460px;
+  max-height: calc(100dvh - 32px);
+  padding: 18px;
+  background: var(--stia-panel);
+  border: 1px solid color-mix(in srgb, var(--stia-danger) 36%, var(--stia-border));
+  border-radius: 14px;
+  box-shadow: 0 24px 80px rgb(0 0 0 / 42%);
+}
+
+.stia-error-dialog__panel[data-tone="warning"] {
+  border-color: color-mix(in srgb, var(--stia-warning) 36%, var(--stia-border));
+}
+
+.stia-error-dialog__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 16px;
+}
+
+.stia-error-dialog__icon {
+  display: inline-grid;
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  color: var(--stia-danger);
+  background: var(--stia-danger-muted);
+  border-radius: 50%;
+  font-weight: 700;
+}
+
+.stia-error-dialog__panel[data-tone="warning"] .stia-error-dialog__icon {
+  color: var(--stia-warning);
+  background: var(--stia-warning-muted);
+}
+
+.stia-error-dialog__list {
+  display: grid;
+  flex: 1 1 auto;
+  gap: 10px;
+  min-height: 0;
+  max-height: min(60dvh, 480px);
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.stia-error-dialog__item {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  background: var(--stia-danger-muted);
+  border: 1px solid color-mix(in srgb, var(--stia-danger) 24%, transparent);
+  border-radius: var(--stia-radius);
+}
+
+.stia-error-dialog__item.is-warning {
+  background: var(--stia-warning-muted);
+  border-color: color-mix(in srgb, var(--stia-warning) 24%, transparent);
+}
+
+.stia-error-dialog__item strong {
+  color: var(--stia-danger);
+}
+
+.stia-error-dialog__item.is-warning strong {
+  color: var(--stia-warning);
+}
+
+.stia-error-dialog__message,
+.stia-error-dialog__hint {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.stia-error-dialog__hint {
+  color: var(--stia-secondary);
+  font-size: 13px;
+}
+
 .stia-image-viewer-open {
   overflow: hidden !important;
 }

@@ -40,6 +40,19 @@ export const IMAGE_SIZE_OPTIONS = Object.freeze([
   ['3200x2400', '3200 × 2400（横图 4:3，超大图）'],
 ]);
 
+/* xhigh / max 只有 gpt-image-2.5-flare / gpt-image-2.5-sunburst（含 -2026-09-08 快照）支持，
+   其他 GPT Image 模型最高 high；standard / hd 只给 dall-e-3。 */
+export const IMAGE_QUALITY_OPTIONS = Object.freeze([
+  ['auto', 'auto'],
+  ['low', 'low'],
+  ['medium', 'medium'],
+  ['high', 'high'],
+  ['xhigh', 'xhigh（仅 2.5 系列）'],
+  ['max', 'max（仅 2.5 系列）'],
+  ['standard', 'standard'],
+  ['hd', 'hd'],
+]);
+
 function field(labelText, control) {
   const label = document.createElement('label');
   label.className = 'stia-field';
@@ -171,15 +184,7 @@ export function createToolPanel({ api, store }) {
   const generationPath = input();
   generationPath.placeholder = '/v1/images/generations';
   const defaultSize = select([SKIP_PARAM_OPTION, ...IMAGE_SIZE_OPTIONS]);
-  const defaultQuality = select([
-    SKIP_PARAM_OPTION,
-    ['auto', 'auto'],
-    ['low', 'low'],
-    ['medium', 'medium'],
-    ['high', 'high'],
-    ['standard', 'standard'],
-    ['hd', 'hd'],
-  ]);
+  const defaultQuality = select([SKIP_PARAM_OPTION, ...IMAGE_QUALITY_OPTIONS]);
   const defaultCount = select([
     SKIP_PARAM_OPTION,
     ['1', '1 张'],
@@ -930,7 +935,7 @@ export function createToolPanel({ api, store }) {
   const defaultQualityField = field('默认质量', defaultQuality);
   const qualityDescription = document.createElement('small');
   qualityDescription.className = 'stia-muted';
-  qualityDescription.textContent = '标签上的 quality 属性优先于这里；选「不发送」则无论标签写了什么都不发该参数。';
+  qualityDescription.textContent = '标签上的 quality 属性优先于这里；选「不发送」则无论标签写了什么都不发该参数。xhigh / max 只有 gpt-image-2.5 系列支持。';
   defaultQualityField.append(qualityDescription);
   generationGrid.append(
     defaultSizeField,

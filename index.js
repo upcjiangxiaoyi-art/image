@@ -18,6 +18,11 @@ import { installToolMenuEntry } from './src/ui/menu/tool-menu.js';
 import { applyThemeMode } from './src/ui/theme/theme.js';
 import { removeDrawTagFromMessage } from './src/ui/state/tag-removal.js';
 import { createPromptOverrideDialog } from './src/ui/pages/prompt-override/prompt-override.js';
+import {
+  createErrorDialog,
+  describeGenerationProblem,
+  requestedQuality,
+} from './src/ui/pages/error-dialog/error-dialog.js';
 
 const compat = createStCompat({
   getContext,
@@ -40,6 +45,17 @@ store.subscribe(state => {
 applyThemeMode(store.state.settings.themeMode);
 const activeTags = new Set();
 const GALLERY_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
+const TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'interrupted', 'cancelled']);
+let errorDialog;
+
+function reportProblem(context) {
+  try {
+    const problem = describeGenerationProblem(context);
+    if (problem) errorDialog?.show(problem);
+  } catch (error) {
+    console.warn('[画笺] 无法显示报错弹窗', error);
+  }
+}
 
 async function runGalleryCleanup() {
   try {
@@ -94,6 +110,10 @@ async function generate(tag, mode, overrides = {}) {
     createdAt: new Date().toISOString(),
   };
   const current = store.state.tagStates.get(tag.tagId) || { tagId: tag.tagId, attempts: [], results: [] };
+  /* 自动生图的 attemptId 固定；已有终态记录时接口只会原样返回旧结果，不再弹旧报错。 */
+  const replay = (current.attempts || [])
+    .some(item => item.attemptId === attemptId && TERMINAL_STATUSES.has(item.status));
+  const quality = requestedQuality({ provider, preset: store.state.preset, tagQuality: tag.quality });
   store.setTag(tag.tagId, { ...current, attempts: [optimisticAttempt, ...(current.attempts || [])] });
   try {
     const attempt = await api.generate({
@@ -125,13 +145,15 @@ async function generate(tag, mode, overrides = {}) {
         });
       },
     });
-    if (['succeeded', 'failed', 'interrupted', 'cancelled'].includes(attempt.status)) {
+    if (TERMINAL_STATUSES.has(attempt.status)) {
       await refreshTag(tag.tagId);
       if (attempt.status === 'succeeded') void runGalleryCleanup();
+      if (!replay) reportProblem({ attempt, quality });
       return attempt;
     }
     const completed = await waitForAttempt(attempt.attemptId, tag.tagId);
     if (completed.status === 'succeeded') void runGalleryCleanup();
+    if (!replay) reportProblem({ attempt: completed, quality });
     return completed;
   } catch (error) {
     try {
@@ -143,10 +165,19 @@ async function generate(tag, mode, overrides = {}) {
     optimisticAttempt.errorCode = error.code;
     optimisticAttempt.errorMessage = error.message;
     const latest = store.state.tagStates.get(tag.tagId) || current;
-    if (!(latest.attempts || []).some(item => item.attemptId === attemptId)) {
+    const persisted = (latest.attempts || []).find(item => item.attemptId === attemptId);
+    if (!persisted) {
       store.setTag(tag.tagId, {
         ...latest,
         attempts: [optimisticAttempt, ...(latest.attempts || [])],
+      });
+    }
+    /* 落盘的失败记录带「已尝试移除 … 后重试一次」等补充说明，优先用它。 */
+    if (!replay) {
+      reportProblem({
+        attempt: persisted?.status === 'failed' ? persisted : optimisticAttempt,
+        error,
+        quality,
       });
     }
     throw error;
@@ -228,6 +259,7 @@ function installToolButton() {
 function initialize() {
   panel = createToolPanel({ api, store });
   promptOverrideDialog = createPromptOverrideDialog();
+  errorDialog = createErrorDialog();
   installToolButton();
   events.bind();
   void events.hydrate();
