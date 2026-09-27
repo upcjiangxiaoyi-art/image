@@ -26,6 +26,24 @@ test('两个新开关默认关闭且设置界面提供中文入口', async () =>
   assert.match(source, /enableSmartRetry: enableSmartRetry\.checked/);
 });
 
+test('报错弹窗开关默认开启，设置界面有中文入口，直连设置可持久化', async () => {
+  assert.equal(DEFAULT_SETTINGS.enableErrorPopup, true);
+  const source = await fs.readFile(path.join(root, 'src/ui/pages/settings/settings.js'), 'utf8');
+  assert.match(source, /field\('报错弹窗', enableErrorPopup\)/);
+  assert.match(source, /enableErrorPopup: enableErrorPopup\.checked/);
+  const extensionSettings = { stImageAtelier: { settings: { enabled: true } } };
+  const create = () => createDirectApiClient({
+    compat: { chat: () => [], save: async () => {}, headers: () => ({}) },
+    extensionSettings,
+    saveSettingsDebounced: () => {},
+    galleryStore: createMemoryGalleryMetadataStore(),
+    keyStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+  });
+  assert.equal((await create().getSettings()).enableErrorPopup, true, '旧设置自动补为开启');
+  await create().updateSettings({ enableErrorPopup: false });
+  assert.equal((await create().getSettings()).enableErrorPopup, false);
+});
+
 test('两个新开关在直连设置中持久化，旧设置自动补默认值', async () => {
   const extensionSettings = { stImageAtelier: { settings: { enabled: true } } };
   const galleryStore = createMemoryGalleryMetadataStore();

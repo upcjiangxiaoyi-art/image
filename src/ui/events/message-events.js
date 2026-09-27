@@ -10,7 +10,7 @@ export function hasChangedDrawSource(message, previousSource) {
     && /<draw\b/i.test(message.mes);
 }
 
-export function createMessageEvents({ compat, api, store, renderer, autoQueue }) {
+export function createMessageEvents({ compat, api, store, renderer, autoQueue, onError = () => {} }) {
   const sourceCache = new Map();
   const scheduled = new Map();
   let observer = null;
@@ -18,6 +18,13 @@ export function createMessageEvents({ compat, api, store, renderer, autoQueue })
   let pollTimer = null;
   let hydrated = false;
   let cachedChatId = '';
+
+  function reportFailure(title) {
+    return error => {
+      console.error(`[画笺] ${title}`, error);
+      onError(error, title);
+    };
+  }
 
   async function processMessage(messageId, { live = false, generationType = '' } = {}) {
     const message = compat.chat()[Number(messageId)];
@@ -32,6 +39,7 @@ export function createMessageEvents({ compat, api, store, renderer, autoQueue })
         await compat.save();
       } catch (error) {
         console.error('[画笺] 无法保存标签元数据', error);
+        onError(error, '保存生图标签数据失败');
       }
     }
 
@@ -88,9 +96,7 @@ export function createMessageEvents({ compat, api, store, renderer, autoQueue })
     };
     const timer = setTimeout(() => {
       scheduled.delete(id);
-      void processMessage(id, mergedOptions).catch(error => {
-        console.error('[画笺] 实时识别生图标签失败', error);
-      });
+      void processMessage(id, mergedOptions).catch(reportFailure('识别生图标签失败'));
     }, DOM_SETTLE_MS);
     scheduled.set(id, { timer, options: mergedOptions });
   }
@@ -132,7 +138,7 @@ export function createMessageEvents({ compat, api, store, renderer, autoQueue })
     const chatId = compat.currentChatId();
     if (chatId !== cachedChatId) {
       cachedChatId = chatId;
-      void hydrate();
+      void hydrate().catch(reportFailure('加载聊天里的生图卡片失败'));
       return;
     }
     compat.chat().forEach((message, messageId) => {
@@ -149,9 +155,10 @@ export function createMessageEvents({ compat, api, store, renderer, autoQueue })
 
   function bind() {
     compat.on(['MESSAGE_RECEIVED'], (messageId, generationType) =>
-      processMessage(messageId, { live: true, generationType }));
+      processMessage(messageId, { live: true, generationType })
+        .catch(reportFailure('识别生图标签失败')));
     compat.on(['CHARACTER_MESSAGE_RENDERED', 'MESSAGE_RENDERED'], messageId =>
-      processMessage(messageId, { live: false }));
+      processMessage(messageId, { live: false }).catch(reportFailure('识别生图标签失败')));
     /* 改写事件会赶在酒馆用 mes 重建这一层 DOM 之前到达。直接 processMessage 等于对着
        旧 DOM 干活：卡片还在、提示词还没回来，mount 判定无事可做直接退出；等重建真的发生，
        事件已经消耗掉了。改走 scheduleMessage，等 DOM_SETTLE_MS 落定后再处理，
@@ -161,7 +168,7 @@ export function createMessageEvents({ compat, api, store, renderer, autoQueue })
     compat.on(['CHAT_CHANGED'], () => {
       queueMicrotask(() => {
         observeChat();
-        void hydrate();
+        void hydrate().catch(reportFailure('加载聊天里的生图卡片失败'));
       });
     });
     observeChat();

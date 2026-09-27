@@ -53,6 +53,11 @@ export function validateEndpoint(urlString, allowHttp = false) {
   return url;
 }
 
+/* 审核拦截的说法五花八门：OpenAI 是 safety system / moderation_blocked，中转站常见 unsafe、
+   NSFW、违规、敏感词。命中时给审核提示，也绝不智能重试。 */
+export const MODERATION_PATTERN = /moderation|moderated|content (?:was )?rejected|safety|unsafe|nsfw|content policy|policy violation|内容审核|审核不通过|审核未通过|内容政策|安全策略|内容违规|违规内容|涉嫌违规|违规词|敏感词|敏感内容|不安全内容|内容不安全/i;
+const MODERATION_HINT = '；提示词被上游内容审核拒绝，请减少强迫、暴力、露骨或高风险内容后重试';
+
 function findDataArray(payload) {
   if (Array.isArray(payload)) return payload;
   if (!payload || typeof payload !== 'object') return null;
@@ -64,9 +69,32 @@ function findDataArray(payload) {
   return null;
 }
 
+/* 有些中转站拦截时照样回 HTTP 200，只在正文里写 error / message，没有图片。 */
+function payloadErrorOf(payload) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return '';
+  const { error } = payload;
+  const value = (typeof error === 'string' ? error : error?.message || error?.detail)
+    || payload.message
+    || payload.detail
+    || payload.msg;
+  return typeof value === 'string' ? sanitizeUpstreamText(value) : '';
+}
+
 export function parseImageResponse(payload) {
   const items = findDataArray(payload);
-  if (!items?.length) throw new DirectError('UPSTREAM_RESPONSE_INVALID', '响应中没有图片数组');
+  if (!items?.length) {
+    const reason = payloadErrorOf(payload);
+    if (reason) {
+      throw new DirectError(
+        'UPSTREAM_RESPONSE_INVALID',
+        reason,
+        502,
+        false,
+        `上游没有返回图片：${reason}${MODERATION_PATTERN.test(reason) ? MODERATION_HINT : ''}`,
+      );
+    }
+    throw new DirectError('UPSTREAM_RESPONSE_INVALID', '响应中没有图片数组');
+  }
   const results = items.map((item, generationIndex) => {
     if (!item || typeof item !== 'object') return null;
     if (typeof item.b64_json === 'string' && item.b64_json) {
@@ -142,12 +170,11 @@ function mapStatus(status, bodyText) {
       `API 限流（HTTP 429）：${reason}`,
     );
   }
-  const moderationRejected = /moderation|content (?:was )?rejected|safety|content policy|内容审核|内容政策/i
-    .test(reason);
+  const moderationRejected = MODERATION_PATTERN.test(reason);
   const hint = status === 404
     ? '；请检查“生图路径”是否与该 API 一致'
     : moderationRejected
-      ? '；提示词被上游内容审核拒绝，请减少强迫、暴力、露骨或高风险内容后重试'
+      ? MODERATION_HINT
       : status === 400
         ? '；若上游提示参数不支持，可把「默认尺寸 / 默认质量 / 默认数量」改成「不发送」'
         : '';
@@ -200,14 +227,16 @@ const SMART_RETRY_PARAMETERS = Object.freeze([
 ]);
 
 const PARAMETER_INCOMPATIBLE = /unsupported|not support|unknown (?:parameter|field)|unrecognized|invalid|unexpected|not allowed|must be|expected|不支持|未知参数|无效|非法|不兼容|不允许/i;
-const NEVER_RETRY_REASON = /moderation|content (?:was )?rejected|safety|content policy|内容审核|安全策略|余额|quota|配额/i;
+const NEVER_RETRY_REASON = /余额|quota|配额/i;
 
 export function detectCompatibilityRetry(error, body = {}) {
   if (!(error instanceof DirectError)
     || error.code !== 'UPSTREAM_HTTP_ERROR'
     || ![400, 422].includes(error.status)) return null;
   const details = String(error.details || '');
-  if (!PARAMETER_INCOMPATIBLE.test(details) || NEVER_RETRY_REASON.test(details)) return null;
+  if (!PARAMETER_INCOMPATIBLE.test(details)
+    || MODERATION_PATTERN.test(details)
+    || NEVER_RETRY_REASON.test(details)) return null;
   const adjustedParameters = SMART_RETRY_PARAMETERS
     .filter(([name, pattern]) => Object.hasOwn(body, name) && pattern.test(details))
     .map(([name]) => name);

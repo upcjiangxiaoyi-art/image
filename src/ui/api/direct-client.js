@@ -808,7 +808,7 @@ export function createDirectApiClient({
     mode: () => namespace.settings.executionMode || 'direct',
     health: async () => ({
       mode: 'direct',
-      version: '1.6.7',
+      version: '1.6.8',
       corsRequired: true,
       storage: 'sillytavern-images',
     }),

@@ -96,9 +96,17 @@ test('总开关即时持久化，独立保存生图参数后立即更新当前�
     cleanupGallery: async () => ({}),
     galleryMetadata: async () => ({ items: [] }),
     fileUrl: id => `/images/${id}`,
+    testPreset: async () => {
+      throw Object.assign(new Error('浏览器连不上生图接口'), { code: 'DIRECT_FETCH_BLOCKED' });
+    },
   };
   const store = createStore();
-  const panel = createToolPanel({ api, store });
+  const reportedErrors = [];
+  const panel = createToolPanel({
+    api,
+    store,
+    onError: (error, title) => reportedErrors.push({ error, title }),
+  });
   panel.show();
 
   await waitFor(() => store.state.preset?.id === 'default', '设置面板未完成初始化');
@@ -156,6 +164,21 @@ test('总开关即时持久化，独立保存生图参数后立即更新当前�
   await panel.load();
   assert.equal(quality.value, 'max');
   assert.equal([...quality.options].filter(option => option.value === 'max').length, 1);
+
+  const errorPopup = controlFor('报错弹窗');
+  assert.equal(errorPopup.checked, true, '旧设置没有这一项时报错弹窗默认开启');
+  errorPopup.checked = false;
+  errorPopup.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+  await waitFor(() => settingsPatches.some(patch => patch.enableErrorPopup === false), '报错弹窗开关没有立即保存');
+  assert.equal(store.state.settings.enableErrorPopup, false);
+  await panel.load();
+  assert.equal(errorPopup.checked, false, '重新打开设置后保持关闭');
+
+  [...document.querySelectorAll('button')].find(button => button.textContent.includes('测试模型接口')).click();
+  await waitFor(() => reportedErrors.length === 1, '测试模型接口失败没有交给报错弹窗');
+  assert.equal(reportedErrors[0].title, '测试模型接口失败');
+  assert.equal(reportedErrors[0].error.code, 'DIRECT_FETCH_BLOCKED');
+  assert.match(document.querySelector('.stia-settings-page').textContent, /浏览器连不上生图接口/, '设置页状态栏照旧显示');
 
   const novelAiSection = document.querySelector('.stia-section--novelai');
   const novelAiField = text => [...novelAiSection.querySelectorAll('label')]

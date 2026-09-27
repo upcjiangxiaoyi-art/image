@@ -1,6 +1,9 @@
-/* 报错弹窗：生图失败时弹出；「生成失败后智能重试」去掉 quality / size / n 才出图时也弹，
-   免得把回退后的图当成按 max 出的。卡片上的失败提示照旧保留。弹窗开着时再来的提醒追加到
-   同一个弹窗里，内容相同只累计次数。 */
+import { MODERATION_PATTERN } from '../../api/openai-direct.js';
+
+/* 报错弹窗：生图失败、连不上、超时、被审核拦截等报错都弹；「生成失败后智能重试」去掉
+   quality / size / n 才出图时也弹，免得把回退后的图当成按 max 出的。设置页、画廊等处的
+   报错也走这里，卡片和设置页上原有的报错提示照旧保留。点一下弹窗任意位置就关；弹窗开着时
+   再来的报错合并进来，内容相同只累计次数。 */
 
 export const PREMIUM_QUALITIES = Object.freeze(['xhigh', 'max']);
 
@@ -11,6 +14,9 @@ const OUTPUT_PARAMETERS = Object.freeze({
   n: '数量 n',
 });
 
+const NETWORK_CODES = new Set(['DIRECT_FETCH_BLOCKED', 'SERVER_PLUGIN_UNAVAILABLE']);
+const SETUP_CODES = new Set(['PRESET_NOT_CONFIGURED', 'API_KEY_MISSING', 'MODEL_NOT_SELECTED']);
+const TIMEOUT_STATUSES = new Set([408, 504, 524]);
 const MAX_ENTRIES = 10;
 
 /* 与 openai-direct 组请求体的顺序一致：标签 quality → 默认质量（选「不发送」则不发）→
@@ -28,9 +34,31 @@ function isPremiumQuality(quality) {
 }
 
 function httpStatusOf(attempt, error) {
-  if (Number.isInteger(error?.status) && error.status > 0) return error.status;
+  if (Number.isInteger(error?.status) && error.status > 0 && error.code === 'UPSTREAM_HTTP_ERROR') {
+    return error.status;
+  }
   const match = /HTTP (\d{3})/.exec(String(attempt?.errorMessage || error?.message || ''));
   return match ? Number(match[1]) : 0;
+}
+
+function withDetails(message, details) {
+  const text = String(message || '').trim();
+  const extra = typeof details === 'string' ? details.trim() : '';
+  return extra && !text.includes(extra) ? `${text}（${extra}）` : text;
+}
+
+/* 标题直接说是哪一类报错，小弹窗扫一眼就知道卡在哪。 */
+function problemTitle({ code, httpStatus, text, fallback }) {
+  if (MODERATION_PATTERN.test(text)) return '内容被审核拦截';
+  if (code === 'UPSTREAM_TIMEOUT' || TIMEOUT_STATUSES.has(httpStatus)) return '请求超时';
+  if (NETWORK_CODES.has(code)) return /下载/.test(text) ? '图片下载失败' : '连不上服务器';
+  if (code === 'UPSTREAM_AUTH_FAILED') return '密钥或权限有问题';
+  if (code === 'UPSTREAM_RATE_LIMITED') return '请求太频繁，被限流了';
+  if (SETUP_CODES.has(code)) return '接口还没配置好';
+  if (code === 'IMAGE_DOWNLOAD_FAILED') return '图片下载失败';
+  if (code === 'LOCAL_SAVE_FAILED') return '保存到酒馆失败';
+  if (httpStatus >= 500) return '上游服务器出错';
+  return fallback;
 }
 
 function premiumQualityNote(quality) {
@@ -40,16 +68,23 @@ function premiumQualityNote(quality) {
 
 export function describeGenerationProblem({ attempt, error, quality = '' } = {}) {
   const status = attempt?.status || (error ? 'failed' : '');
-  if (status === 'failed') {
-    let message = String(attempt?.errorMessage || error?.message || '生成失败');
-    const details = typeof error?.details === 'string' ? error.details.trim() : '';
-    if (details && !message.includes(details)) message += `（${details}）`;
+  if (status === 'failed' || status === 'interrupted') {
+    const interrupted = status === 'interrupted';
+    const message = withDetails(
+      attempt?.errorMessage || error?.message || (interrupted ? '生成被中断' : '生成失败'),
+      error?.details,
+    );
     const code = attempt?.errorCode || error?.code || '';
+    const httpStatus = httpStatusOf(attempt, error);
+    const title = interrupted
+      ? '生成被中断'
+      : problemTitle({ code, httpStatus, text: message, fallback: '生成失败' });
     const parameterRejected = code === 'UPSTREAM_HTTP_ERROR'
-      && [400, 422].includes(httpStatusOf(attempt, error));
+      && [400, 422].includes(httpStatus)
+      && title === '生成失败';
     return {
       tone: 'danger',
-      title: '生成失败',
+      title,
       message,
       hint: parameterRejected && isPremiumQuality(quality)
         ? `${premiumQualityNote(quality)}如果报错说的是 quality，请换用这两个模型，或把默认质量改回 high。`
@@ -71,6 +106,24 @@ export function describeGenerationProblem({ attempt, error, quality = '' } = {})
   };
 }
 
+/* 生图以外的报错（设置页、画廊、连接服务、取消、删除等）。 */
+export function describeError(error, fallbackTitle = '操作失败') {
+  if (!error) return null;
+  const message = withDetails(error.message || String(error), error.details);
+  if (!message) return null;
+  return {
+    tone: 'danger',
+    title: problemTitle({
+      code: error.code || '',
+      httpStatus: httpStatusOf(null, error),
+      text: message,
+      fallback: fallbackTitle,
+    }),
+    message,
+    hint: '',
+  };
+}
+
 function paragraph(className, text) {
   const element = document.createElement('p');
   element.className = className;
@@ -86,6 +139,7 @@ export function createErrorDialog() {
   panel.className = 'stia-error-dialog__panel';
   panel.setAttribute('role', 'alertdialog');
   panel.setAttribute('aria-modal', 'true');
+  panel.tabIndex = -1;
   const heading = document.createElement('h3');
   heading.className = 'stia-error-dialog__title';
   const icon = document.createElement('span');
@@ -95,14 +149,8 @@ export function createErrorDialog() {
   heading.append(icon, headingText);
   const list = document.createElement('div');
   list.className = 'stia-error-dialog__list';
-  const buttons = document.createElement('div');
-  buttons.className = 'stia-actions stia-actions--fill';
-  const dismiss = document.createElement('button');
-  dismiss.type = 'button';
-  dismiss.className = 'stia-button stia-button--primary';
-  dismiss.textContent = '知道了';
-  buttons.append(dismiss);
-  panel.append(heading, list, buttons);
+  const dismissHint = paragraph('stia-error-dialog__dismiss', '点一下关闭');
+  panel.append(heading, list, dismissHint);
   overlay.append(panel);
   document.body.append(overlay);
 
@@ -115,7 +163,7 @@ export function createErrorDialog() {
     icon.textContent = tone === 'danger' ? '×' : '!';
     headingText.textContent = entries.length === 1
       ? entries[0].title
-      : `画笺 · ${entries.length} 条生图提醒`;
+      : `画笺 · ${entries.length} 条报错`;
     panel.setAttribute('aria-label', headingText.textContent);
     list.replaceChildren(...entries.map(entry => {
       const item = document.createElement('article');
@@ -151,12 +199,19 @@ export function createErrorDialog() {
     if (!overlay.hidden) return;
     returnFocus = document.activeElement;
     overlay.hidden = false;
-    dismiss.focus({ preventScroll: true });
+    panel.focus({ preventScroll: true });
   }
 
-  dismiss.addEventListener('click', close);
-  overlay.addEventListener('click', event => {
-    if (event.target === overlay) close();
+  /* 点弹窗任意位置或空白处都关；在弹窗里拖选文字（想复制报错）时不关。 */
+  overlay.addEventListener('click', () => {
+    const selection = document.getSelection?.();
+    if (selection && !selection.isCollapsed && panel.contains(selection.anchorNode)) return;
+    close();
+  });
+  panel.addEventListener('keydown', event => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    close();
   });
   /* 捕获阶段拦下 Escape：只关弹窗，不连带关掉下面的设置窗口。 */
   document.addEventListener('keydown', event => {

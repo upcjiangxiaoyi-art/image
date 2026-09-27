@@ -1083,47 +1083,50 @@
   justify-content: center;
   padding: 16px;
   color: var(--stia-text);
-  background: rgb(0 0 0 / 58%);
-  backdrop-filter: blur(3px);
-  font: 400 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: rgb(0 0 0 / 38%);
+  cursor: pointer;
+  font: 400 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .stia-error-dialog__panel {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 8px;
   width: 100%;
-  max-width: 460px;
-  max-height: calc(100dvh - 32px);
-  padding: 18px;
+  max-width: 320px;
+  max-height: min(60dvh, 420px);
+  padding: 12px 14px 10px;
   background: var(--stia-panel);
-  border: 1px solid color-mix(in srgb, var(--stia-danger) 36%, var(--stia-border));
-  border-radius: 14px;
-  box-shadow: 0 24px 80px rgb(0 0 0 / 42%);
+  border: 1px solid color-mix(in srgb, var(--stia-danger) 40%, var(--stia-border));
+  border-radius: 12px;
+  box-shadow: 0 12px 40px rgb(0 0 0 / 35%);
+  outline: none;
 }
 
 .stia-error-dialog__panel[data-tone="warning"] {
-  border-color: color-mix(in srgb, var(--stia-warning) 36%, var(--stia-border));
+  border-color: color-mix(in srgb, var(--stia-warning) 40%, var(--stia-border));
 }
 
 .stia-error-dialog__title {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   margin: 0;
-  font-size: 16px;
+  font-size: 14px;
+  font-weight: 700;
 }
 
 .stia-error-dialog__icon {
   display: inline-grid;
   flex: 0 0 auto;
-  width: 24px;
-  height: 24px;
+  width: 18px;
+  height: 18px;
   place-items: center;
   color: var(--stia-danger);
   background: var(--stia-danger-muted);
   border-radius: 50%;
-  font-weight: 700;
+  font-size: 12px;
 }
 
 .stia-error-dialog__panel[data-tone="warning"] .stia-error-dialog__icon {
@@ -1134,25 +1137,21 @@
 .stia-error-dialog__list {
   display: grid;
   flex: 1 1 auto;
-  gap: 10px;
+  gap: 8px;
   min-height: 0;
-  max-height: min(60dvh, 480px);
   overflow: auto;
   overscroll-behavior: contain;
 }
 
 .stia-error-dialog__item {
   display: grid;
-  gap: 6px;
-  padding: 10px 12px;
-  background: var(--stia-danger-muted);
-  border: 1px solid color-mix(in srgb, var(--stia-danger) 24%, transparent);
-  border-radius: var(--stia-radius);
+  gap: 3px;
+  padding-left: 8px;
+  border-left: 2px solid var(--stia-danger);
 }
 
 .stia-error-dialog__item.is-warning {
-  background: var(--stia-warning-muted);
-  border-color: color-mix(in srgb, var(--stia-warning) 24%, transparent);
+  border-left-color: var(--stia-warning);
 }
 
 .stia-error-dialog__item strong {
@@ -1164,8 +1163,13 @@
 }
 
 .stia-error-dialog__message,
-.stia-error-dialog__hint {
+.stia-error-dialog__hint,
+.stia-error-dialog__dismiss {
   margin: 0;
+}
+
+.stia-error-dialog__message,
+.stia-error-dialog__hint {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   -webkit-user-select: text;
@@ -1174,7 +1178,13 @@
 
 .stia-error-dialog__hint {
   color: var(--stia-secondary);
-  font-size: 13px;
+  font-size: 12px;
+}
+
+.stia-error-dialog__dismiss {
+  color: var(--stia-muted);
+  font-size: 11px;
+  text-align: center;
 }
 
 .stia-image-viewer-open {

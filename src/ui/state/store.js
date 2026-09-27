@@ -5,6 +5,7 @@ export function createStore() {
     settings: {
       enabled: true,
       autoGenerate: false,
+      enableErrorPopup: true,
       generationProvider: 'openai',
       themeMode: 'tavern',
     },

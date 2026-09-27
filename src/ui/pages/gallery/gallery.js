@@ -49,7 +49,7 @@ function isMobileBrowser() {
   return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '');
 }
 
-export function createGalleryPage(api) {
+export function createGalleryPage(api, { onError = () => {} } = {}) {
   const root = document.createElement('section');
   root.className = 'stia-gallery-page';
   const heading = document.createElement('div');
@@ -144,10 +144,11 @@ export function createGalleryPage(api) {
     };
   }
 
-  function announce(message, isError = false) {
+  function announce(message, isError = false, error = null) {
     status.hidden = !message;
     status.textContent = message || '';
     status.className = `stia-status${isError ? ' stia-error' : ''}`;
+    if (isError && message) onError({ ...error, message }, '画廊操作失败');
   }
 
   function syncFilterOptions() {
@@ -212,7 +213,7 @@ export function createGalleryPage(api) {
     favorite.setAttribute('aria-pressed', String(result.favorite));
     favorite.addEventListener('click', event => {
       event.stopPropagation();
-      void toggleFavorite(result).catch(error => announce(error.message, true));
+      void toggleFavorite(result).catch(error => announce(error.message, true, error));
     });
     cardTools.append(favorite);
     if (batchMode) {
@@ -324,7 +325,7 @@ export function createGalleryPage(api) {
       syncFilterOptions();
       applyFilters();
     } catch (error) {
-      announce(error.message, true);
+      announce(error.message, true, error);
       allItems = [];
       filteredItems = [];
       render();
@@ -416,13 +417,13 @@ export function createGalleryPage(api) {
     render();
   });
   favoriteSelected.addEventListener('click', () => {
-    void batchFavorite(true).catch(error => announce(error.message || '批量收藏失败', true));
+    void batchFavorite(true).catch(error => announce(error.message || '批量收藏失败', true, error));
   });
   unfavoriteSelected.addEventListener('click', () => {
-    void batchFavorite(false).catch(error => announce(error.message || '批量取消收藏失败', true));
+    void batchFavorite(false).catch(error => announce(error.message || '批量取消收藏失败', true, error));
   });
   deleteSelected.addEventListener('click', () => {
-    void batchDelete().catch(error => announce(error.message || '批量删除失败', true));
+    void batchDelete().catch(error => announce(error.message || '批量删除失败', true, error));
   });
   downloadSelected.addEventListener('click', batchDownload);
   loadMore.addEventListener('click', () => {

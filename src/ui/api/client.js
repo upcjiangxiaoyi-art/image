@@ -106,6 +106,7 @@ export function createApiClient({
       executionMode: 'server',
       generationProvider: local.generationProvider,
       themeMode: local.themeMode,
+      enableErrorPopup: local.enableErrorPopup,
     };
   }
 
@@ -117,6 +118,8 @@ export function createApiClient({
     delete remotePatch.executionMode;
     delete remotePatch.generationProvider;
     delete remotePatch.themeMode;
+    /* 报错弹窗是浏览器这一端的界面偏好，和主题一样只存本地。 */
+    delete remotePatch.enableErrorPopup;
     const remote = Object.keys(remotePatch).length
       ? await server.updateSettings(remotePatch)
       : await server.getSettings();
@@ -125,6 +128,7 @@ export function createApiClient({
       executionMode: 'server',
       generationProvider: local.generationProvider,
       themeMode: local.themeMode,
+      enableErrorPopup: local.enableErrorPopup,
     };
   }
 

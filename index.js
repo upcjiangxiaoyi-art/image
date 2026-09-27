@@ -20,6 +20,7 @@ import { removeDrawTagFromMessage } from './src/ui/state/tag-removal.js';
 import { createPromptOverrideDialog } from './src/ui/pages/prompt-override/prompt-override.js';
 import {
   createErrorDialog,
+  describeError,
   describeGenerationProblem,
   requestedQuality,
 } from './src/ui/pages/error-dialog/error-dialog.js';
@@ -38,23 +39,38 @@ const api = createApiClient({
   keyStorage: accountStorage,
 });
 const store = createStore();
+let errorDialog;
+let reportedServiceError = null;
 store.subscribe(state => {
   document.documentElement.classList.toggle('stia-disabled', !state.settings.enabled);
   applyThemeMode(state.settings.themeMode);
+  /* 连不上服务端插件、读不到聊天里的生图数据等，只在出现新的错误时弹一次。 */
+  if (state.serviceError && state.serviceError !== reportedServiceError) {
+    reportedServiceError = state.serviceError;
+    reportError(state.serviceError, '画笺服务出错');
+  }
 });
 applyThemeMode(store.state.settings.themeMode);
 const activeTags = new Set();
 const GALLERY_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
 const TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'interrupted', 'cancelled']);
-let errorDialog;
 
-function reportProblem(context) {
+function showProblem(describe) {
+  if (store.state.settings.enableErrorPopup === false) return;
   try {
-    const problem = describeGenerationProblem(context);
+    const problem = describe();
     if (problem) errorDialog?.show(problem);
   } catch (error) {
     console.warn('[画笺] 无法显示报错弹窗', error);
   }
+}
+
+function reportProblem(context) {
+  showProblem(() => describeGenerationProblem(context));
+}
+
+function reportError(error, title) {
+  showProblem(() => describeError(error, title));
 }
 
 async function runGalleryCleanup() {
@@ -207,19 +223,24 @@ const actions = {
     });
   },
   cancel: async attemptId => {
-    await api.cancel(attemptId);
-    const entry = [...store.state.tagStates.values()]
-      .find(value => value.attempts?.some(attempt => attempt.attemptId === attemptId));
-    const tagId = entry?.tagId;
-    if (tagId) {
-      await refreshTag(tagId);
+    try {
+      await api.cancel(attemptId);
+      const entry = [...store.state.tagStates.values()]
+        .find(value => value.attempts?.some(attempt => attempt.attemptId === attemptId));
+      const tagId = entry?.tagId;
+      if (tagId) {
+        await refreshTag(tagId);
+      }
+    } catch (error) {
+      reportError(error, '取消失败');
+      throw error;
     }
   },
   openGallery: () => panel.show('gallery'),
   remove: async tag => removeTag(tag),
 };
 const renderer = createMessageRenderer({ compat, api, store, actions });
-const events = createMessageEvents({ compat, api, store, renderer, autoQueue });
+const events = createMessageEvents({ compat, api, store, renderer, autoQueue, onError: reportError });
 
 /* 一键删除：卡片 + 消息里的 <draw> 注入词 + 标签元数据一起清掉，落盘后不留痕迹。 */
 async function removeTag(tag) {
@@ -244,6 +265,7 @@ async function removeTag(tag) {
     await compat.save();
   } catch (error) {
     console.error('[画笺] 删除生图标签后无法保存聊天', error);
+    reportError(error, '删除后保存聊天失败');
   }
   await events.processMessage(messageId, { live: false });
   return true;
@@ -257,12 +279,15 @@ function installToolButton() {
 }
 
 function initialize() {
-  panel = createToolPanel({ api, store });
-  promptOverrideDialog = createPromptOverrideDialog();
   errorDialog = createErrorDialog();
+  panel = createToolPanel({ api, store, onError: reportError });
+  promptOverrideDialog = createPromptOverrideDialog();
   installToolButton();
   events.bind();
-  void events.hydrate();
+  void events.hydrate().catch(error => {
+    console.error('[画笺] 加载聊天里的生图卡片失败', error);
+    reportError(error, '加载聊天里的生图卡片失败');
+  });
   void runGalleryCleanup();
   setInterval(() => void runGalleryCleanup(), GALLERY_CLEANUP_INTERVAL_MS);
 }

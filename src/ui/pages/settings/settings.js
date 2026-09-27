@@ -111,7 +111,15 @@ function downloadJson(filename, value) {
   setTimeout(() => URL.revokeObjectURL(href), 0);
 }
 
-export function createToolPanel({ api, store }) {
+/* 按钮文字去掉前面的符号，拼成报错弹窗的标题，例如「测试模型接口失败」。 */
+function actionTitle(control) {
+  const label = control?.tagName === 'BUTTON'
+    ? String(control.textContent || '').replace(/^[^\p{L}\p{N}]+/u, '').trim()
+    : '';
+  return label ? `${label}失败` : '设置操作失败';
+}
+
+export function createToolPanel({ api, store, onError = () => {} }) {
   const overlay = document.createElement('div');
   overlay.className = 'stia-overlay';
   overlay.hidden = true;
@@ -140,13 +148,14 @@ export function createToolPanel({ api, store }) {
 
   const settingsPage = document.createElement('section');
   settingsPage.className = 'stia-settings-page';
-  const gallery = createGalleryPage(api);
+  const gallery = createGalleryPage(api, { onError });
   gallery.root.hidden = true;
 
   const enabled = input('checkbox');
   const autoGenerate = input('checkbox');
   const enablePromptOverrideRegenerate = input('checkbox');
   const enableSmartRetry = input('checkbox');
+  const enableErrorPopup = input('checkbox');
   const themeMode = select([
     ['tavern', '跟随酒馆主题'],
     ['light', '日间模式'],
@@ -340,6 +349,7 @@ export function createToolPanel({ api, store }) {
     } catch (error) {
       status.className = 'stia-status stia-error';
       status.textContent = error.message;
+      onError(error, actionTitle(control));
     } finally {
       control.disabled = false;
     }
@@ -382,6 +392,7 @@ export function createToolPanel({ api, store }) {
       store.set({ settings: { ...store.state.settings, [key]: previous } });
       status.className = 'stia-status stia-error';
       status.textContent = `保存失败：${error.message}`;
+      onError(error, '设置保存失败');
     } finally {
       control.disabled = false;
     }
@@ -408,6 +419,9 @@ export function createToolPanel({ api, store }) {
       '生成失败后智能重试已开启',
       '生成失败后智能重试已关闭',
     );
+  });
+  enableErrorPopup.addEventListener('change', () => {
+    void persistBooleanSetting(enableErrorPopup, 'enableErrorPopup', '报错弹窗已开启', '报错弹窗已关闭');
   });
 
   function updateModelList(models, selectedValue = '') {
@@ -1086,7 +1100,12 @@ export function createToolPanel({ api, store }) {
   const smartRetryDescription = document.createElement('small');
   smartRetryDescription.textContent = '仅在上游明确拒绝可选参数时自动回退一次；不会重试审核、限流、网络或 5xx 错误';
   smartRetryField.querySelector('span')?.append(smartRetryDescription);
-  automationSection.append(autoField, promptOverrideField, smartRetryField);
+  const errorPopupField = field('报错弹窗', enableErrorPopup);
+  errorPopupField.classList.add('stia-switch-field', 'stia-switch-field--row');
+  const errorPopupDescription = document.createElement('small');
+  errorPopupDescription.textContent = '生图失败、连不上、超时、被审核拦截等报错时弹出提示，点一下就关';
+  errorPopupField.querySelector('span')?.append(errorPopupDescription);
+  automationSection.append(autoField, promptOverrideField, smartRetryField, errorPopupField);
 
   const appearanceSection = document.createElement('section');
   appearanceSection.className = 'stia-section';
@@ -1267,6 +1286,7 @@ export function createToolPanel({ api, store }) {
         autoGenerate: autoGenerate.checked,
         enablePromptOverrideRegenerate: enablePromptOverrideRegenerate.checked,
         enableSmartRetry: enableSmartRetry.checked,
+        enableErrorPopup: enableErrorPopup.checked,
         generationProvider: provider,
         executionMode: requestedMode,
         allowHttp: allowHttp.checked,
@@ -1333,6 +1353,7 @@ export function createToolPanel({ api, store }) {
       autoGenerate.checked = settings.autoGenerate;
       enablePromptOverrideRegenerate.checked = settings.enablePromptOverrideRegenerate === true;
       enableSmartRetry.checked = settings.enableSmartRetry === true;
+      enableErrorPopup.checked = settings.enableErrorPopup !== false;
       themeMode.value = ['tavern', 'light', 'dark'].includes(settings.themeMode)
         ? settings.themeMode
         : 'tavern';
