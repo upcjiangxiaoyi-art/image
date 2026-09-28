@@ -348,7 +348,7 @@ export function createDirectApiClient({
 
   async function persistAttempt(fallbackFound, attempt) {
     const found = findTag(attempt.tagId) || fallbackFound;
-    if (!found) throw new DirectError('VALIDATION_FAILED', '找不到对应的生图标签');
+    if (!found) throw new DirectError('TAG_NOT_FOUND', '找不到对应的生图标签', 404);
     found.tag.attempts ??= [];
     const index = found.tag.attempts.findIndex(item => item.attemptId === attempt.attemptId);
     if (index >= 0) found.tag.attempts[index] = clone(attempt);
@@ -518,7 +518,7 @@ export function createDirectApiClient({
   async function generate(input) {
     await ensureGalleryReady();
     let found = findTag(input.tagId);
-    if (!found) throw new DirectError('VALIDATION_FAILED', '找不到对应的生图标签');
+    if (!found) throw new DirectError('TAG_NOT_FOUND', '找不到对应的生图标签', 404);
     const existing = found.tag.attempts?.find(item => item.attemptId === input.attemptId);
     if (existing) return clone(existing);
     const provider = input.provider || namespace.settings.generationProvider || 'openai';
@@ -808,7 +808,7 @@ export function createDirectApiClient({
     mode: () => namespace.settings.executionMode || 'direct',
     health: async () => ({
       mode: 'direct',
-      version: '1.6.11',
+      version: '1.6.12',
       corsRequired: true,
       storage: 'sillytavern-images',
     }),

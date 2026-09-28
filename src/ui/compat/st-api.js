@@ -59,6 +59,17 @@ export function createStCompat(dependencies) {
     return selected;
   }
 
+  /* 酒馆还在流式输出这一层时正文随时会变：可能被停止、重 roll，写完后还会过一遍正则脚本、
+     去掉行尾空格。自动生图要等它写完（MESSAGE_RECEIVED 时 isFinished 已为 true）。
+     messageId 还是 -1 说明新内容尚未开始写，此时正在准备的是最后一层。 */
+  function isStreaming(messageId) {
+    const processor = context()?.streamingProcessor;
+    if (!processor || processor.isFinished || processor.isStopped) return false;
+    const streamingId = Number(processor.messageId);
+    const target = Number(messageId);
+    return streamingId >= 0 ? streamingId === target : target === chat().length - 1;
+  }
+
   function messageElement(messageId) {
     return document.querySelector(`#chat .mes[mesid="${CSS.escape(String(messageId))}"]`);
   }
@@ -71,6 +82,7 @@ export function createStCompat(dependencies) {
     headers,
     event,
     on,
+    isStreaming,
     messageElement,
   };
 }

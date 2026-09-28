@@ -11,6 +11,7 @@ const ERROR_MESSAGES = {
   IMAGE_DOWNLOAD_FAILED: '图片下载失败',
   LOCAL_SAVE_FAILED: '图片保存到酒馆失败',
   VALIDATION_FAILED: '请求参数无效',
+  TAG_NOT_FOUND: '这张卡片对应的消息已经重新生成或改动过，生图标签已失效',
 };
 
 export class DirectError extends Error {

@@ -67,6 +67,8 @@ function premiumQualityNote(quality) {
 }
 
 export function describeGenerationProblem({ attempt, error, quality = '' } = {}) {
+  /* 消息被重 roll、滑走、改动或删除后，排着的旧标签已经没有意义，不打扰。 */
+  if ((attempt?.errorCode || error?.code) === 'TAG_NOT_FOUND') return null;
   const status = attempt?.status || (error ? 'failed' : '');
   if (status === 'failed' || status === 'interrupted') {
     const interrupted = status === 'interrupted';

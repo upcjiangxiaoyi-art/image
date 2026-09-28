@@ -85,3 +85,22 @@ test('全量元数据接口不受旧画廊每页 30 张限制', async () => {
   assert.equal((await client.gallery()).items.length, 30);
   assert.equal((await client.galleryMetadata()).items.length, 35);
 });
+
+test('消息被重 roll 或删掉后，旧标签的生图在发请求之前就停下，报 TAG_NOT_FOUND', async t => {
+  const originalFetch = globalThis.fetch;
+  let fetches = 0;
+  globalThis.fetch = async () => { fetches += 1; throw new Error('不该发请求'); };
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const client = createDirectApiClient({
+    compat: { chat: () => [], save: async () => {}, headers: () => ({}) },
+    extensionSettings: { stImageAtelier: { settings: { enabled: true } } },
+    saveSettingsDebounced: () => {},
+    galleryStore: createMemoryGalleryMetadataStore(),
+    keyStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+  });
+  await assert.rejects(
+    client.generate({ tagId: 'gone', attemptId: 'auto:gone', requestMode: 'auto', prompt: 'x', parameters: {} }),
+    error => error.code === 'TAG_NOT_FOUND' && /重新生成或改动/.test(error.message),
+  );
+  assert.equal(fetches, 0);
+});

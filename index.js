@@ -193,6 +193,11 @@ async function generate(tag, mode, overrides = {}) {
         attempts: [optimisticAttempt, ...(latest.attempts || [])],
       });
     }
+    /* 消息已被重 roll、滑走、改动或删除：旧标签失效，在发请求之前就停了，不花钱也不弹窗。 */
+    if (error?.code === 'TAG_NOT_FOUND') {
+      console.info('[画笺] 生图标签已失效（消息重新生成或改动过），跳过', tag.tagId);
+      return null;
+    }
     /* 落盘的失败记录带「已尝试移除 … 后重试一次」等补充说明，优先用它。 */
     if (!replay) {
       reportProblem({

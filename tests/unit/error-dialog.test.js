@@ -207,6 +207,14 @@ test('失败弹窗沿用卡片上的报错，并补上卡片没显示的错误�
   assert.equal(downloadBlocked.title, '图片下载失败', '生图成功只是下载不了，不说成连不上服务器');
 });
 
+test('标签已失效（消息被重 roll、滑走、改动或删除）不弹窗', () => {
+  const error = new DirectError('TAG_NOT_FOUND', '找不到对应的生图标签', 404);
+  assert.equal(describeGenerationProblem({ error }), null);
+  assert.equal(describeGenerationProblem({
+    attempt: { status: 'failed', errorCode: 'TAG_NOT_FOUND', errorMessage: error.message },
+  }), null);
+});
+
 test('生图以外的报错也能描述：按类别起标题，其余用调用方给的标题', () => {
   assert.equal(describeError(null), null);
   assert.deepEqual(describeError(new Error('额外请求参数不是有效 JSON'), '保存预设失败'), {

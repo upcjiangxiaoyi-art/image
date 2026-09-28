@@ -58,10 +58,13 @@ export function createMessageEvents({ compat, api, store, renderer, autoQueue, o
     }
     renderer.mount(messageId, tags);
 
+    /* 还在流式输出时只挂卡片、不排队：写完后标签可能变（被停、被重 roll、正则改写），
+       早排的队会变成失效标签或白花一张图。等 MESSAGE_RECEIVED 拿到定稿再排。 */
     const eligibleLiveMessage = store.state.settings.enabled
       && live
       && generationType !== 'first_message'
-      && store.state.settings.autoGenerate;
+      && store.state.settings.autoGenerate
+      && !compat.isStreaming?.(messageId);
     if (eligibleLiveMessage) {
       for (const tag of tags.slice(0, 3)) {
         const current = store.state.tagStates.get(tag.tagId);
