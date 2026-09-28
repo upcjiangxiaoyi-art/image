@@ -124,57 +124,56 @@ export function describeError(error, fallbackTitle = '操作失败') {
   };
 }
 
-function paragraph(className, text) {
-  const element = document.createElement('p');
+function block(className, text = '') {
+  const element = document.createElement('div');
   element.className = className;
-  element.textContent = text;
+  if (text) element.textContent = text;
   return element;
 }
 
+/* 用原生 <dialog> + showModal() 放进浏览器顶层（top layer）：主题或角色卡 CSS 给 body 加的
+   transform / 滤镜、各种 z-index 装饰都挪不动也盖不住它，永远相对屏幕居中；背景变暗交给
+   ::backdrop，点背景也一定点得到。浏览器不支持 showModal 时退回普通的固定定位。 */
 export function createErrorDialog() {
-  const overlay = document.createElement('div');
-  overlay.className = 'stia-error-dialog';
-  overlay.hidden = true;
-  const panel = document.createElement('section');
-  panel.className = 'stia-error-dialog__panel';
-  panel.setAttribute('role', 'alertdialog');
-  panel.setAttribute('aria-modal', 'true');
-  panel.tabIndex = -1;
-  const heading = document.createElement('h3');
-  heading.className = 'stia-error-dialog__title';
+  const root = document.createElement('dialog');
+  root.className = 'stia-error-dialog';
+  root.hidden = true;
+  root.setAttribute('role', 'alertdialog');
+  root.setAttribute('aria-modal', 'true');
+  root.tabIndex = -1;
+  const heading = block('stia-error-dialog__title');
   const icon = document.createElement('span');
   icon.className = 'stia-error-dialog__icon';
   icon.setAttribute('aria-hidden', 'true');
   const headingText = document.createElement('span');
+  headingText.className = 'stia-error-dialog__heading';
   heading.append(icon, headingText);
-  const list = document.createElement('div');
-  list.className = 'stia-error-dialog__list';
-  const dismissHint = paragraph('stia-error-dialog__dismiss', '点一下关闭');
-  panel.append(heading, list, dismissHint);
-  overlay.append(panel);
-  document.body.append(overlay);
+  const list = block('stia-error-dialog__list');
+  const dismissHint = block('stia-error-dialog__dismiss', '点一下关闭');
+  root.append(heading, list, dismissHint);
+  document.body.append(root);
 
   let entries = [];
   let returnFocus = null;
 
   function render() {
     const tone = entries.some(entry => entry.tone === 'danger') ? 'danger' : 'warning';
-    panel.dataset.tone = tone;
+    root.dataset.tone = tone;
     icon.textContent = tone === 'danger' ? '×' : '!';
     headingText.textContent = entries.length === 1
       ? entries[0].title
       : `画笺 · ${entries.length} 条报错`;
-    panel.setAttribute('aria-label', headingText.textContent);
+    root.setAttribute('aria-label', headingText.textContent);
     list.replaceChildren(...entries.map(entry => {
-      const item = document.createElement('article');
-      item.className = `stia-error-dialog__item is-${entry.tone}`;
+      const item = block(`stia-error-dialog__item is-${entry.tone}`);
       if (entries.length > 1 || entry.count > 1) {
         const title = document.createElement('strong');
+        title.className = 'stia-error-dialog__entry-title';
         title.textContent = entry.count > 1 ? `${entry.title}（×${entry.count}）` : entry.title;
         item.append(title);
       }
-      item.append(paragraph('stia-error-dialog__message', entry.message));
-      if (entry.hint) item.append(paragraph('stia-error-dialog__hint', entry.hint));
+      item.append(block('stia-error-dialog__message', entry.message));
+      if (entry.hint) item.append(block('stia-error-dialog__hint', entry.hint));
       if (entry.retries.size) {
         const retry = document.createElement('button');
         retry.type = 'button';
@@ -196,7 +195,7 @@ export function createErrorDialog() {
     entries = entries.filter(item => item !== entry);
     if (entries.length) {
       render();
-      panel.focus({ preventScroll: true });
+      root.focus({ preventScroll: true });
     } else {
       close();
     }
@@ -214,11 +213,33 @@ export function createErrorDialog() {
     entry.retries.set(retry.key ?? `retry-${entry.retries.size}`, retry.run);
   }
 
+  function open() {
+    if (!root.isConnected) document.body.append(root);
+    root.hidden = false;
+    try {
+      if (typeof root.showModal === 'function') {
+        if (!root.hasAttribute('open')) root.showModal();
+      } else {
+        root.setAttribute('open', '');
+      }
+    } catch {
+      root.setAttribute('open', '');
+    }
+    root.focus({ preventScroll: true });
+  }
+
   function close() {
-    if (overlay.hidden) return;
-    overlay.hidden = true;
+    if (root.hidden) return;
+    root.hidden = true;
     entries = [];
     list.replaceChildren();
+    if (root.hasAttribute('open')) {
+      if (typeof root.close === 'function') root.close();
+      else root.removeAttribute('open');
+    }
+    /* 酒馆会把 toast 提示容器挪进最后打开的 <dialog>；关掉时还回 body，免得酒馆的提示跟着看不见。 */
+    const toasts = root.querySelector('#toast-container');
+    if (toasts) document.body.append(toasts);
     const target = returnFocus;
     returnFocus = null;
     if (target?.isConnected && typeof target.focus === 'function') target.focus({ preventScroll: true });
@@ -237,29 +258,37 @@ export function createErrorDialog() {
     }
     addRetry(entry, retry);
     render();
-    if (!overlay.hidden) return;
-    returnFocus = document.activeElement;
-    overlay.hidden = false;
-    panel.focus({ preventScroll: true });
+    if (!root.hidden && root.hasAttribute('open')) return;
+    if (root.hidden) returnFocus = document.activeElement;
+    open();
   }
 
-  /* 点弹窗任意位置或空白处都关；在弹窗里拖选文字（想复制报错）时不关。 */
-  overlay.addEventListener('click', () => {
+  /* 点弹窗任意位置或背景都关（点背景时事件也落在 dialog 上）；拖选文字想复制时不关。 */
+  root.addEventListener('click', () => {
     const selection = document.getSelection?.();
-    if (selection && !selection.isCollapsed && panel.contains(selection.anchorNode)) return;
+    if (selection && !selection.isCollapsed && root.contains(selection.anchorNode)) return;
     close();
   });
-  panel.addEventListener('keydown', event => {
-    if (event.target !== panel || (event.key !== 'Enter' && event.key !== ' ')) return;
+  root.addEventListener('keydown', event => {
+    if (event.target !== root || (event.key !== 'Enter' && event.key !== ' ')) return;
     event.preventDefault();
     close();
   });
+  /* 浏览器自己关掉（安卓返回手势、Esc 的默认行为等）时同步状态。 */
+  root.addEventListener('cancel', event => {
+    event.preventDefault();
+    close();
+  });
+  /* close 事件是异步派发的：关掉后马上又弹了新报错时，这个迟到的事件不能把新弹窗关掉。 */
+  root.addEventListener('close', () => {
+    if (!root.hasAttribute('open')) close();
+  });
   /* 捕获阶段拦下 Escape：只关弹窗，不连带关掉下面的设置窗口。 */
   document.addEventListener('keydown', event => {
-    if (event.key !== 'Escape' || overlay.hidden) return;
+    if (event.key !== 'Escape' || root.hidden) return;
     event.stopPropagation();
     close();
   }, true);
 
-  return { show, close, root: overlay };
+  return { show, close, root };
 }

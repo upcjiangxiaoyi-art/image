@@ -272,7 +272,7 @@ test('报错弹窗：点一下任意位置就关，选中文字时不关；同�
   document.body.append(outside);
   outside.focus();
   const dialog = createErrorDialog();
-  const panel = dialog.root.querySelector('[role="alertdialog"]');
+  const panel = dialog.root;
   const items = () => dialog.root.querySelectorAll('.stia-error-dialog__item');
   const click = target => target.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
   assert.equal(dialog.root.hidden, true);
@@ -311,7 +311,7 @@ test('报错弹窗：点一下任意位置就关，选中文字时不关；同�
 
   dialog.show(failure);
   click(dialog.root);
-  assert.equal(dialog.root.hidden, true, '点空白处也关');
+  assert.equal(dialog.root.hidden, true, '点背景也关（点 ::backdrop 时事件落在 dialog 本身）');
 
   dialog.show(failure);
   panel.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
@@ -329,10 +329,77 @@ test('报错弹窗：点一下任意位置就关，选中文字时不关；同�
   assert.equal(dialog.root.hidden, true, '没有报错内容时不弹');
 });
 
+test('弹窗是原生 <dialog>，用 showModal() 放进浏览器顶层；浏览器自己关掉时同步状态', t => {
+  const dom = withDom(t);
+  const calls = [];
+  const proto = dom.window.HTMLDialogElement.prototype;
+  proto.showModal = function showModal() {
+    calls.push('showModal');
+    this.setAttribute('open', '');
+  };
+  proto.close = function close() {
+    calls.push('close');
+    this.removeAttribute('open');
+    this.dispatchEvent(new dom.window.Event('close'));
+  };
+  const dialog = createErrorDialog();
+  assert.equal(dialog.root.tagName, 'DIALOG');
+  assert.equal(dialog.root.getAttribute('role'), 'alertdialog');
+  assert.equal(dialog.root.parentElement, document.body);
+
+  dialog.show({ tone: 'danger', title: '请求超时', message: '请求超时' });
+  dialog.show({ tone: 'danger', title: '连不上服务器', message: '浏览器连不上生图接口' });
+  assert.deepEqual(calls, ['showModal'], '只打开一次，后来的报错合并进同一个弹窗');
+  assert.equal(dialog.root.hasAttribute('open'), true);
+
+  dialog.root.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+  assert.deepEqual(calls, ['showModal', 'close']);
+  assert.equal(dialog.root.hidden, true);
+
+  dialog.show({ tone: 'danger', title: '请求超时', message: '请求超时' });
+  dialog.root.removeAttribute('open');
+  dialog.root.dispatchEvent(new dom.window.Event('close'));
+  assert.equal(dialog.root.hidden, true, '安卓返回手势等由浏览器关掉时同步收起');
+  dialog.show({ tone: 'danger', title: '连不上服务器', message: '浏览器连不上生图接口' });
+  assert.equal(dialog.root.querySelectorAll('.stia-error-dialog__item').length, 1, '上一次的报错已清空');
+  assert.equal(calls.filter(call => call === 'showModal').length, 3);
+
+  const toasts = document.createElement('div');
+  toasts.id = 'toast-container';
+  dialog.root.append(toasts);
+  const cancel = new dom.window.Event('cancel', { cancelable: true });
+  dialog.root.dispatchEvent(cancel);
+  assert.equal(cancel.defaultPrevented, true, 'Esc 触发的 cancel 由弹窗自己收尾');
+  assert.equal(dialog.root.hidden, true);
+  assert.equal(toasts.parentElement, document.body, '酒馆挪进来的 toast 容器关掉时还回 body');
+});
+
+test('关掉后立刻又来新报错：迟到的 close 事件不会把新弹窗关掉', async t => {
+  const dom = withDom(t);
+  const proto = dom.window.HTMLDialogElement.prototype;
+  proto.showModal = function showModal() { this.setAttribute('open', ''); };
+  proto.close = function close() {
+    this.removeAttribute('open');
+    setTimeout(() => this.dispatchEvent(new dom.window.Event('close')), 0);
+  };
+  const dialog = createErrorDialog();
+  dialog.show({ tone: 'danger', title: '接口还没配置好', message: '缺少 API 密钥' });
+  dialog.root.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+  assert.equal(dialog.root.hidden, true);
+  dialog.show({ tone: 'danger', title: '接口还没配置好', message: '缺少 API 密钥' });
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(dialog.root.hidden, false, '新弹窗还开着');
+  assert.equal(dialog.root.hasAttribute('open'), true);
+
+  dialog.root.removeAttribute('open');
+  dialog.show({ tone: 'danger', title: '请求超时', message: '请求超时' });
+  assert.equal(dialog.root.hasAttribute('open'), true, '状态对不上时照样重新打开，不会变成隐形弹窗');
+});
+
 test('生图失败那条带「重新生成」：点了只收起这一条并重跑，合并的几张一起重跑；点别处只关不重跑', t => {
   const dom = withDom(t);
   const dialog = createErrorDialog();
-  const panel = dialog.root.querySelector('[role="alertdialog"]');
+  const panel = dialog.root;
   const items = () => dialog.root.querySelectorAll('.stia-error-dialog__item');
   const retryButtons = () => [...dialog.root.querySelectorAll('.stia-error-dialog__retry')];
   const runs = [];

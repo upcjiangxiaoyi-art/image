@@ -1074,37 +1074,60 @@
   resize: vertical;
 }
 
+/* 报错弹窗是原生 <dialog>，showModal() 后在浏览器顶层显示。主题或角色卡注入的通用 CSS
+   （改 dialog / div 的定位、给 body 加 transform 等）不能把它挪走，所以定位相关的属性都加了
+   !important；不支持 showModal 的浏览器靠同一套固定定位居中。 */
 .stia-error-dialog {
-  position: fixed;
-  inset: 0;
-  z-index: 2147483010;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 16px;
-  color: var(--stia-text);
-  background: rgb(0 0 0 / 38%);
-  cursor: pointer;
-  font: 400 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  -webkit-tap-highlight-color: transparent;
-}
-
-.stia-error-dialog__panel {
-  display: flex;
+  box-sizing: border-box !important;
+  position: fixed !important;
+  inset: 0 !important;
+  z-index: 2147483010 !important;
+  width: min(320px, calc(100vw - 32px)) !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  height: -webkit-fit-content !important;
+  height: fit-content !important;
+  min-height: 0 !important;
+  max-height: min(60dvh, 420px) !important;
+  margin: auto !important;
+  transform: none !important;
+  visibility: visible !important;
+  opacity: 1 !important;
   flex-direction: column;
   gap: 8px;
-  width: 100%;
-  max-width: 320px;
-  max-height: min(60dvh, 420px);
+  overflow: hidden;
   padding: 12px 14px 10px;
+  color: var(--stia-text);
   background: var(--stia-panel);
   border: 1px solid color-mix(in srgb, var(--stia-danger) 40%, var(--stia-border));
   border-radius: 12px;
   box-shadow: 0 12px 40px rgb(0 0 0 / 35%);
+  cursor: pointer;
+  font: 400 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  text-align: left;
   outline: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
-.stia-error-dialog__panel[data-tone="warning"] {
+.stia-error-dialog[open] {
+  display: flex !important;
+}
+
+.stia-error-dialog:not([open]) {
+  display: none !important;
+}
+
+.stia-error-dialog::backdrop {
+  background: rgb(0 0 0 / 38%);
+}
+
+.stia-error-dialog [class*="stia-error-dialog__"] {
+  position: static !important;
+  float: none !important;
+  transform: none !important;
+}
+
+.stia-error-dialog[data-tone="warning"] {
   border-color: color-mix(in srgb, var(--stia-warning) 40%, var(--stia-border));
 }
 
@@ -1129,7 +1152,7 @@
   font-size: 12px;
 }
 
-.stia-error-dialog__panel[data-tone="warning"] .stia-error-dialog__icon {
+.stia-error-dialog[data-tone="warning"] .stia-error-dialog__icon {
   color: var(--stia-warning);
   background: var(--stia-warning-muted);
 }
@@ -1139,6 +1162,7 @@
   flex: 1 1 auto;
   gap: 8px;
   min-height: 0;
+  margin: 0;
   overflow: auto;
   overscroll-behavior: contain;
 }
@@ -1146,6 +1170,7 @@
 .stia-error-dialog__item {
   display: grid;
   gap: 3px;
+  margin: 0;
   padding-left: 8px;
   border-left: 2px solid var(--stia-danger);
 }
@@ -1154,11 +1179,12 @@
   border-left-color: var(--stia-warning);
 }
 
-.stia-error-dialog__item strong {
+.stia-error-dialog__entry-title {
   color: var(--stia-danger);
+  font-weight: 700;
 }
 
-.stia-error-dialog__item.is-warning strong {
+.stia-error-dialog__item.is-warning .stia-error-dialog__entry-title {
   color: var(--stia-warning);
 }
 
