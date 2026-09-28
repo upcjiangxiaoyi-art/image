@@ -3,7 +3,7 @@ import { MODERATION_PATTERN } from '../../api/openai-direct.js';
 /* 报错弹窗：生图失败、连不上、超时、被审核拦截等报错都弹；「生成失败后智能重试」去掉
    quality / size / n 才出图时也弹，免得把回退后的图当成按 max 出的。设置页、画廊等处的
    报错也走这里，卡片和设置页上原有的报错提示照旧保留。点一下弹窗任意位置就关；弹窗开着时
-   再来的报错合并进来，内容相同只累计次数。 */
+   再来的报错合并进来，内容相同只累计次数。生图失败的那条带「重新生成」键，不用再滑到卡片上点。 */
 
 export const PREMIUM_QUALITIES = Object.freeze(['xhigh', 'max']);
 
@@ -175,8 +175,43 @@ export function createErrorDialog() {
       }
       item.append(paragraph('stia-error-dialog__message', entry.message));
       if (entry.hint) item.append(paragraph('stia-error-dialog__hint', entry.hint));
+      if (entry.retries.size) {
+        const retry = document.createElement('button');
+        retry.type = 'button';
+        retry.className = 'stia-button stia-button--primary stia-error-dialog__retry';
+        retry.textContent = entry.retries.size > 1 ? '↻ 全部重新生成' : '↻ 重新生成';
+        retry.addEventListener('click', event => {
+          event.stopPropagation();
+          retryEntry(entry);
+        });
+        item.append(retry);
+      }
       return item;
     }));
+  }
+
+  /* 只收起这一条再重跑；别的报错还留在弹窗里。重跑失败会再弹一次，这里不必再管。 */
+  function retryEntry(entry) {
+    const runs = [...entry.retries.values()];
+    entries = entries.filter(item => item !== entry);
+    if (entries.length) {
+      render();
+      panel.focus({ preventScroll: true });
+    } else {
+      close();
+    }
+    for (const run of runs) {
+      try {
+        void Promise.resolve(run()).catch(() => {});
+      } catch {
+        // 同步抛错同样会由生图流程自己报出来。
+      }
+    }
+  }
+
+  function addRetry(entry, retry) {
+    if (typeof retry?.run !== 'function') return;
+    entry.retries.set(retry.key ?? `retry-${entry.retries.size}`, retry.run);
   }
 
   function close() {
@@ -191,10 +226,16 @@ export function createErrorDialog() {
 
   function show(problem) {
     if (!problem?.message) return;
-    const key = `${problem.title}\n${problem.message}`;
-    const existing = entries.find(entry => entry.key === key);
-    if (existing) existing.count += 1;
-    else entries = [...entries, { ...problem, key, count: 1 }].slice(-MAX_ENTRIES);
+    const { retry, ...details } = problem;
+    const key = `${details.title}\n${details.message}`;
+    let entry = entries.find(item => item.key === key);
+    if (entry) {
+      entry.count += 1;
+    } else {
+      entry = { ...details, key, count: 1, retries: new Map() };
+      entries = [...entries, entry].slice(-MAX_ENTRIES);
+    }
+    addRetry(entry, retry);
     render();
     if (!overlay.hidden) return;
     returnFocus = document.activeElement;
@@ -209,7 +250,7 @@ export function createErrorDialog() {
     close();
   });
   panel.addEventListener('keydown', event => {
-    if (event.key !== 'Enter' && event.key !== ' ') return;
+    if (event.target !== panel || (event.key !== 'Enter' && event.key !== ' ')) return;
     event.preventDefault();
     close();
   });

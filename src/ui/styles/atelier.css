@@ -1187,6 +1187,14 @@
   text-align: center;
 }
 
+.stia-error-dialog__retry {
+  justify-self: end;
+  min-height: 34px;
+  margin-top: 4px;
+  padding: 5px 14px;
+  font-size: 13px;
+}
+
 .stia-image-viewer-open {
   overflow: hidden !important;
 }

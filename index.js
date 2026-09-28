@@ -65,8 +65,12 @@ function showProblem(describe) {
   }
 }
 
-function reportProblem(context) {
-  showProblem(() => describeGenerationProblem(context));
+/* 生图失败的那条带上「重新生成」：按原请求（含调整后重绘的临时提示词）再跑一次。 */
+function reportProblem(context, retry) {
+  showProblem(() => {
+    const problem = describeGenerationProblem(context);
+    return problem?.tone === 'danger' && retry ? { ...problem, retry } : problem;
+  });
 }
 
 function reportError(error, title) {
@@ -130,6 +134,7 @@ async function generate(tag, mode, overrides = {}) {
   const replay = (current.attempts || [])
     .some(item => item.attemptId === attemptId && TERMINAL_STATUSES.has(item.status));
   const quality = requestedQuality({ provider, preset: store.state.preset, tagQuality: tag.quality });
+  const retry = { key: tag.tagId, run: () => generate(tag, 'manual', overrides) };
   store.setTag(tag.tagId, { ...current, attempts: [optimisticAttempt, ...(current.attempts || [])] });
   try {
     const attempt = await api.generate({
@@ -164,12 +169,12 @@ async function generate(tag, mode, overrides = {}) {
     if (TERMINAL_STATUSES.has(attempt.status)) {
       await refreshTag(tag.tagId);
       if (attempt.status === 'succeeded') void runGalleryCleanup();
-      if (!replay) reportProblem({ attempt, quality });
+      if (!replay) reportProblem({ attempt, quality }, retry);
       return attempt;
     }
     const completed = await waitForAttempt(attempt.attemptId, tag.tagId);
     if (completed.status === 'succeeded') void runGalleryCleanup();
-    if (!replay) reportProblem({ attempt: completed, quality });
+    if (!replay) reportProblem({ attempt: completed, quality }, retry);
     return completed;
   } catch (error) {
     try {
@@ -194,7 +199,7 @@ async function generate(tag, mode, overrides = {}) {
         attempt: persisted?.status === 'failed' ? persisted : optimisticAttempt,
         error,
         quality,
-      });
+      }, retry);
     }
     throw error;
   } finally {

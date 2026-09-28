@@ -329,6 +329,58 @@ test('报错弹窗：点一下任意位置就关，选中文字时不关；同�
   assert.equal(dialog.root.hidden, true, '没有报错内容时不弹');
 });
 
+test('生图失败那条带「重新生成」：点了只收起这一条并重跑，合并的几张一起重跑；点别处只关不重跑', t => {
+  const dom = withDom(t);
+  const dialog = createErrorDialog();
+  const panel = dialog.root.querySelector('[role="alertdialog"]');
+  const items = () => dialog.root.querySelectorAll('.stia-error-dialog__item');
+  const retryButtons = () => [...dialog.root.querySelectorAll('.stia-error-dialog__retry')];
+  const runs = [];
+  const retryFor = key => ({
+    key,
+    run: () => {
+      runs.push(key);
+      return Promise.reject(new Error('重跑又失败了，会由生图流程自己再弹'));
+    },
+  });
+  const timeout = { tone: 'danger', title: '请求超时', message: '请求超时' };
+
+  dialog.show({ ...timeout, retry: retryFor('tag-a') });
+  dialog.show({ ...timeout, retry: retryFor('tag-b') });
+  dialog.show({ ...timeout, retry: retryFor('tag-a') });
+  dialog.show({ tone: 'warning', title: '参数被上游拒绝，已自动回退', message: 'quality 已去掉' });
+  dialog.show({ tone: 'danger', title: '连不上服务器', message: '浏览器连不上生图接口', retry: retryFor('tag-c') });
+  assert.equal(items().length, 3);
+  assert.deepEqual(
+    retryButtons().map(button => button.textContent),
+    ['↻ 全部重新生成', '↻ 重新生成'],
+    '回退提醒不带按钮',
+  );
+
+  retryButtons()[0].dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  assert.equal(dialog.root.hidden, false, '焦点在按钮上按 Enter 是按按钮，不是关弹窗');
+  assert.deepEqual(runs, []);
+
+  retryButtons()[0].click();
+  assert.deepEqual(runs, ['tag-a', 'tag-b'], '合并的两张一起重跑，同一张只跑一次');
+  assert.equal(dialog.root.hidden, false, '别的报错还在，弹窗不关');
+  assert.equal(items().length, 2);
+  assert.equal(dialog.root.textContent.includes('请求超时'), false);
+  assert.equal(document.activeElement, panel);
+
+  retryButtons()[0].click();
+  assert.deepEqual(runs, ['tag-a', 'tag-b', 'tag-c']);
+  assert.equal(items().length, 1, '只剩回退提醒');
+  dialog.root.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+  assert.equal(dialog.root.hidden, true);
+  assert.equal(runs.length, 3, '点别处只是关，不重跑');
+
+  dialog.show({ ...timeout, retry: retryFor('tag-d') });
+  retryButtons()[0].click();
+  assert.equal(dialog.root.hidden, true, '最后一条点了重新生成，整个弹窗关掉');
+  assert.equal(runs.at(-1), 'tag-d');
+});
+
 test('画廊报错交给报错弹窗，并带上原始错误', async t => {
   withDom(t);
   const reported = [];
