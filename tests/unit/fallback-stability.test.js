@@ -68,6 +68,22 @@ test('原位置恢复后只迁移对应卡片，其余备用卡片稳定保留',
   } finally { dom.window.close(); }
 });
 
+test('酒馆重建这一层后，把原来的卡片放回去而不是新建一张（图片不用重新加载）', () => {
+  const { dom, container, renderer, tags } = setup();
+  try {
+    renderer.mount('0', tags);
+    const sea = container.querySelector('[data-tag-id="tag-sea"]');
+    const sky = container.querySelector('[data-tag-id="tag-sky"]');
+    container.innerHTML = '<p>正文</p><p><draw>海边场景</draw></p><p><draw>星空场景</draw></p>';
+    assert.equal(sea.isConnected, false, '重建后原卡片被摘下');
+    renderer.mount('0', tags);
+    assert.equal(container.querySelector('[data-tag-id="tag-sea"]'), sea, '放回的是原来那张卡');
+    assert.equal(container.querySelector('[data-tag-id="tag-sky"]'), sky);
+    assert.equal(container.querySelectorAll('.stia-card').length, 2);
+    assert.equal(container.querySelector('draw'), null, '<draw> 仍被卡片替换掉');
+  } finally { dom.window.close(); }
+});
+
 test('真实观察器下，楼底卡片和账本追加不会形成持续查询循环', async () => {
   const { dom, container, events, counters } = setup();
   const timeouts = new Set(), intervals = new Set();

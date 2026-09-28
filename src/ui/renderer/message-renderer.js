@@ -475,6 +475,12 @@ export function createMessageRenderer(dependencies) {
       if (previous && card?.root === previous) return card;
       // DOM 中有孤儿卡片、内存中没有对应实例时，创建受管理的卡片替换它。
       previous?.remove();
+      /* 酒馆重建这一层（改写、滑动、其他扩展重新渲染）后，原卡片只是被摘了下来：把它连同
+         已经加载好的图片放回去，别重新建一张，不然图片要重新加载，看起来会闪一下。 */
+      if (card && !card.root.isConnected) {
+        card.render();
+        return card;
+      }
       return makeCard(tag);
     }
 

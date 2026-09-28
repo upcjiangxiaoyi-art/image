@@ -85,6 +85,13 @@ export function createCard({
     return button('删除', 'stia-button--ghost stia-card__remove', () => onRemove(tag), '×');
   }
 
+  /* 渲染器在任何一张卡有动静时都会把所有卡片重画一遍。画面没变就不重建 DOM；要重建时，
+     同一张图沿用原来那个已经加载、解码好的 <img>。不然每次都换新元素，图片重新加载，
+     看起来就是在闪，展开的「查看提示词」也会被收起。 */
+  let lastSignature = null;
+  let cachedImage = null;
+  let openCurrentImage = null;
+
   function render() {
     const state = getState(tag.tagId) || {};
     const attempt = state.attempts?.[0];
@@ -108,6 +115,15 @@ export function createCard({
       portrait: '竖图',
       landscape: '横图',
     }[tag.ratio] || '';
+    const src = latest ? api.fileUrl(latest.resultId) : '';
+    const signature = JSON.stringify([
+      attempt?.attemptId, attempt?.status, attempt?.requestMode, attempt?.statusMessage,
+      attempt?.model, attempt?.provider, attempt?.errorMessage, size,
+      latest?.resultId, latest?.provider, src, available.length,
+      Boolean(state.tag?.resultIds?.length), actualPrompt, actualNegativePrompt, canAdjust, ratioLabel,
+    ]);
+    if (signature === lastSignature) return;
+    lastSignature = signature;
     root.replaceChildren();
     root.className = 'stia-card';
 
@@ -146,19 +162,24 @@ export function createCard({
       root.classList.add('stia-card--succeeded');
       const media = document.createElement('div');
       media.className = 'stia-card__media';
-      const image = document.createElement('img');
-      image.className = 'stia-card__image';
-      image.src = api.fileUrl(latest.resultId);
+      let image = cachedImage?.src === src ? cachedImage.element : null;
+      if (!image) {
+        image = document.createElement('img');
+        image.className = 'stia-card__image';
+        image.src = src;
+        image.loading = 'lazy';
+        makeImageSaveable(image, () => openCurrentImage?.());
+        cachedImage = { src, element: image };
+      }
       image.alt = actualPrompt.slice(0, 120);
-      image.loading = 'lazy';
       const openOriginal = () => openImageViewer({
-        src: api.fileUrl(latest.resultId),
+        src,
         alt: image.alt,
         filename: latest.resultId,
         prompt: actualPrompt,
         meta: [attempt?.model, size].filter(Boolean).join(' · '),
       });
-      makeImageSaveable(image, openOriginal);
+      openCurrentImage = openOriginal;
       media.append(image);
       if (size) {
         const badge = document.createElement('span');
