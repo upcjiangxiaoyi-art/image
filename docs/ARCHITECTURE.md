@@ -47,8 +47,16 @@ MESSAGE_RECEIVED (live)
 - 自动生成固定使用 `auto:<tagId>`。
 - 发起上游请求前，先把 attempt 写入聊天并等待 `saveChatConditional()` 完成。
 - 当前页面用 `activeTags` 防止双击；已有 attemptId 会直接返回原记录。
-- 刷新后遗留的活动状态改为 `interrupted`，不会自动重发。
-- 酒馆还在流式输出这一层时只挂卡片、不排自动生图，等 `MESSAGE_RECEIVED` 拿到定稿再排；消息被重 roll、滑走、改动或删除后，旧标签的生图在发请求之前就停下（`TAG_NOT_FOUND`）。
+- 遗留的活动状态（刷新、切走聊天、画到一半被滑走）：画廊里已有这次 attemptId 存下的图就接回卡片，没有才改为 `interrupted`，都不会自动重发。
+- 酒馆还在流式输出这一层时只挂卡片、不排自动生图，等 `MESSAGE_RECEIVED` 拿到定稿再排；消息被重 roll、滑走、改动或删除后，旧标签的生图在发请求之前就停下（`TAG_NOT_FOUND`）。这一层正在生成新的滑动版本时，`extra` 还是上一版留下的，同样按失效处理。
+
+## 重 roll 时还在画的图
+
+酒馆滑走时把整份 `extra` 深拷贝进 `swipe_info[旧版].extra`，再换上另一版；重新生成则整条换掉。`src/ui/state/tag-identity.js` 的 `locateTag` 先找每一层当前显示的版本，再找同一层其他滑动版本的存档（当前这一版自己的存档是过期拷贝，不算）。
+
+- 已经发出的生图照常画完、存进画廊。生成记录写到 `locateTag` 找到的地方：卡片还在就写当前这一版，被滑走就写回那一版的存档，滑回去就能看到；哪都找不到就只在画廊里。
+- 切走聊天时写不回原来的聊天文件；回到那个聊天时由上面的「遗留的活动状态」按画廊接回。
+- 出结果时卡片不在眼前（`placement` 为 `swipe` / `gone` / `elsewhere`），报错弹窗提醒一声并带「查看」；失败的也提醒，但不带「重新生成」。
 
 免服务端模式无法提供跨浏览器标签页的服务端原子锁。极端情况下，两个页面同时操作同一聊天仍可能同时提交；需要该保证时使用增强模式。
 
@@ -72,7 +80,7 @@ NovelAI 当前固定走直连模式；官方 `POST /ai/generate-image` 返回的
 
 ## 入口与生图主流程
 
-`index.js` 只负责把酒馆的接口（`script.js`、`extensions.js`、`AccountStorage`）接进来。生图主流程（乐观状态、手动 / 自动 attemptId、增强模式轮询、失败归因、取消）在 `src/ui/state/generation-controller.js`，报错弹窗开不开、失败带不带「重新生成」在 `src/ui/pages/error-dialog/error-dialog.js` 的 `createProblemReporter`，两者都能脱离酒馆单独测试。
+`index.js` 只负责把酒馆的接口（`script.js`、`extensions.js`、`AccountStorage`）接进来。生图主流程（乐观状态、手动 / 自动 attemptId、增强模式轮询、失败归因、出结果时卡片在哪、取消）在 `src/ui/state/generation-controller.js`，报错弹窗开不开、失败带不带「重新生成」在 `src/ui/pages/error-dialog/error-dialog.js` 的 `createProblemReporter`，两者都能脱离酒馆单独测试。
 
 ## 请求逻辑只有一份
 

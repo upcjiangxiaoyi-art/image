@@ -698,8 +698,19 @@
   font-size: 15px;
 }
 
-.stia-card__status > span:last-child {
+.stia-card__status-text {
   display: grid;
+  min-width: 0;
+}
+
+/* 生成计时：靠右、等宽数字，每秒跳动时不左右晃。 */
+.stia-card__elapsed {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--stia-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .stia-card__status strong {
@@ -1131,6 +1142,10 @@
   border-color: color-mix(in srgb, var(--stia-warning) 40%, var(--stia-border));
 }
 
+.stia-error-dialog[data-tone="info"] {
+  border-color: color-mix(in srgb, var(--stia-accent) 40%, var(--stia-border));
+}
+
 .stia-error-dialog__title {
   display: flex;
   align-items: center;
@@ -1157,6 +1172,11 @@
   background: var(--stia-warning-muted);
 }
 
+.stia-error-dialog[data-tone="info"] .stia-error-dialog__icon {
+  color: var(--stia-accent-text);
+  background: var(--stia-accent-muted);
+}
+
 .stia-error-dialog__list {
   display: grid;
   flex: 1 1 auto;
@@ -1179,6 +1199,10 @@
   border-left-color: var(--stia-warning);
 }
 
+.stia-error-dialog__item.is-info {
+  border-left-color: var(--stia-accent);
+}
+
 .stia-error-dialog__entry-title {
   color: var(--stia-danger);
   font-weight: 700;
@@ -1186,6 +1210,10 @@
 
 .stia-error-dialog__item.is-warning .stia-error-dialog__entry-title {
   color: var(--stia-warning);
+}
+
+.stia-error-dialog__item.is-info .stia-error-dialog__entry-title {
+  color: var(--stia-accent-text);
 }
 
 .stia-error-dialog__message,
@@ -1213,7 +1241,8 @@
   text-align: center;
 }
 
-.stia-error-dialog__retry {
+.stia-error-dialog__retry,
+.stia-error-dialog__view {
   justify-self: end;
   min-height: 34px;
   margin-top: 4px;

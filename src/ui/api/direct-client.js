@@ -26,6 +26,7 @@ import {
 } from './artist-preset-transfer.js';
 import { normalizeRetentionSettings, selectCleanupCandidates } from '../gallery/retention.js';
 import { normalizeThemeMode } from '../theme/theme.js';
+import { locateTag } from '../state/tag-identity.js';
 
 const LEGACY_API_KEY_STORAGE = 'stImageAtelier.directApiKey.v1';
 const API_KEY_STORAGE_PREFIX = 'stImageAtelier.directApiKey.v2:';
@@ -322,6 +323,20 @@ export function createDirectApiClient({
     return null;
   }
 
+  /* 写生成记录时找标签：卡片还在就写当前这一版；画到一半被滑走就写回那一版的存档，
+     滑回去就能看到；消息已经不在了（重新生成、删除、改动或切走了聊天）就写进原来那份
+     对象，图照常存进画廊，回到原来的聊天时由 resolveTags 按画廊接回卡片。 */
+  function locateForWrite(tagId, fallback) {
+    return locateTag(compat.chat(), tagId, { isStreaming: compat.isStreaming }) || fallback || null;
+  }
+
+  /* 按 attemptId 在画廊里找这次生成存下的图，按出图顺序排。 */
+  function resultsOfAttempt(attemptId) {
+    return [...resultIndex.values()]
+      .filter(result => result.attemptId === attemptId)
+      .sort((left, right) => (Number(left.generationIndex) || 0) - (Number(right.generationIndex) || 0));
+  }
+
   function stateOf(tagId) {
     const found = findTag(tagId);
     if (!found) return { tagId, tag: null, attempts: [], results: [] };
@@ -348,7 +363,7 @@ export function createDirectApiClient({
   }
 
   async function persistAttempt(fallbackFound, attempt) {
-    const found = findTag(attempt.tagId) || fallbackFound;
+    const found = locateForWrite(attempt.tagId, fallbackFound);
     if (!found) throw new DirectError('TAG_NOT_FOUND', '找不到对应的生图标签', 404);
     found.tag.attempts ??= [];
     const index = found.tag.attempts.findIndex(item => item.attemptId === attempt.attemptId);
@@ -478,13 +493,24 @@ export function createDirectApiClient({
       const found = findTag(tagId);
       if (found) {
         for (const attempt of found.tag.attempts || []) {
-          if (ACTIVE_STATUSES.has(attempt.status) && !controllers.has(attempt.attemptId)) {
+          if (!ACTIVE_STATUSES.has(attempt.status) || controllers.has(attempt.attemptId)) continue;
+          /* 记录停在「生成中」、这个页面上又没有在跑：多半是画到一半被滑走、切走聊天或刷新了
+             页面。图已经存进画廊的，接回卡片上；画廊里没有才算中断。 */
+          const recovered = resultsOfAttempt(attempt.attemptId);
+          if (recovered.length) {
+            attempt.status = 'succeeded';
+            attempt.statusMessage = null;
+            attempt.resultIds = recovered.map(result => result.resultId);
+            attempt.completedAt = recovered.at(-1).createdAt || now();
+            found.tag.resultIds = [...new Set([...(found.tag.resultIds || []), ...attempt.resultIds])];
+            if (found.tag.attempts[0] === attempt) found.tag.latestResultId = attempt.resultIds.at(-1);
+          } else {
             attempt.status = 'interrupted';
             attempt.errorCode = 'ATTEMPT_INTERRUPTED';
             attempt.errorMessage = '生成被中断，请手动重试';
             attempt.completedAt = now();
-            changed = true;
           }
+          changed = true;
         }
         if (Object.hasOwn(found.tag, 'results')) {
           /* 旧版把整份记录复制在聊天里。删之前先把"聊天里可用、索引里没有"的补回索引，
@@ -518,8 +544,10 @@ export function createDirectApiClient({
 
   async function generate(input) {
     await ensureGalleryReady();
-    let found = findTag(input.tagId);
-    if (!found) throw new DirectError('TAG_NOT_FOUND', '找不到对应的生图标签', 404);
+    /* 只给眼前这一版的卡片出图。排着队的旧标签（这一层已经重新生成、正在生成新的滑动版本、
+       改动或删除过）在扣费前就停下。 */
+    let found = locateTag(compat.chat(), input.tagId, { isStreaming: compat.isStreaming });
+    if (found?.placement !== 'active') throw new DirectError('TAG_NOT_FOUND', '找不到对应的生图标签', 404);
     const existing = found.tag.attempts?.find(item => item.attemptId === input.attemptId);
     if (existing) return clone(existing);
     const provider = input.provider || namespace.settings.generationProvider || 'openai';
@@ -625,7 +653,7 @@ export function createDirectApiClient({
       found = await persistAttempt(found, attempt);
       const normalizedSaved = await metadataStore.putMany(saved);
       saved.splice(0, saved.length, ...normalizedSaved);
-      found = findTag(input.tagId) || found;
+      found = locateForWrite(input.tagId, found);
       delete found.tag.results;
       found.tag.resultIds = [...new Set([
         ...(found.tag.resultIds || []).filter(resultId => resultIndex.has(resultId)),

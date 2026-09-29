@@ -6,10 +6,12 @@ import { createApiClient } from '../../src/ui/api/client.js';
 import { createGalleryPage } from '../../src/ui/pages/gallery/gallery.js';
 import {
   createErrorDialog,
+  createProblemReporter,
   describeError,
   describeGenerationProblem,
   requestedQuality,
 } from '../../src/ui/pages/error-dialog/error-dialog.js';
+import { createStore } from '../../src/ui/state/store.js';
 
 function withDom(t) {
   const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'https://tavern.example/' });
@@ -502,4 +504,87 @@ test('报错弹窗开关只存在浏览器本地，增强模式也不发给服�
 
   await api.updateSettings({ enableErrorPopup: true, enableSmartRetry: true });
   assert.deepEqual(patches.at(-1), { enableSmartRetry: true }, '其他设置照常同步');
+});
+
+test('卡片不在眼前时画好的图：提醒图去了哪并带「查看」；没画成的注明是上一版的图', () => {
+  const attempt = { status: 'succeeded', resultIds: ['r-1', 'r-2'], promptSnapshot: '海边', model: 'gpt-image-2.5-sunburst' };
+  assert.equal(describeGenerationProblem({ attempt, placement: 'active' }), null, '卡片还在眼前：普通成功不弹');
+  assert.equal(describeGenerationProblem({ attempt }), null, '没说在哪就按还在眼前算');
+
+  const swiped = describeGenerationProblem({ attempt, placement: 'swipe' });
+  assert.equal(swiped.tone, 'info');
+  assert.equal(swiped.title, '上一版回复的图画好了');
+  assert.match(swiped.message, /滑回去就能看到/);
+  assert.equal(swiped.resultId, 'r-2', '查看最后一张');
+  assert.equal(swiped.hint, '');
+  assert.match(describeGenerationProblem({ attempt, placement: 'gone' }).message, /存进了画廊/);
+  assert.equal(describeGenerationProblem({ attempt, placement: 'elsewhere' }).title, '另一个聊天里的图画好了');
+
+  const fellBack = describeGenerationProblem({
+    attempt: { ...attempt, compatibilityRetry: { adjustedParameters: ['quality'] } },
+    quality: 'max',
+    placement: 'swipe',
+  });
+  assert.equal(fellBack.tone, 'info');
+  assert.match(fellBack.hint, /不是 quality=max/, '参数回退的提醒并在同一条里');
+
+  const failed = describeGenerationProblem({
+    attempt: { status: 'failed', errorCode: 'UPSTREAM_TIMEOUT', errorMessage: '请求超时' },
+    placement: 'gone',
+  });
+  assert.equal(failed.tone, 'danger');
+  assert.equal(failed.title, '请求超时');
+  assert.match(failed.hint, /上一版回复里的图/);
+  assert.match(describeGenerationProblem({
+    attempt: { status: 'failed', errorMessage: 'x' },
+    placement: 'swipe',
+  }).hint, /滑回那一版可以在卡片上重试/);
+
+  const shown = [];
+  const viewed = [];
+  const reporter = createProblemReporter({
+    store: createStore(),
+    getDialog: () => ({ show: problem => shown.push(problem) }),
+    viewResult: (resultId, value) => viewed.push([resultId, value]),
+  });
+  reporter.reportProblem({ attempt, placement: 'swipe' });
+  assert.equal(typeof shown.at(-1).view, 'function');
+  shown.at(-1).view();
+  assert.deepEqual(viewed, [['r-2', attempt]], '打开的是这次画好的最后一张');
+  reporter.reportProblem({ attempt: { status: 'failed', errorMessage: 'x' }, placement: 'gone' });
+  assert.equal('retry' in shown.at(-1), false);
+  assert.equal('view' in shown.at(-1), false);
+});
+
+test('画好的图的提醒：每张一条，「查看」先把弹窗整个关掉再打开原图', t => {
+  withDom(t);
+  const dialog = createErrorDialog();
+  const viewed = [];
+  const notice = resultId => ({
+    tone: 'info',
+    title: '上一版回复的图画好了',
+    message: '已经放回那一版回复里，滑回去就能看到；画廊里也有。',
+    hint: '',
+    resultId,
+    view: () => viewed.push(resultId),
+  });
+  const viewButtons = () => [...dialog.root.querySelectorAll('.stia-error-dialog__view')];
+
+  dialog.show(notice('r-1'));
+  assert.equal(dialog.root.dataset.tone, 'info');
+  assert.equal(dialog.root.querySelector('.stia-error-dialog__icon').textContent, '✓');
+  assert.equal(dialog.root.getAttribute('aria-label'), '上一版回复的图画好了');
+  assert.equal(dialog.root.querySelector('.stia-error-dialog__retry'), null);
+  assert.deepEqual(viewButtons().map(button => button.textContent), ['⌕ 查看']);
+
+  dialog.show(notice('r-2'));
+  assert.equal(viewButtons().length, 2, '两张图各占一条，不合并');
+  assert.match(dialog.root.getAttribute('aria-label'), /2 条提醒/);
+  dialog.show({ tone: 'danger', title: '请求超时', message: '请求超时' });
+  assert.equal(dialog.root.dataset.tone, 'danger', '有报错时整体按报错显示');
+
+  viewButtons()[1].click();
+  assert.deepEqual(viewed, ['r-2']);
+  assert.equal(dialog.root.hidden, true, '原图查看器不在浏览器顶层，弹窗得先关掉');
+  assert.equal(dialog.root.querySelectorAll('.stia-error-dialog__item').length, 0);
 });

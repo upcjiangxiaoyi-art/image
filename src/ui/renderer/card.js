@@ -11,6 +11,38 @@ const STATUS_TEXT = {
   cancelled: '已取消',
 };
 
+/* 生成计时：整页只开一个每秒一次的定时器，只改计时那几个字，不重画卡片；
+   页面上没有在计时的卡片就停，卡片再渲染时重新开。 */
+const ELAPSED_SELECTOR = '.stia-card__elapsed[data-since]';
+let elapsedTimer = null;
+
+export function formatElapsed(milliseconds) {
+  const seconds = Math.max(0, Math.floor(Number(milliseconds) / 1000) || 0);
+  if (seconds < 60) return `已用 ${seconds} 秒`;
+  return `已用 ${Math.floor(seconds / 60)} 分 ${String(seconds % 60).padStart(2, '0')} 秒`;
+}
+
+function updateElapsed(node, current = Date.now()) {
+  node.textContent = formatElapsed(current - Number(node.dataset.since));
+}
+
+function tickElapsed() {
+  const nodes = globalThis.document?.querySelectorAll?.(ELAPSED_SELECTOR) || [];
+  if (!nodes.length) {
+    clearInterval(elapsedTimer);
+    elapsedTimer = null;
+    return;
+  }
+  const current = Date.now();
+  for (const node of nodes) updateElapsed(node, current);
+}
+
+function ensureElapsedTicker() {
+  if (elapsedTimer) return;
+  elapsedTimer = setInterval(tickElapsed, 1000);
+  elapsedTimer.unref?.();
+}
+
 function button(label, className, handler, symbol = '') {
   const element = document.createElement('button');
   element.type = 'button';
@@ -51,6 +83,7 @@ function statusHeading(symbol, title, subtitle, tone = '') {
   icon.className = 'stia-card__status-icon';
   icon.textContent = symbol;
   const copy = document.createElement('span');
+  copy.className = 'stia-card__status-text';
   const strong = document.createElement('strong');
   strong.textContent = title;
   copy.append(strong);
@@ -91,6 +124,21 @@ export function createCard({
   let lastSignature = null;
   let cachedImage = null;
   let openCurrentImage = null;
+  let elapsedNode = null;
+  let timing = null;
+
+  /* 从这次生成开始时算起；同一次生成里状态怎么变都不重新计时。服务端时钟比浏览器快时
+     按第一次看到的时间算，不显示负数。 */
+  function elapsedSince(attempt) {
+    if (!timing || timing.attemptId !== attempt.attemptId) {
+      const created = Date.parse(attempt.createdAt || '');
+      timing = {
+        attemptId: attempt.attemptId,
+        since: Number.isFinite(created) ? Math.min(created, Date.now()) : Date.now(),
+      };
+    }
+    return timing.since;
+  }
 
   function render() {
     const state = getState(tag.tagId) || {};
@@ -122,8 +170,16 @@ export function createCard({
       latest?.resultId, latest?.provider, src, available.length,
       Boolean(state.tag?.resultIds?.length), actualPrompt, actualNegativePrompt, canAdjust, ratioLabel,
     ]);
-    if (signature === lastSignature) return;
+    if (signature === lastSignature) {
+      /* 卡片被摘下又放回（酒馆重建这一层）时计时可能停了，顺手续上。 */
+      if (elapsedNode) {
+        updateElapsed(elapsedNode);
+        ensureElapsedTicker();
+      }
+      return;
+    }
     lastSignature = signature;
+    elapsedNode = null;
     root.replaceChildren();
     root.className = 'stia-card';
 
@@ -133,7 +189,7 @@ export function createCard({
       const isAutoQueue = attempt.status === 'queued' && attempt.requestMode === 'auto';
       const isRegenerating = Boolean(latest) && !isAutoQueue;
       root.classList.add(isAutoQueue ? 'stia-card--queued' : 'stia-card--generating');
-      body.append(statusHeading(
+      const heading = statusHeading(
         isAutoQueue ? '◷' : '◌',
         isAutoQueue
           ? '自动排队中'
@@ -142,8 +198,16 @@ export function createCard({
           ? '等待当前生成任务完成'
           : (attempt.statusMessage || `${attempt.model || '当前模型'} · ${size || '默认尺寸'}`),
         isAutoQueue ? 'is-warning' : 'is-accent',
-      ));
+      );
+      body.append(heading);
       if (!isAutoQueue) {
+        elapsedNode = document.createElement('span');
+        elapsedNode.className = 'stia-card__elapsed';
+        elapsedNode.setAttribute('role', 'timer');
+        elapsedNode.dataset.since = String(elapsedSince(attempt));
+        updateElapsed(elapsedNode);
+        heading.append(elapsedNode);
+        ensureElapsedTicker();
         const shimmer = document.createElement('div');
         shimmer.className = 'stia-card__shimmer';
         body.append(shimmer);

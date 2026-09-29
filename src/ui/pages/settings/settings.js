@@ -1103,7 +1103,7 @@ export function createToolPanel({ api, store, onError = () => {} }) {
   const errorPopupField = field('报错弹窗', enableErrorPopup);
   errorPopupField.classList.add('stia-switch-field', 'stia-switch-field--row');
   const errorPopupDescription = document.createElement('small');
-  errorPopupDescription.textContent = '生图失败、连不上、超时、被审核拦截等报错时弹出提示，点一下就关';
+  errorPopupDescription.textContent = '生图失败、连不上、超时、被审核拦截等报错时弹出提示，点一下就关；重 roll 后上一版的图画好了也在这里提醒';
   errorPopupField.querySelector('span')?.append(errorPopupDescription);
   automationSection.append(autoField, promptOverrideField, smartRetryField, errorPopupField);
 

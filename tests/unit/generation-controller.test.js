@@ -5,7 +5,7 @@ import { createProblemReporter } from '../../src/ui/pages/error-dialog/error-dia
 import { createStore } from '../../src/ui/state/store.js';
 import { DirectError } from '../../src/ui/api/openai-direct.js';
 
-function setup({ generate, attempt, cancel, resolveTags, preset } = {}) {
+function setup({ generate, attempt, cancel, resolveTags, preset, compat } = {}) {
   const store = createStore();
   store.set({
     settings: { enabled: true, generationProvider: 'openai' },
@@ -30,7 +30,7 @@ function setup({ generate, attempt, cancel, resolveTags, preset } = {}) {
   const controller = createGenerationController({
     api,
     store,
-    compat: { currentChatId: () => 'chat-1' },
+    compat: compat || { currentChatId: () => 'chat-1' },
     onProblem: (context, retry) => calls.problems.push({ context, retry }),
     onSucceeded: () => { calls.succeeded += 1; },
     onError: (error, title) => calls.errors.push({ error, title }),
@@ -182,4 +182,58 @@ test('报错弹窗开关关掉就不弹；只有失败带「重新生成」，�
   store.set({ settings: { ...store.state.settings, enableErrorPopup: true } });
   const quiet = createProblemReporter({ store, getDialog: () => null });
   assert.doesNotThrow(() => quiet.reportError(new Error('页面还没就绪'), '操作失败'), '弹窗还没创建时安静跳过');
+});
+
+test('出结果时卡片已经不在眼前：告诉报错弹窗图在哪；失败也不带「重新生成」，免得点了没反应', async () => {
+  const current = { tags: [{ tagId: 'tag-1' }] };
+  const message = {
+    swipe_id: 0,
+    swipes: ['这一版'],
+    swipe_info: [{ extra: {} }],
+    extra: { stImageAtelier: current },
+  };
+  const chat = [message];
+  let chatId = 'chat-1';
+  let duringGeneration = () => {};
+  let failure = null;
+  const { controller, calls } = setup({
+    compat: { chat: () => chat, currentChatId: () => chatId },
+    generate: async input => {
+      duringGeneration();
+      if (failure) throw failure;
+      return { attemptId: input.attemptId, tagId: input.tagId, status: 'succeeded', resultIds: ['r-1'] };
+    },
+  });
+  const lastProblem = () => calls.problems.at(-1);
+
+  await controller.generate(tag, 'manual');
+  assert.equal(lastProblem().context.placement, 'active');
+  assert.ok(lastProblem().retry, '卡片还在眼前时照常带「重新生成」');
+
+  duringGeneration = () => {
+    message.swipe_info[0].extra = structuredClone(message.extra);
+    message.swipe_id = 1;
+    message.swipes.push('新的一版');
+    message.swipe_info.push({ extra: {} });
+    message.extra = { stImageAtelier: { tags: [{ tagId: 'tag-new' }] } };
+  };
+  await controller.generate(tag, 'manual');
+  assert.equal(lastProblem().context.placement, 'swipe', '滑到了新的一版');
+  assert.equal(lastProblem().context.attempt.resultIds[0], 'r-1');
+  assert.equal(lastProblem().retry, undefined);
+
+  duringGeneration = () => { chat.splice(0, 1, { extra: {} }); };
+  await controller.generate(tag, 'manual');
+  assert.equal(lastProblem().context.placement, 'gone', '回复被重新生成');
+
+  duringGeneration = () => { chatId = 'chat-2'; };
+  await controller.generate(tag, 'manual');
+  assert.equal(lastProblem().context.placement, 'elsewhere', '生成途中切到了别的聊天');
+
+  chatId = 'chat-1';
+  duringGeneration = () => {};
+  failure = new DirectError('UPSTREAM_TIMEOUT', '请求超时');
+  await assert.rejects(controller.generate(tag, 'manual'), failure);
+  assert.equal(lastProblem().context.placement, 'gone');
+  assert.equal(lastProblem().retry, undefined, '卡片都不在了，重跑只会被当成失效标签跳过');
 });

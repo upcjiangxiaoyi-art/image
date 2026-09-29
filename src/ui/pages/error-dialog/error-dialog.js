@@ -3,7 +3,8 @@ import { MODERATION_PATTERN } from '../../api/openai-direct.js';
 /* 报错弹窗：生图失败、连不上、超时、被审核拦截等报错都弹；「生成失败后智能重试」去掉
    quality / size / n 才出图时也弹，免得把回退后的图当成按 max 出的。设置页、画廊等处的
    报错也走这里，卡片和设置页上原有的报错提示照旧保留。点一下弹窗任意位置就关；弹窗开着时
-   再来的报错合并进来，内容相同只累计次数。生图失败的那条带「重新生成」键，不用再滑到卡片上点。 */
+   再来的报错合并进来，内容相同只累计次数。生图失败的那条带「重新生成」键，不用再滑到卡片上点。
+   重 roll、滑走或切走聊天时还在画的图，画好后也在这里提醒一声，带「查看」键。 */
 
 export const PREMIUM_QUALITIES = Object.freeze(['xhigh', 'max']);
 
@@ -18,6 +19,26 @@ const NETWORK_CODES = new Set(['DIRECT_FETCH_BLOCKED', 'SERVER_PLUGIN_UNAVAILABL
 const SETUP_CODES = new Set(['PRESET_NOT_CONFIGURED', 'API_KEY_MISSING', 'MODEL_NOT_SELECTED']);
 const TIMEOUT_STATUSES = new Set([408, 504, 524]);
 const MAX_ENTRIES = 10;
+const TONE_ICONS = Object.freeze({ danger: '×', warning: '!', info: '✓' });
+
+/* 出结果时卡片已经不在眼前（placement 的含义见 generation-controller）。 */
+const MOVED_RESULT = Object.freeze({
+  swipe: {
+    title: '上一版回复的图画好了',
+    message: '已经放回那一版回复里，滑回去就能看到；画廊里也有。',
+    failure: '这是上一版回复里的图，滑回那一版可以在卡片上重试。',
+  },
+  gone: {
+    title: '上一版回复的图画好了',
+    message: '原来那张卡片已经不在了（回复被重新生成、删除或改动过），图存进了画廊。',
+    failure: '这是上一版回复里的图，原来那张卡片已经不在了。',
+  },
+  elsewhere: {
+    title: '另一个聊天里的图画好了',
+    message: '回到那个聊天就能看到；画廊里也有。',
+    failure: '这是另一个聊天里的图，回到那个聊天可以在卡片上重试。',
+  },
+});
 
 /* 与 openai-direct 组请求体的顺序一致：标签 quality → 默认质量（选「不发送」则不发）→
    「额外请求参数 JSON」里的 quality 最后覆盖。 */
@@ -66,9 +87,14 @@ function premiumQualityNote(quality) {
     + '其他模型最高是 high；走中转站时以中转站为准。';
 }
 
-export function describeGenerationProblem({ attempt, error, quality = '' } = {}) {
+function joinLines(...lines) {
+  return lines.filter(Boolean).join('\n');
+}
+
+export function describeGenerationProblem({ attempt, error, quality = '', placement = 'active' } = {}) {
   /* 消息被重 roll、滑走、改动或删除后，排着的旧标签已经没有意义，不打扰。 */
   if ((attempt?.errorCode || error?.code) === 'TAG_NOT_FOUND') return null;
+  const moved = Object.hasOwn(MOVED_RESULT, placement) ? MOVED_RESULT[placement] : null;
   const status = attempt?.status || (error ? 'failed' : '');
   if (status === 'failed' || status === 'interrupted') {
     const interrupted = status === 'interrupted';
@@ -88,23 +114,40 @@ export function describeGenerationProblem({ attempt, error, quality = '' } = {})
       tone: 'danger',
       title,
       message,
-      hint: parameterRejected && isPremiumQuality(quality)
-        ? `${premiumQualityNote(quality)}如果报错说的是 quality，请换用这两个模型，或把默认质量改回 high。`
-        : '',
+      hint: joinLines(
+        moved?.failure,
+        parameterRejected && isPremiumQuality(quality)
+          ? `${premiumQualityNote(quality)}如果报错说的是 quality，请换用这两个模型，或把默认质量改回 high。`
+          : '',
+      ),
     };
   }
   if (status !== 'succeeded') return null;
   const dropped = (attempt?.compatibilityRetry?.adjustedParameters || [])
     .filter(name => Object.hasOwn(OUTPUT_PARAMETERS, name));
-  if (!dropped.length) return null;
   const qualityDropped = dropped.includes('quality') && Boolean(quality);
+  const fallbackMessage = dropped.length
+    ? `上游不接受本次请求的${dropped.map(name => OUTPUT_PARAMETERS[name]).join('、')}，`
+      + '「生成失败后智能重试」去掉后重新生成成功。这张图按上游默认值生成'
+      + `${qualityDropped ? `，不是 quality=${quality}` : ''}。`
+    : '';
+  const fallbackHint = qualityDropped && isPremiumQuality(quality) ? premiumQualityNote(quality) : '';
+  /* 卡片已经不在眼前：告诉用户图去了哪，带上 resultId 好「查看」。 */
+  if (moved) {
+    return {
+      tone: 'info',
+      title: moved.title,
+      message: moved.message,
+      hint: joinLines(fallbackMessage, fallbackHint),
+      resultId: attempt?.resultIds?.at(-1) || '',
+    };
+  }
+  if (!dropped.length) return null;
   return {
     tone: 'warning',
     title: '参数被上游拒绝，已自动回退',
-    message: `上游不接受本次请求的${dropped.map(name => OUTPUT_PARAMETERS[name]).join('、')}，`
-      + '「生成失败后智能重试」去掉后重新生成成功。这张图按上游默认值生成'
-      + `${qualityDropped ? `，不是 quality=${quality}` : ''}。`,
-    hint: qualityDropped && isPremiumQuality(quality) ? premiumQualityNote(quality) : '',
+    message: fallbackMessage,
+    hint: fallbackHint,
   };
 }
 
@@ -126,9 +169,9 @@ export function describeError(error, fallbackTitle = '操作失败') {
   };
 }
 
-/* 报错弹窗开不开、生图失败那条带不带「重新生成」键，都在这里决定。弹窗要等酒馆页面就绪后
-   才创建，所以用 getDialog 按需取。 */
-export function createProblemReporter({ store, getDialog }) {
+/* 报错弹窗开不开、生图失败那条带不带「重新生成」键、画好的图带不带「查看」键，都在这里决定。
+   弹窗要等酒馆页面就绪后才创建，所以用 getDialog 按需取；viewResult(resultId, attempt) 打开原图。 */
+export function createProblemReporter({ store, getDialog, viewResult }) {
   function show(describe) {
     if (store.state.settings.enableErrorPopup === false) return;
     try {
@@ -143,7 +186,11 @@ export function createProblemReporter({ store, getDialog }) {
     reportProblem(context, retry) {
       show(() => {
         const problem = describeGenerationProblem(context);
-        return problem?.tone === 'danger' && retry ? { ...problem, retry } : problem;
+        if (problem?.tone === 'danger' && retry) return { ...problem, retry };
+        if (problem?.resultId && typeof viewResult === 'function') {
+          return { ...problem, view: () => viewResult(problem.resultId, context.attempt) };
+        }
+        return problem;
       });
     },
     reportError(error, title) {
@@ -185,12 +232,13 @@ export function createErrorDialog() {
   let returnFocus = null;
 
   function render() {
-    const tone = entries.some(entry => entry.tone === 'danger') ? 'danger' : 'warning';
+    const tone = ['danger', 'warning', 'info'].find(value => entries.some(entry => entry.tone === value))
+      || 'warning';
     root.dataset.tone = tone;
-    icon.textContent = tone === 'danger' ? '×' : '!';
+    icon.textContent = TONE_ICONS[tone];
     headingText.textContent = entries.length === 1
       ? entries[0].title
-      : `画笺 · ${entries.length} 条报错`;
+      : `画笺 · ${entries.length} 条${entries.some(entry => entry.tone === 'info') ? '提醒' : '报错'}`;
     root.setAttribute('aria-label', headingText.textContent);
     list.replaceChildren(...entries.map(entry => {
       const item = block(`stia-error-dialog__item is-${entry.tone}`);
@@ -213,8 +261,29 @@ export function createErrorDialog() {
         });
         item.append(retry);
       }
+      if (entry.view) {
+        const view = document.createElement('button');
+        view.type = 'button';
+        view.className = 'stia-button stia-button--primary stia-error-dialog__view';
+        view.textContent = '⌕ 查看';
+        view.addEventListener('click', event => {
+          event.stopPropagation();
+          viewEntry(entry);
+        });
+        item.append(view);
+      }
       return item;
     }));
+  }
+
+  /* 原图查看器不在浏览器顶层，弹窗开着会挡住它，所以先整个关掉再打开原图。 */
+  function viewEntry(entry) {
+    close();
+    try {
+      entry.view();
+    } catch (error) {
+      console.warn('[画笺] 无法打开原图', error);
+    }
   }
 
   /* 只收起这一条再重跑；别的报错还留在弹窗里。重跑失败会再弹一次，这里不必再管。 */
@@ -275,16 +344,18 @@ export function createErrorDialog() {
 
   function show(problem) {
     if (!problem?.message) return;
-    const { retry, ...details } = problem;
-    const key = `${details.title}\n${details.message}`;
+    const { retry, view, ...details } = problem;
+    /* 画好的每张图各占一条，各自「查看」；报错按标题和内容合并计次。 */
+    const key = [details.title, details.message, details.resultId || ''].join('\n');
     let entry = entries.find(item => item.key === key);
     if (entry) {
       entry.count += 1;
     } else {
-      entry = { ...details, key, count: 1, retries: new Map() };
+      entry = { ...details, key, count: 1, retries: new Map(), view: null };
       entries = [...entries, entry].slice(-MAX_ENTRIES);
     }
     addRetry(entry, retry);
+    if (typeof view === 'function') entry.view = view;
     render();
     if (!root.hidden && root.hasAttribute('open')) return;
     if (root.hidden) returnFocus = document.activeElement;

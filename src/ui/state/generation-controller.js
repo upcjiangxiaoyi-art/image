@@ -1,4 +1,5 @@
 import { requestedQuality } from '../pages/error-dialog/error-dialog.js';
+import { locateTag } from './tag-identity.js';
 
 export const TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'interrupted', 'cancelled']);
 
@@ -9,7 +10,8 @@ function defaultUuid() {
 
 /* 生图主流程：乐观状态、手动 / 自动两种 attemptId、增强模式轮询、失败归因和报错弹窗。
    从 index.js 拆出来，酒馆的接口都从参数传进来，这样能单独测试。
-   onProblem(context, retry)：每次出结果都会调用，由报错弹窗决定弹不弹；
+   onProblem(context, retry)：每次出结果都会调用，由报错弹窗决定弹不弹；context.placement
+   说明出结果时卡片在哪（见 placementOf），卡片不在眼前时不带 retry；
    onSucceeded()：出图成功后（用来触发画廊自动清理）；onError(error, title)：取消失败等。 */
 export function createGenerationController({
   api,
@@ -22,6 +24,16 @@ export function createGenerationController({
   pollIntervalMs = 900,
 }) {
   const activeTags = new Set();
+
+  /* 出结果时这张卡还在不在眼前：active 还在；swipe 在同一层另一个滑动版本里；
+     elsewhere 已经切到别的聊天；gone 回复被重新生成、删除或改动过，卡片没了。
+     图照样画完、存进画廊，由报错弹窗提醒一声。 */
+  function placementOf(tagId, chatId) {
+    if (typeof compat.chat !== 'function') return 'active';
+    const found = locateTag(compat.chat(), tagId, { isStreaming: compat.isStreaming });
+    if (found) return found.placement;
+    return chatId && chatId !== compat.currentChatId() ? 'elsewhere' : 'gone';
+  }
 
   async function refreshTag(tagId) {
     const [resolved] = await api.resolveTags([tagId]);
@@ -68,8 +80,14 @@ export function createGenerationController({
     const replay = (current.attempts || [])
       .some(item => item.attemptId === attemptId && TERMINAL_STATUSES.has(item.status));
     const quality = requestedQuality({ provider, preset: store.state.preset, tagQuality: tag.quality });
-    /* 报错弹窗里的「重新生成」：按原请求（含调整后重绘的临时提示词）再跑一次。 */
+    const chatId = tag.chatId || compat.currentChatId();
+    /* 报错弹窗里的「重新生成」：按原请求（含调整后重绘的临时提示词）再跑一次；
+       卡片已经不在眼前时不给，重跑只会被当成失效标签跳过。 */
     const retry = { key: tag.tagId, run: () => generate(tag, 'manual', overrides) };
+    const report = context => {
+      const placement = placementOf(tag.tagId, chatId);
+      onProblem({ ...context, placement }, placement === 'active' ? retry : undefined);
+    };
     store.setTag(tag.tagId, { ...current, attempts: [optimisticAttempt, ...(current.attempts || [])] });
     try {
       const attempt = await api.generate({
@@ -82,7 +100,7 @@ export function createGenerationController({
         prompt,
         ...(Object.hasOwn(overrides, 'negativePromptOverride')
           ? { negativePromptOverride: overrides.negativePromptOverride } : {}),
-        chatId: tag.chatId || compat.currentChatId(),
+        chatId,
         messageUuid: tag.messageUuid,
         tagOrdinal: tag.ordinal,
         parameters: {
@@ -105,7 +123,7 @@ export function createGenerationController({
       if (TERMINAL_STATUSES.has(attempt.status)) await refreshTag(tag.tagId);
       else completed = await waitForAttempt(attempt.attemptId, tag.tagId);
       if (completed.status === 'succeeded') onSucceeded(completed);
-      if (!replay) onProblem({ attempt: completed, quality }, retry);
+      if (!replay) report({ attempt: completed, quality });
       return completed;
     } catch (error) {
       try {
@@ -131,11 +149,11 @@ export function createGenerationController({
       }
       /* 落盘的失败记录带「已尝试移除 … 后重试一次」等补充说明，优先用它。 */
       if (!replay) {
-        onProblem({
+        report({
           attempt: persisted?.status === 'failed' ? persisted : optimisticAttempt,
           error,
           quality,
-        }, retry);
+        });
       }
       throw error;
     } finally {

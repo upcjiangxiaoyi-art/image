@@ -815,3 +815,186 @@ test('聊天里可用但索引里没有的旧记录，清理前补回画廊索�
   assert.equal(chatSaves, 1);
 });
 
+
+function tagMetadata(tagId, messageUuid, prompt = 'base64') {
+  return {
+    messageUuid,
+    schemaVersion: 2,
+    tags: [{
+      tagId,
+      prompt,
+      ordinal: 0,
+      count: 1,
+      attempts: [],
+      resultIds: [],
+      latestResultId: null,
+      autoAttempted: false,
+      autoSuppressed: false,
+    }],
+  };
+}
+
+/* 生图请求卡在半路，等测试把聊天改成「重 roll 之后」的样子再放行。 */
+async function gatedClient(t, chat) {
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  let markStarted;
+  const started = new Promise(resolve => { markStarted = resolve; });
+  globalThis.fetch = async (url, options = {}) => {
+    if (url === '/api/images/upload') {
+      const body = JSON.parse(options.body);
+      return response(200, { path: `user/images/st-image-atelier/${body.filename}.${body.format}` });
+    }
+    if (String(url).endsWith('/v1/images/generations')) {
+      requests.push(JSON.parse(options.body));
+      markStarted();
+      await gate;
+      return response(200, { data: [{ b64_json: PNG_BASE64 }] });
+    }
+    throw new Error(`意外的请求：${url}`);
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const storage = new Map();
+  const client = createDirectApiClient({
+    compat: {
+      chat: () => chat,
+      save: async () => {},
+      headers: () => ({ 'Content-Type': 'application/json', 'X-CSRF-Token': 'test' }),
+    },
+    extensionSettings: {},
+    saveSettingsDebounced: () => {},
+    galleryStore: createMemoryGalleryMetadataStore(),
+    keyStorage: {
+      getItem: key => storage.get(key) || null,
+      setItem: (key, value) => storage.set(key, value),
+      removeItem: key => storage.delete(key),
+    },
+  });
+  await client.updatePreset({
+    baseUrl: 'https://upstream.test',
+    apiKey: 'sk-test',
+    selectedModel: 'gpt-image-1',
+  });
+  return { client, requests, release, started };
+}
+
+function generationInput(tagId, messageUuid) {
+  return {
+    tagId,
+    attemptId: crypto.randomUUID(),
+    requestMode: 'manual',
+    prompt: 'base64',
+    chatId: 'chat-1',
+    messageUuid,
+    tagOrdinal: 0,
+    parameters: { count: 1, ratio: 'square' },
+  };
+}
+
+test('画到一半滑到新的一版：图写回上一版的存档，滑回去就能看到，不再显示「生成被中断」', async t => {
+  const tagId = crypto.randomUUID();
+  const messageUuid = crypto.randomUUID();
+  const message = {
+    is_user: false,
+    mes: '<draw>base64</draw>',
+    swipe_id: 0,
+    swipes: ['<draw>base64</draw>'],
+    swipe_info: [{ extra: {} }],
+    extra: { stImageAtelier: tagMetadata(tagId, messageUuid) },
+  };
+  const { client, release, started } = await gatedClient(t, [message]);
+  const pending = client.generate(generationInput(tagId, messageUuid));
+  await started;
+
+  /* 右滑生成新的一版：酒馆先把当前这一版深拷贝存档；新的一版写完后，画笺按新正文换上新标签。 */
+  message.swipe_info[0].extra = structuredClone(message.extra);
+  message.swipe_id = 1;
+  message.swipes.push('<draw>another</draw>');
+  message.mes = message.swipes[1];
+  message.swipe_info.push({ extra: structuredClone(message.extra) });
+  message.extra.stImageAtelier = tagMetadata(crypto.randomUUID(), messageUuid, 'another');
+
+  release();
+  const attempt = await pending;
+  assert.equal(attempt.status, 'succeeded');
+  const archived = message.swipe_info[0].extra.stImageAtelier.tags[0];
+  assert.equal(archived.attempts[0].status, 'succeeded', '上一版的存档里记着已经画完');
+  assert.deepEqual(archived.resultIds, attempt.resultIds);
+  assert.equal(archived.latestResultId, attempt.resultIds[0]);
+  assert.deepEqual(message.extra.stImageAtelier.tags[0].resultIds, [], '新的一版不受影响');
+
+  /* 滑回上一版：酒馆把存档拷回来。 */
+  message.swipe_info[1].extra = structuredClone(message.extra);
+  message.swipe_id = 0;
+  message.mes = message.swipes[0];
+  message.extra = structuredClone(message.swipe_info[0].extra);
+  const [state] = await client.resolveTags([tagId]);
+  assert.equal(state.attempts[0].status, 'succeeded');
+  assert.deepEqual(state.results.map(result => result.resultId), attempt.resultIds);
+});
+
+test('回复被重新生成：图照样存进画廊；再看到停在「生成中」的旧记录时按画廊接回卡片', async t => {
+  const tagId = crypto.randomUUID();
+  const messageUuid = crypto.randomUUID();
+  const message = {
+    is_user: false,
+    mes: '<draw>base64</draw>',
+    extra: { stImageAtelier: tagMetadata(tagId, messageUuid) },
+  };
+  const chat = [message];
+  const { client, release, started } = await gatedClient(t, chat);
+  const pending = client.generate(generationInput(tagId, messageUuid));
+  await started;
+  /* 聊天文件里这时存的是「生成中」；切走聊天再回来，读到的就是这一份。 */
+  const savedWhileGenerating = structuredClone(message.extra);
+  assert.equal(savedWhileGenerating.stImageAtelier.tags[0].attempts[0].status, 'generating');
+
+  chat.splice(0, 1, { is_user: false, mes: '重新生成的回复', extra: {} });
+  release();
+  const attempt = await pending;
+  assert.equal(attempt.status, 'succeeded', '原来那条回复没了也不报错');
+  const { items } = await client.galleryMetadata();
+  assert.deepEqual(items.map(item => item.resultId), attempt.resultIds, '图存进了画廊');
+
+  const lostTagId = crypto.randomUUID();
+  const lost = {
+    is_user: false,
+    mes: '<draw>lost</draw>',
+    extra: { stImageAtelier: tagMetadata(lostTagId, crypto.randomUUID(), 'lost') },
+  };
+  lost.extra.stImageAtelier.tags[0].attempts.push({
+    attemptId: crypto.randomUUID(),
+    tagId: lostTagId,
+    status: 'generating',
+  });
+  chat.splice(0, chat.length, { is_user: false, mes: '<draw>base64</draw>', extra: savedWhileGenerating }, lost);
+  const [recovered, interrupted] = await client.resolveTags([tagId, lostTagId]);
+  assert.equal(recovered.attempts[0].status, 'succeeded', '画廊里有这次生成的图，接回卡片');
+  assert.deepEqual(recovered.attempts[0].resultIds, attempt.resultIds);
+  assert.deepEqual(recovered.results.map(result => result.resultId), attempt.resultIds);
+  assert.equal(recovered.tag.latestResultId, attempt.resultIds[0]);
+  assert.equal(interrupted.attempts[0].status, 'interrupted', '画廊里也没有才算中断');
+});
+
+test('这一层正在生成新的滑动版本时，排着队的旧标签在扣费前就停下', async t => {
+  const tagId = crypto.randomUUID();
+  const messageUuid = crypto.randomUUID();
+  const message = {
+    is_user: false,
+    mes: '',
+    swipe_id: 1,
+    swipes: ['<draw>base64</draw>'],
+    swipe_info: [{ extra: { stImageAtelier: tagMetadata(tagId, messageUuid) } }],
+    extra: { stImageAtelier: tagMetadata(tagId, messageUuid) },
+  };
+  const { client, requests, release } = await gatedClient(t, [message]);
+  release();
+  await assert.rejects(
+    client.generate(generationInput(tagId, messageUuid)),
+    error => error.code === 'TAG_NOT_FOUND',
+  );
+  assert.equal(requests.length, 0, '没有发出生图请求');
+  assert.deepEqual(message.swipe_info[0].extra.stImageAtelier.tags[0].attempts, [], '也没有写任何记录');
+});

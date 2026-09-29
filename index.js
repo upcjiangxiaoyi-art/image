@@ -20,6 +20,7 @@ import { removeDrawTagFromMessage } from './src/ui/state/tag-removal.js';
 import { createPromptOverrideDialog } from './src/ui/pages/prompt-override/prompt-override.js';
 import { createErrorDialog, createProblemReporter } from './src/ui/pages/error-dialog/error-dialog.js';
 import { createGenerationController } from './src/ui/state/generation-controller.js';
+import { openImageViewer } from './src/ui/media/image-viewer.js';
 
 const compat = createStCompat({
   getContext,
@@ -36,7 +37,21 @@ const api = createApiClient({
 });
 const store = createStore();
 let errorDialog;
-const { reportProblem, reportError } = createProblemReporter({ store, getDialog: () => errorDialog });
+const { reportProblem, reportError } = createProblemReporter({
+  store,
+  getDialog: () => errorDialog,
+  /* 重 roll、滑走后才画好的图，卡片已经不在眼前，从提醒里直接打开原图。 */
+  viewResult: (resultId, attempt) => {
+    const prompt = attempt?.promptSnapshot || attempt?.resolvedPrompt || '';
+    openImageViewer({
+      src: api.fileUrl(resultId),
+      alt: prompt.slice(0, 120),
+      filename: resultId,
+      prompt,
+      meta: attempt?.model || '',
+    });
+  },
+});
 let reportedServiceError = null;
 store.subscribe(state => {
   document.documentElement.classList.toggle('stia-disabled', !state.settings.enabled);

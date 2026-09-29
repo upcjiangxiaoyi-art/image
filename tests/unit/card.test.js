@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createCard } from '../../src/ui/renderer/card.js';
+import { createCard, formatElapsed } from '../../src/ui/renderer/card.js';
 
 class FakeClassList {
   constructor() {
@@ -211,4 +211,85 @@ test('别的卡片有动静时这张卡不重建：图片不换、不闪，展�
   assert.notEqual(next, image, '换成新的一张图才换 <img>');
   assert.equal(next.getAttribute('src'), '/user/images/r2.png');
   observer.disconnect();
+});
+
+test('计时文字：一分钟内按秒，超过一分钟按分秒，不显示负数', () => {
+  assert.equal(formatElapsed(0), '已用 0 秒');
+  assert.equal(formatElapsed(42_900), '已用 42 秒');
+  assert.equal(formatElapsed(65_000), '已用 1 分 05 秒');
+  assert.equal(formatElapsed(3_600_000), '已用 60 分 00 秒');
+  assert.equal(formatElapsed(-3_000), '已用 0 秒', '服务端时钟比浏览器快时不显示负数');
+  assert.equal(formatElapsed(Number.NaN), '已用 0 秒');
+});
+
+test('生成中的卡片显示计时：从这次生成开始时算起，每秒只改那几个字、不重画卡片', async t => {
+  const { JSDOM } = await import('jsdom');
+  const dom = new JSDOM('<!doctype html><html><body></body></html>');
+  const previous = { document: globalThis.document, window: globalThis.window };
+  globalThis.document = dom.window.document;
+  globalThis.window = dom.window;
+  t.after(() => {
+    globalThis.document = previous.document;
+    globalThis.window = previous.window;
+    dom.window.close();
+  });
+
+  const tag = { tagId: 'tag-1', prompt: 'a cat', ratio: 'portrait' };
+  const startedAt = new Date(Date.now() - 65_000).toISOString();
+  let state = {
+    attempts: [{ attemptId: 'a1', status: 'generating', requestMode: 'manual', model: 'gpt-image-2.5-sunburst', createdAt: startedAt }],
+    results: [],
+  };
+  const card = createCard({
+    tag,
+    api: { fileUrl: id => `/user/images/${id}.png` },
+    getState: () => state,
+    onGenerate() {},
+    onOpenGallery() {},
+    onCancel() {},
+  });
+  card.render();
+  document.body.append(card.root);
+  const timer = card.root.querySelector('.stia-card__status .stia-card__elapsed');
+  assert.ok(timer, '计时挂在状态行上');
+  assert.equal(timer.getAttribute('role'), 'timer');
+  assert.match(timer.textContent, /^已用 1 分 0[56] 秒$/);
+  const since = timer.dataset.since;
+
+  /* 整页共用一个每秒一次的定时器，它从哪一刻开始跳不一定，所以等到文字变了为止（最多 2.5 秒）。 */
+  const before = timer.textContent;
+  const shimmer = card.root.querySelector('.stia-card__shimmer');
+  const deadline = Date.now() + 2_500;
+  while (timer.textContent === before && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  assert.notEqual(timer.textContent, before, '每秒自己往上走');
+  assert.equal(card.root.querySelector('.stia-card__shimmer'), shimmer, '只改计时文字，卡片不重画');
+
+  state = {
+    ...state,
+    attempts: [{ ...state.attempts[0], status: 'downloading', createdAt: new Date().toISOString() }],
+  };
+  card.render();
+  assert.equal(
+    card.root.querySelector('.stia-card__elapsed').dataset.since,
+    since,
+    '同一次生成里换状态（开始下载、保存）不重新计时',
+  );
+
+  state = { ...state, attempts: [{ attemptId: 'a2', status: 'generating', requestMode: 'manual' }] };
+  card.render();
+  assert.match(card.root.querySelector('.stia-card__elapsed').textContent, /^已用 0 秒$/, '新的一次生成从零开始');
+
+  state = { ...state, attempts: [{ attemptId: 'auto:tag-1', status: 'queued', requestMode: 'auto' }] };
+  card.render();
+  assert.equal(card.root.querySelector('.stia-card__elapsed'), null, '自动排队时还没开始画，不计时');
+
+  state = {
+    tag: { latestResultId: 'r1', resultIds: ['r1'] },
+    attempts: [{ attemptId: 'a3', status: 'succeeded' }],
+    results: [{ resultId: 'r1', status: 'available', prompt: 'a cat' }],
+  };
+  card.render();
+  assert.equal(card.root.querySelector('.stia-card__elapsed'), null, '画完就不显示计时');
 });
