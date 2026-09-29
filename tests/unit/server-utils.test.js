@@ -11,33 +11,37 @@ const { maskKey } = require('../../server-plugin/src/services/preset');
 const { assertInside, detectImageType } = require('../../server-plugin/src/utils/validation');
 const { atomicWriteJson, readJson } = require('../../server-plugin/src/utils/atomic-json');
 
-test('URL join 不重复 /v1', () => {
+test('URL join 不重复 /v1', async () => {
+  const core = await adapter.loadCore();
   assert.equal(
-    adapter.normalizeEndpoint('https://api.example.com', '/v1/images/generations'),
+    core.normalizeEndpoint('https://api.example.com', '/v1/images/generations'),
     'https://api.example.com/v1/images/generations',
   );
   assert.equal(
-    adapter.normalizeEndpoint('https://api.example.com/v1', '/v1/images/generations'),
+    core.normalizeEndpoint('https://api.example.com/v1', '/v1/images/generations'),
     'https://api.example.com/v1/images/generations',
   );
   assert.equal(
-    adapter.normalizeEndpoint('https://api.example.com/v1/', '/images/generations'),
+    core.normalizeEndpoint('https://api.example.com/v1/', '/images/generations'),
     'https://api.example.com/v1/images/generations',
   );
-  assert.equal(adapter.normalizeImageSize('1024×1536'), '1024x1536');
+  const { normalizeImageSize } = await import('../../src/shared/openai-images-core.js');
+  assert.equal(normalizeImageSize('1024×1536'), '1024x1536');
 });
 
-test('响应解析优先 Base64，并支持包裹层', () => {
-  const result = adapter.parseImageResponse({
+test('响应解析优先 Base64，并支持包裹层', async () => {
+  const core = await adapter.loadCore();
+  const result = core.parseImageResponse({
     result: { data: [{ url: 'https://x', b64_json: 'AAAA' }, { url: 'https://y' }] },
   });
   assert.equal(result[0].sourceType, 'base64');
   assert.equal(result[1].sourceType, 'url');
 });
 
-test('模型响应支持 data 与直接数组', () => {
-  assert.deepEqual(adapter.parseModelsResponse({ data: [{ id: 'a', owned_by: 'x' }] }), [{ id: 'a', ownedBy: 'x' }]);
-  assert.deepEqual(adapter.parseModelsResponse(['a']), [{ id: 'a' }]);
+test('模型响应支持 data 与直接数组', async () => {
+  const core = await adapter.loadCore();
+  assert.deepEqual(core.parseModelsResponse({ data: [{ id: 'a', owned_by: 'x' }] }), [{ id: 'a', ownedBy: 'x' }]);
+  assert.deepEqual(core.parseModelsResponse(['a']), [{ id: 'a' }]);
 });
 
 test('API Key 掩码不暴露完整值', () => {
@@ -65,4 +69,49 @@ test('JSON 原子写入并保留上一版备份', async () => {
   assert.deepEqual(await readJson(file, {}), { version: 2 });
   assert.deepEqual(await readJson(backup, {}), { version: 1 });
   await fs.rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 30 });
+});
+
+test('Server Plugin 与直连共用同一份请求逻辑：unsafe 识别、200 里的报错原因、审核不重试，上游错误仍报 502', async t => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const preset = {
+    baseUrl: 'https://api.example.com',
+    generationPath: '/v1/images/generations',
+    selectedModel: 'gpt-image-2.5-sunburst',
+    sendSize: true,
+    defaultSize: '1024x1024',
+    sendQuality: true,
+    defaultQuality: 'max',
+    sendN: false,
+    timeoutMs: 1000,
+    extraBody: {},
+  };
+  const reply = (status, payload) => new Response(JSON.stringify(payload), { status });
+
+  globalThis.fetch = async () => reply(200, { error: { message: 'Generation failed: prompt is unsafe' } });
+  await assert.rejects(
+    adapter.generate({ preset, apiKey: 'sk-test', prompt: 'x', parameters: {}, settings: {} }),
+    error => error.code === 'UPSTREAM_RESPONSE_INVALID'
+      && /上游没有返回图片：Generation failed: prompt is unsafe/.test(error.message)
+      && /内容审核拒绝/.test(error.message),
+  );
+
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return reply(400, { error: { message: 'unsafe prompt: size not allowed' } });
+  };
+  await assert.rejects(
+    adapter.generate({ preset, apiKey: 'sk-test', prompt: 'x', parameters: {}, settings: { enableSmartRetry: true } }),
+    error => error.code === 'UPSTREAM_HTTP_ERROR' && error.status === 502 && error.upstreamStatus === 400
+      && /HTTP 400/.test(error.message),
+  );
+  assert.equal(calls, 1, '审核拦截即使点名了参数也不智能重试');
+
+  const { AppError } = require('../../server-plugin/src/utils/errors');
+  globalThis.fetch = async () => { throw new TypeError('fetch failed'); };
+  await assert.rejects(
+    adapter.generate({ preset, apiKey: 'sk-test', prompt: 'x', parameters: {}, settings: {} }),
+    error => error instanceof AppError && error.code === 'UPSTREAM_HTTP_ERROR' && error.status === 502,
+  );
 });

@@ -82,6 +82,24 @@ async function installUi(target, force) {
   }
 }
 
+/* Server Plugin 和直连共用 src/shared/openai-images-core.js；插件目录是单独拷走的，
+   把这份共用代码以 .mjs 一起放进去（插件本身是 CommonJS，.mjs 才会按 ES 模块加载）。 */
+async function installServerPlugin(target, force) {
+  const staging = path.join(sourceRoot, '.install-plugin-staging');
+  await fs.rm(staging, { recursive: true, force: true });
+  await fs.cp(path.join(sourceRoot, 'server-plugin'), staging, { recursive: true });
+  await fs.mkdir(path.join(staging, 'src', 'shared'), { recursive: true });
+  await fs.copyFile(
+    path.join(sourceRoot, 'src', 'shared', 'openai-images-core.js'),
+    path.join(staging, 'src', 'shared', 'openai-images-core.mjs'),
+  );
+  try {
+    await copyDirectory(staging, target, force);
+  } finally {
+    await fs.rm(staging, { recursive: true, force: true });
+  }
+}
+
 async function inspectConfig(root, enable) {
   const config = path.join(root, 'config.yaml');
   if (!await exists(config)) return { enabled: false, message: '未找到 config.yaml，请手动确认 enableServerPlugins' };
@@ -118,7 +136,7 @@ async function main() {
   if (options.withServerPlugin) {
     const pluginTarget = path.join(stRoot, 'plugins', 'st-image-atelier');
     await fs.mkdir(path.dirname(pluginTarget), { recursive: true });
-    await copyDirectory(path.join(sourceRoot, 'server-plugin'), pluginTarget, options.force);
+    await installServerPlugin(pluginTarget, options.force);
     const config = await inspectConfig(stRoot, options.enableServerPlugins);
     console.log(`可选 Server Plugin: ${pluginTarget}`);
     console.log(config.message);

@@ -48,6 +48,7 @@ MESSAGE_RECEIVED (live)
 - 发起上游请求前，先把 attempt 写入聊天并等待 `saveChatConditional()` 完成。
 - 当前页面用 `activeTags` 防止双击；已有 attemptId 会直接返回原记录。
 - 刷新后遗留的活动状态改为 `interrupted`，不会自动重发。
+- 酒馆还在流式输出这一层时只挂卡片、不排自动生图，等 `MESSAGE_RECEIVED` 拿到定稿再排；消息被重 roll、滑走、改动或删除后，旧标签的生图在发请求之前就停下（`TAG_NOT_FOUND`）。
 
 免服务端模式无法提供跨浏览器标签页的服务端原子锁。极端情况下，两个页面同时操作同一聊天仍可能同时提交；需要该保证时使用增强模式。
 
@@ -68,3 +69,7 @@ NovelAI 当前固定走直连模式；官方 `POST /ai/generate-image` 返回的
 - 独立用户数据目录和服务端画廊。
 
 该模式不是普通安装的前置条件。
+
+## 请求逻辑只有一份
+
+OpenAI Images 兼容接口的地址拼接、请求体、报错归类与提示、智能重试和响应解析都在 `src/shared/openai-images-core.js`，直连（`src/ui/api/openai-direct.js`）和 Server Plugin（`server-plugin/src/adapters/openai-images.js`）只各自提供报错类和「连不上」时的说法。Server Plugin 是 CommonJS，用动态 `import()` 加载这份 ES 模块；安装脚本把它拷到插件目录的 `src/shared/openai-images-core.mjs`，在仓库里直接运行时则读原文件。这份文件不能 import 别的文件。

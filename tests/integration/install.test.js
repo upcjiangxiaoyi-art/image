@@ -6,6 +6,7 @@ import fs from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 
 const execute = promisify(execFile);
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -48,6 +49,16 @@ test('增强模式显式安装 Server Plugin 并备份配置', async t => {
   const verification = await execute(process.execPath, [verify, '--st', stRoot, '--with-server-plugin']);
 
   await fs.stat(path.join(stRoot, 'plugins', 'st-image-atelier', 'index.js'));
+  const installedAdapter = createRequire(import.meta.url)(
+    path.join(stRoot, 'plugins', 'st-image-atelier', 'src', 'adapters', 'openai-images.js'),
+  );
+  const core = await installedAdapter.loadCore();
+  assert.equal(typeof core.generateImages, 'function', '装好的插件能加载拷进去的共用请求代码');
+  assert.equal(
+    await fs.readFile(path.join(stRoot, 'plugins', 'st-image-atelier', 'src', 'shared', 'openai-images-core.mjs'), 'utf8'),
+    await fs.readFile(path.join(projectRoot, 'src', 'shared', 'openai-images-core.js'), 'utf8'),
+    '插件里的是同一份代码',
+  );
   assert.match(await fs.readFile(path.join(stRoot, 'config.yaml'), 'utf8'), /enableServerPlugins: true/);
   assert.ok((await fs.readdir(stRoot)).some(name => name.startsWith('config.yaml.stia-backup-')));
   assert.match(verification.stdout, /可选 Server Plugins 已启用/);

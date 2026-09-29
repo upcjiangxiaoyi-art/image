@@ -24,6 +24,7 @@ async function verifySource(root, includeServer = false) {
     'src/ui/parser/draw-parser.js',
     'src/ui/compat/st-api.js',
     'src/ui/media/image-viewer.js',
+    'src/shared/openai-images-core.js',
   ];
   if (includeServer) {
     files.push(
@@ -58,6 +59,7 @@ async function main() {
     const plugin = path.join(stRoot, 'plugins', 'st-image-atelier');
     await must(path.join(plugin, 'index.js'));
     await must(path.join(plugin, 'src', 'routes', 'index.js'));
+    await must(path.join(plugin, 'src', 'shared', 'openai-images-core.mjs'));
     const config = await fs.readFile(path.join(stRoot, 'config.yaml'), 'utf8').catch(() => '');
     const enabled = /^enableServerPlugins:\s*true\s*$/mi.test(config);
     console.log(enabled ? '可选 Server Plugins 已启用' : '警告：可选 Server Plugins 未启用');

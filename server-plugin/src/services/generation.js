@@ -179,9 +179,11 @@ class GenerationService {
       const exposed = publicError(error);
       attempt.status = cancelled ? 'cancelled' : 'failed';
       attempt.errorCode = cancelled ? null : exposed.code;
-      attempt.errorMessage = cancelled
-        ? '已取消'
-        : `${exposed.message}${exposed.details ? `：${exposed.details}` : ''}`;
+      /* 上游报错的提示里已经带着原因，details 只在没包含时补上。 */
+      const detail = exposed.details && !exposed.message.includes(exposed.details)
+        ? `：${exposed.details}`
+        : '';
+      attempt.errorMessage = cancelled ? '已取消' : `${exposed.message}${detail}`;
       if (!cancelled && attempt.compatibilityRetry) {
         attempt.errorMessage += `；已尝试移除 ${attempt.compatibilityRetry.adjustedParameters.join('、')} 后重试一次`;
       }

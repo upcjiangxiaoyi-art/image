@@ -19,8 +19,8 @@ const MESSAGES = {
 };
 
 class AppError extends Error {
-  constructor(code, details, status = 400, retryable = false) {
-    super(MESSAGES[code] || '未知错误');
+  constructor(code, details, status = 400, retryable = false, publicMessage = '') {
+    super(publicMessage || MESSAGES[code] || '未知错误');
     this.name = 'AppError';
     this.code = code;
     this.details = details;
