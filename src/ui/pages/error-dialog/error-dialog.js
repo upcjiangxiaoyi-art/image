@@ -126,6 +126,32 @@ export function describeError(error, fallbackTitle = '操作失败') {
   };
 }
 
+/* 报错弹窗开不开、生图失败那条带不带「重新生成」键，都在这里决定。弹窗要等酒馆页面就绪后
+   才创建，所以用 getDialog 按需取。 */
+export function createProblemReporter({ store, getDialog }) {
+  function show(describe) {
+    if (store.state.settings.enableErrorPopup === false) return;
+    try {
+      const problem = describe();
+      if (problem) getDialog()?.show(problem);
+    } catch (error) {
+      console.warn('[画笺] 无法显示报错弹窗', error);
+    }
+  }
+
+  return {
+    reportProblem(context, retry) {
+      show(() => {
+        const problem = describeGenerationProblem(context);
+        return problem?.tone === 'danger' && retry ? { ...problem, retry } : problem;
+      });
+    },
+    reportError(error, title) {
+      show(() => describeError(error, title));
+    },
+  };
+}
+
 function block(className, text = '') {
   const element = document.createElement('div');
   element.className = className;

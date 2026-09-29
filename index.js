@@ -18,12 +18,8 @@ import { installToolMenuEntry } from './src/ui/menu/tool-menu.js';
 import { applyThemeMode } from './src/ui/theme/theme.js';
 import { removeDrawTagFromMessage } from './src/ui/state/tag-removal.js';
 import { createPromptOverrideDialog } from './src/ui/pages/prompt-override/prompt-override.js';
-import {
-  createErrorDialog,
-  describeError,
-  describeGenerationProblem,
-  requestedQuality,
-} from './src/ui/pages/error-dialog/error-dialog.js';
+import { createErrorDialog, createProblemReporter } from './src/ui/pages/error-dialog/error-dialog.js';
+import { createGenerationController } from './src/ui/state/generation-controller.js';
 
 const compat = createStCompat({
   getContext,
@@ -40,6 +36,7 @@ const api = createApiClient({
 });
 const store = createStore();
 let errorDialog;
+const { reportProblem, reportError } = createProblemReporter({ store, getDialog: () => errorDialog });
 let reportedServiceError = null;
 store.subscribe(state => {
   document.documentElement.classList.toggle('stia-disabled', !state.settings.enabled);
@@ -51,31 +48,7 @@ store.subscribe(state => {
   }
 });
 applyThemeMode(store.state.settings.themeMode);
-const activeTags = new Set();
 const GALLERY_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
-const TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'interrupted', 'cancelled']);
-
-function showProblem(describe) {
-  if (store.state.settings.enableErrorPopup === false) return;
-  try {
-    const problem = describe();
-    if (problem) errorDialog?.show(problem);
-  } catch (error) {
-    console.warn('[画笺] 无法显示报错弹窗', error);
-  }
-}
-
-/* 生图失败的那条带上「重新生成」：按原请求（含调整后重绘的临时提示词）再跑一次。 */
-function reportProblem(context, retry) {
-  showProblem(() => {
-    const problem = describeGenerationProblem(context);
-    return problem?.tone === 'danger' && retry ? { ...problem, retry } : problem;
-  });
-}
-
-function reportError(error, title) {
-  showProblem(() => describeError(error, title));
-}
 
 async function runGalleryCleanup() {
   try {
@@ -86,131 +59,15 @@ async function runGalleryCleanup() {
   }
 }
 
-function uuid() {
-  return globalThis.crypto?.randomUUID?.()
-    || `${Date.now().toString(16)}-${Math.random().toString(16).slice(2)}-4000-8000-${Math.random().toString(16).slice(2).padEnd(12, '0').slice(0, 12)}`;
-}
-
-async function waitForAttempt(attemptId, tagId) {
-  for (;;) {
-    const attempt = await api.attempt(attemptId);
-    const current = store.state.tagStates.get(tagId) || { tagId, attempts: [], results: [] };
-    store.setTag(tagId, { ...current, attempts: [attempt, ...(current.attempts || []).filter(item => item.attemptId !== attemptId)] });
-    if (['succeeded', 'failed', 'interrupted', 'cancelled'].includes(attempt.status)) {
-      const [resolved] = await api.resolveTags([tagId]);
-      store.setTag(tagId, resolved);
-      return attempt;
-    }
-    await new Promise(resolve => setTimeout(resolve, 900));
-  }
-}
-
-async function refreshTag(tagId) {
-  const [resolved] = await api.resolveTags([tagId]);
-  store.setTag(tagId, resolved);
-  return resolved;
-}
-
-async function generate(tag, mode, overrides = {}) {
-  if (activeTags.has(tag.tagId)) return;
-  activeTags.add(tag.tagId);
-  const attemptId = mode === 'auto' ? `auto:${tag.tagId}` : uuid();
-  const provider = store.state.settings.generationProvider || 'openai';
-  const prompt = Object.hasOwn(overrides, 'prompt') ? String(overrides.prompt || '') : tag.prompt;
-  const optimisticAttempt = {
-    attemptId,
-    tagId: tag.tagId,
-    requestMode: mode,
-    provider,
-    model: provider === 'novelai'
-      ? (store.state.novelAi?.model || '')
-      : (store.state.preset?.selectedModel || ''),
-    status: 'generating',
-    promptSnapshot: prompt,
-    createdAt: new Date().toISOString(),
-  };
-  const current = store.state.tagStates.get(tag.tagId) || { tagId: tag.tagId, attempts: [], results: [] };
-  /* 自动生图的 attemptId 固定；已有终态记录时接口只会原样返回旧结果，不再弹旧报错。 */
-  const replay = (current.attempts || [])
-    .some(item => item.attemptId === attemptId && TERMINAL_STATUSES.has(item.status));
-  const quality = requestedQuality({ provider, preset: store.state.preset, tagQuality: tag.quality });
-  const retry = { key: tag.tagId, run: () => generate(tag, 'manual', overrides) };
-  store.setTag(tag.tagId, { ...current, attempts: [optimisticAttempt, ...(current.attempts || [])] });
-  try {
-    const attempt = await api.generate({
-      tagId: tag.tagId,
-      attemptId,
-      requestMode: mode,
-      provider,
-      presetId: store.state.preset?.id || 'default',
-      artistPresetId: store.state.artistPreset?.id || 'default',
-      prompt,
-      ...(Object.hasOwn(overrides, 'negativePromptOverride')
-        ? { negativePromptOverride: overrides.negativePromptOverride } : {}),
-      chatId: tag.chatId || compat.currentChatId(),
-      messageUuid: tag.messageUuid,
-      tagOrdinal: tag.ordinal,
-      parameters: {
-        ratio: tag.ratio,
-        quality: tag.quality,
-        count: tag.count,
-      },
-      onProgress: progressAttempt => {
-        const latest = store.state.tagStates.get(tag.tagId) || current;
-        store.setTag(tag.tagId, {
-          ...latest,
-          attempts: [
-            progressAttempt,
-            ...(latest.attempts || []).filter(item => item.attemptId !== progressAttempt.attemptId),
-          ],
-        });
-      },
-    });
-    if (TERMINAL_STATUSES.has(attempt.status)) {
-      await refreshTag(tag.tagId);
-      if (attempt.status === 'succeeded') void runGalleryCleanup();
-      if (!replay) reportProblem({ attempt, quality }, retry);
-      return attempt;
-    }
-    const completed = await waitForAttempt(attempt.attemptId, tag.tagId);
-    if (completed.status === 'succeeded') void runGalleryCleanup();
-    if (!replay) reportProblem({ attempt: completed, quality }, retry);
-    return completed;
-  } catch (error) {
-    try {
-      await refreshTag(tag.tagId);
-    } catch {
-      // Keep the local failure card below when persistence could not be restored.
-    }
-    optimisticAttempt.status = 'failed';
-    optimisticAttempt.errorCode = error.code;
-    optimisticAttempt.errorMessage = error.message;
-    const latest = store.state.tagStates.get(tag.tagId) || current;
-    const persisted = (latest.attempts || []).find(item => item.attemptId === attemptId);
-    if (!persisted) {
-      store.setTag(tag.tagId, {
-        ...latest,
-        attempts: [optimisticAttempt, ...(latest.attempts || [])],
-      });
-    }
-    /* 消息已被重 roll、滑走、改动或删除：旧标签失效，在发请求之前就停了，不花钱也不弹窗。 */
-    if (error?.code === 'TAG_NOT_FOUND') {
-      console.info('[画笺] 生图标签已失效（消息重新生成或改动过），跳过', tag.tagId);
-      return null;
-    }
-    /* 落盘的失败记录带「已尝试移除 … 后重试一次」等补充说明，优先用它。 */
-    if (!replay) {
-      reportProblem({
-        attempt: persisted?.status === 'failed' ? persisted : optimisticAttempt,
-        error,
-        quality,
-      }, retry);
-    }
-    throw error;
-  } finally {
-    activeTags.delete(tag.tagId);
-  }
-}
+const controller = createGenerationController({
+  api,
+  store,
+  compat,
+  onProblem: reportProblem,
+  onSucceeded: () => void runGalleryCleanup(),
+  onError: reportError,
+});
+const { generate } = controller;
 
 const autoQueue = createAutoQueue(generate);
 let panel;
@@ -232,20 +89,7 @@ const actions = {
       ...(provider === 'novelai' ? { negativePromptOverride: value.negativePrompt } : {}),
     });
   },
-  cancel: async attemptId => {
-    try {
-      await api.cancel(attemptId);
-      const entry = [...store.state.tagStates.values()]
-        .find(value => value.attempts?.some(attempt => attempt.attemptId === attemptId));
-      const tagId = entry?.tagId;
-      if (tagId) {
-        await refreshTag(tagId);
-      }
-    } catch (error) {
-      reportError(error, '取消失败');
-      throw error;
-    }
-  },
+  cancel: attemptId => controller.cancel(attemptId),
   openGallery: () => panel.show('gallery'),
   remove: async tag => removeTag(tag),
 };
@@ -254,7 +98,7 @@ const events = createMessageEvents({ compat, api, store, renderer, autoQueue, on
 
 /* 一键删除：卡片 + 消息里的 <draw> 注入词 + 标签元数据一起清掉，落盘后不留痕迹。 */
 async function removeTag(tag) {
-  if (activeTags.has(tag.tagId)) return false;
+  if (controller.isActive(tag.tagId)) return false;
   const chat = compat.chat();
   const messageId = chat.findIndex(message => {
     const metadata = message?.extra?.stImageAtelier;
