@@ -104,3 +104,47 @@ test('消息被重 roll 或删掉后，旧标签的生图在发请求之前就�
   );
   assert.equal(fetches, 0);
 });
+
+test('版本号只有一个：package.json、lock、manifest、Server Plugin、前端常量和 CHANGELOG 顶部一致', async () => {
+  const read = file => fs.readFile(path.join(root, file), 'utf8');
+  const { version } = JSON.parse(await read('package.json'));
+  const lock = JSON.parse(await read('package-lock.json'));
+  const { VERSION } = await import('../../src/shared/constants.js');
+  const versions = {
+    'package-lock.json': lock.version,
+    'package-lock.json packages[""]': lock.packages[''].version,
+    'manifest.json': JSON.parse(await read('manifest.json')).version,
+    'server-plugin/package.json': JSON.parse(await read('server-plugin/package.json')).version,
+    'src/shared/constants.js VERSION': VERSION,
+    'CHANGELOG.md 顶部': /^## (\d+\.\d+\.\d+)/m.exec(await read('CHANGELOG.md'))?.[1],
+  };
+  for (const [where, value] of Object.entries(versions)) assert.equal(value, version, where);
+  for (const file of ['src/ui/api/direct-client.js', 'server-plugin/src/routes/index.js']) {
+    assert.doesNotMatch(await read(file), /version: '\d+\.\d+\.\d+'/, `${file} 不再写死版本号`);
+  }
+});
+
+test('npm run version:set 一次改齐所有版本号', async t => {
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const os = await import('node:os');
+  const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'stia-version-'));
+  t.after(() => fs.rm(temp, { recursive: true, force: true }));
+  for (const file of ['package.json', 'package-lock.json', 'manifest.json', 'server-plugin/package.json', 'src/shared/constants.js']) {
+    await fs.mkdir(path.dirname(path.join(temp, file)), { recursive: true });
+    await fs.copyFile(path.join(root, file), path.join(temp, file));
+  }
+  await promisify(execFile)(process.execPath, [path.join(root, 'scripts', 'bump-version.mjs'), '9.8.7', '--root', temp]);
+  const read = file => fs.readFile(path.join(temp, file), 'utf8');
+  assert.equal(JSON.parse(await read('package.json')).version, '9.8.7');
+  const lock = JSON.parse(await read('package-lock.json'));
+  assert.equal(lock.version, '9.8.7');
+  assert.equal(lock.packages[''].version, '9.8.7');
+  assert.equal(JSON.parse(await read('manifest.json')).version, '9.8.7');
+  assert.equal(JSON.parse(await read('server-plugin/package.json')).version, '9.8.7');
+  assert.match(await read('src/shared/constants.js'), /export const VERSION = '9\.8\.7';/);
+  await assert.rejects(
+    promisify(execFile)(process.execPath, [path.join(root, 'scripts', 'bump-version.mjs'), 'v2', '--root', temp]),
+    '版本号格式不对时拒绝执行',
+  );
+});

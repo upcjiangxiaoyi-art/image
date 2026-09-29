@@ -77,3 +77,7 @@ NovelAI 当前固定走直连模式；官方 `POST /ai/generate-image` 返回的
 ## 请求逻辑只有一份
 
 OpenAI Images 兼容接口的地址拼接、请求体、报错归类与提示、智能重试和响应解析都在 `src/shared/openai-images-core.js`，直连（`src/ui/api/openai-direct.js`）和 Server Plugin（`server-plugin/src/adapters/openai-images.js`）只各自提供报错类和「连不上」时的说法。Server Plugin 是 CommonJS，用动态 `import()` 加载这份 ES 模块；安装脚本把它拷到插件目录的 `src/shared/openai-images-core.mjs`，在仓库里直接运行时则读原文件。这份文件不能 import 别的文件。
+
+## 版本号
+
+代码里不写死版本号：前端读 `src/shared/constants.js` 的 `VERSION`，Server Plugin 读自己的 `package.json`。发版时运行 `npm run version:set <版本号>`，一次改齐 `package.json`、`package-lock.json`、`manifest.json`、`server-plugin/package.json` 和 `VERSION`，再在 `CHANGELOG.md` 顶部写一条同版本号的记录；`tests/unit/repository-metadata.test.js` 会检查它们一致。

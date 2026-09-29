@@ -5,6 +5,7 @@ import {
   DEFAULT_SETTINGS,
   MODULE_NAME,
   SCHEMA_VERSION,
+  VERSION,
 } from '../../shared/constants.js';
 import {
   DirectError,
@@ -808,7 +809,7 @@ export function createDirectApiClient({
     mode: () => namespace.settings.executionMode || 'direct',
     health: async () => ({
       mode: 'direct',
-      version: '1.6.12',
+      version: VERSION,
       corsRequired: true,
       storage: 'sillytavern-images',
     }),

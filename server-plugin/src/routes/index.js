@@ -3,6 +3,7 @@
 const adapter = require('../adapters/openai-images');
 const { ServiceRegistry } = require('../services/registry');
 const { publicError, AppError } = require('../utils/errors');
+const { version: VERSION } = require('../../package.json');
 
 function ok(response, data, status = 200) {
   return response.status(status).json({ ok: true, data });
@@ -29,7 +30,7 @@ function registerRoutes(router, registry = new ServiceRegistry()) {
     await registry.get(request);
     ok(response, {
       id: 'st-image-atelier',
-      version: '1.6.12',
+      version: VERSION,
       status: 'ready',
       schemaVersion: 1,
     });

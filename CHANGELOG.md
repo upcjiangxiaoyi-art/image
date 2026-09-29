@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.6.13 - 2026-09-29
+
+整理代码，用户可见的行为基本不变：
+
+- 直连和可选 Server Plugin 共用一份 OpenAI Images 请求逻辑（`src/shared/openai-images-core.js`）：地址拼接、请求体、报错归类与提示、智能重试、响应解析只有一处。Server Plugin 因此补上直连已有的修复：unsafe 等审核识别、HTTP 200 正文里的报错原因、审核拦截绝不智能重试、带上游原话的报错提示；上游错误对浏览器仍报 502。安装脚本会把共用文件拷进插件目录。
+- 生图主流程从 `index.js` 拆到 `src/ui/state/generation-controller.js`，报错弹窗的判断收进 `createProblemReporter`；`index.js` 只剩接线，主流程新增 9 项测试。
+- 版本号统一：代码不再写死版本号，`npm run version:set <版本号>` 一次改齐 package.json、package-lock.json、manifest.json、Server Plugin 的 package.json 和前端常量；测试会检查它们与 CHANGELOG 顶部一致。`package-lock.json`（原停在 1.6.5）和 Server Plugin 的版本号（原停在 1.3.3）同步到当前版本。
+
 ## 1.6.12 - 2026-09-28
 
 - 修复重 roll（重新生成 / 右滑）时弹出「找不到对应的生图标签」。原因是新消息还在流式输出时，插件就把 `<draw>` 记成标签排进了自动生图队列；酒馆写完后会再跑一遍 AI 输出的正则脚本、去掉行尾空格，提示词一变就成了新标签，排着的旧标签轮到时已经不存在。有时还会先按没定稿的内容白生成一张。
