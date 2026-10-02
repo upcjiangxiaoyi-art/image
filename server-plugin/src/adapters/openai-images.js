@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { AppError } = require('../utils/errors');
+const { longFetch } = require('../utils/long-fetch');
 
 /* 请求逻辑和直连共用 src/shared/openai-images-core.js（ES 模块），这里只提供服务端的报错类。
    安装脚本把它拷到插件目录的 src/shared/openai-images-core.mjs；在仓库里直接运行时用原文件。
@@ -26,6 +27,7 @@ function loadCore() {
       ErrorClass: AppError,
       networkError: error => new AppError('UPSTREAM_HTTP_ERROR', error?.message, 502, true),
       httpStatus: (code, status) => (code === 'UPSTREAM_HTTP_ERROR' ? 502 : status),
+      fetchImpl: longFetch,
     });
   })().catch(error => {
     corePromise = null;

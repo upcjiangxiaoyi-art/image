@@ -84,10 +84,13 @@ function authorization(apiKey) {
 /* ErrorClass 的构造参数统一为 (code, details, status, retryable, publicMessage)。
    httpStatus 决定报错里的 status：浏览器直接用上游状态码；Server Plugin 把上游 HTTP
    错误报成 502，状态码另存在 upstreamStatus。networkError 给出「请求根本没发出去」的说法。 */
+/* fetchImpl：默认用当前环境的 fetch（调用时再取，测试可以替换）。Server Plugin 换成自己的
+   HTTP 客户端，因为 Node 自带的 fetch 300 秒拿不到响应头就放弃，排队慢的图等不完。 */
 export function createOpenAiImagesCore({
   ErrorClass,
   networkError,
   httpStatus = (_code, status) => status,
+  fetchImpl = (url, options) => fetch(url, options),
 }) {
   const fail = (code, details = '', status = 400, retryable = false, publicMessage = '') =>
     new ErrorClass(code, details, status, retryable, publicMessage);
@@ -207,7 +210,7 @@ export function createOpenAiImagesCore({
     if (externalSignal?.aborted) abort();
     else externalSignal?.addEventListener('abort', abort, { once: true });
     try {
-      const response = await fetch(url, { ...options, signal: controller.signal, redirect: 'error' });
+      const response = await fetchImpl(url, { ...options, signal: controller.signal, redirect: 'error' });
       const text = await response.text();
       if (!response.ok) throw mapStatus(response.status, text.slice(0, 1000));
       try {

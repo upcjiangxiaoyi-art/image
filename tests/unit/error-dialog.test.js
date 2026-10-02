@@ -588,3 +588,25 @@ test('画好的图的提醒：每张一条，「查看」先把弹窗整个关�
   assert.equal(dialog.root.hidden, true, '原图查看器不在浏览器顶层，弹窗得先关掉');
   assert.equal(dialog.root.querySelectorAll('.stia-error-dialog__item').length, 0);
 });
+
+test('「再画一张」之后后台那张：画好提醒并带「查看」，没画成注明是后台那张；卡片不在眼前时按图去了哪说', () => {
+  const attempt = { status: 'succeeded', resultIds: ['r-slow'] };
+  const done = describeGenerationProblem({ attempt, placement: 'active', background: true });
+  assert.equal(done.tone, 'info');
+  assert.equal(done.title, '后台那张也画好了');
+  assert.match(done.message, /存进这张卡和画廊/);
+  assert.equal(done.resultId, 'r-slow');
+  assert.equal(describeGenerationProblem({ attempt, placement: 'active', background: false }), null, '新的这次画好不弹');
+  assert.equal(
+    describeGenerationProblem({ attempt, placement: 'swipe', background: true }).title,
+    '上一版回复的图画好了',
+    '卡片不在眼前时先说图去了哪',
+  );
+  const failed = describeGenerationProblem({
+    attempt: { status: 'failed', errorCode: 'UPSTREAM_TIMEOUT', errorMessage: '请求超时' },
+    placement: 'active',
+    background: true,
+  });
+  assert.equal(failed.title, '请求超时');
+  assert.match(failed.hint, /后台那张/);
+});

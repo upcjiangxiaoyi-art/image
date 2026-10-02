@@ -203,7 +203,7 @@ export function createToolPanel({ api, store, onError = () => {} }) {
   ]);
   const timeout = input('number');
   timeout.min = '30';
-  timeout.max = '600';
+  timeout.max = '7200';
   const extraBody = document.createElement('textarea');
   extraBody.rows = 4;
   extraBody.placeholder = '{"background":"transparent"}';
@@ -599,7 +599,7 @@ export function createToolPanel({ api, store, onError = () => {} }) {
     } else {
       setSelectValue(defaultCount, String(preset.defaultCount || 1), `${preset.defaultCount || 1} 张`);
     }
-    timeout.value = String(Math.round((preset.timeoutMs || 180000) / 1000));
+    timeout.value = String(Math.round((preset.timeoutMs || 3_600_000) / 1000));
     extraBody.value = JSON.stringify(preset.extraBody || {}, null, 2);
     setSelectValue(responseFormat, preset.responseFormat ?? 'b64_json');
     apiKey.value = '';

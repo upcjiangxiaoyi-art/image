@@ -104,6 +104,8 @@ const actions = {
       ...(provider === 'novelai' ? { negativePromptOverride: value.negativePrompt } : {}),
     });
   },
+  /* 等不及时「再画一张」（可换预设），正在画的那张留在后台接着画。 */
+  reroll: (tag, attemptId, preset) => controller.reroll(tag, attemptId, preset),
   cancel: attemptId => controller.cancel(attemptId),
   openGallery: () => panel.show('gallery'),
   remove: async tag => removeTag(tag),

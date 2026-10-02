@@ -61,7 +61,12 @@ function uuid() {
     });
 }
 
+/* 1.6.15 起慢的图可以留在后台等：没改过的老默认值（3 分钟）和老上限（10 分钟）换成新的默认
+   1 小时，自己设的其他值不动。看原始数据里有没有 timeoutVersion，每个预设只迁一次。 */
+const LEGACY_TIMEOUTS = new Set([180_000, 600_000]);
+
 function normalizePreset(value = {}) {
+  const migrateTimeout = !(Number(value.timeoutVersion) >= DEFAULT_PRESET.timeoutVersion);
   const preset = {
     ...clone(DEFAULT_PRESET),
     ...value,
@@ -74,6 +79,10 @@ function normalizePreset(value = {}) {
   };
   preset.id = String(preset.id || uuid());
   preset.name = String(preset.name || '未命名预设').trim() || '未命名预设';
+  if (migrateTimeout) {
+    if (LEGACY_TIMEOUTS.has(Number(preset.timeoutMs))) preset.timeoutMs = DEFAULT_PRESET.timeoutMs;
+    preset.timeoutVersion = DEFAULT_PRESET.timeoutVersion;
+  }
   return preset;
 }
 
@@ -659,7 +668,13 @@ export function createDirectApiClient({
         ...(found.tag.resultIds || []).filter(resultId => resultIndex.has(resultId)),
         ...saved.map(result => result.resultId),
       ])];
-      found.tag.latestResultId = saved.at(-1)?.resultId || found.tag.latestResultId || null;
+      /* 后台那张（之后又 roll 过）画好时，新的那次已经出图，就不抢卡片上显示的那张，只进历史。 */
+      const attempts = found.tag.attempts || [];
+      const position = attempts.findIndex(item => item.attemptId === attempt.attemptId);
+      const newerSucceeded = attempts.slice(0, Math.max(0, position)).some(item => item.status === 'succeeded');
+      if (!newerSucceeded || !found.tag.latestResultId) {
+        found.tag.latestResultId = saved.at(-1)?.resultId || found.tag.latestResultId || null;
+      }
       for (const result of saved) resultIndex.set(result.resultId, result);
       attempt.status = 'succeeded';
       attempt.resultIds = saved.map(result => result.resultId);

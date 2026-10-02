@@ -293,3 +293,98 @@ test('生成中的卡片显示计时：从这次生成开始时算起，每秒�
   card.render();
   assert.equal(card.root.querySelector('.stia-card__elapsed'), null, '画完就不显示计时');
 });
+
+test('生成中可以「再画一张」：选预设（当前的排前面、没填 Key 的注明），正在画的那张显示在后台', async t => {
+  const { JSDOM } = await import('jsdom');
+  const dom = new JSDOM('<!doctype html><html><body></body></html>');
+  const previous = { document: globalThis.document, window: globalThis.window };
+  globalThis.document = dom.window.document;
+  globalThis.window = dom.window;
+  t.after(() => {
+    globalThis.document = previous.document;
+    globalThis.window = previous.window;
+    dom.window.close();
+  });
+
+  const tag = { tagId: 'tag-1', prompt: 'a cat', ratio: 'portrait' };
+  const startedSlow = new Date(Date.now() - 18 * 60_000).toISOString();
+  let state = {
+    attempts: [{ attemptId: 'slow', status: 'generating', requestMode: 'manual', model: 'm', createdAt: startedSlow }],
+    results: [],
+  };
+  let settings = { generationProvider: 'openai' };
+  const rerolls = [];
+  const presets = [
+    { id: 'fast', name: '快速组', active: false, hasApiKey: true },
+    { id: 'cheap', name: '便宜组', active: true, hasApiKey: true },
+    { id: 'empty', name: '新预设', active: false, hasApiKey: false },
+  ];
+  const card = createCard({
+    tag,
+    api: { fileUrl: id => `/user/images/${id}.png` },
+    getState: () => state,
+    getSettings: () => settings,
+    onGenerate() {},
+    onOpenGallery() {},
+    onCancel() {},
+    onRemove() {},
+    onReroll: (...args) => rerolls.push(args),
+    listPresets: async () => presets,
+  });
+  card.render();
+  document.body.append(card.root);
+  const buttons = () => [...card.root.querySelectorAll('button')].map(button => button.textContent);
+  const click = label => [...card.root.querySelectorAll('button')].find(button => button.textContent === label).click();
+  const settle = () => new Promise(resolve => setTimeout(resolve, 0));
+
+  assert.deepEqual(buttons(), ['↻再画一张', '×取消']);
+  click('↻再画一张');
+  await settle();
+  assert.match(card.root.textContent, /这张会在后台接着画。用哪个预设再画一张？/);
+  assert.deepEqual(buttons(), ['便宜组（当前）', '快速组', '新预设（没填 Key）', '算了']);
+  click('算了');
+  assert.deepEqual(buttons(), ['↻再画一张', '×取消'], '「算了」收起');
+
+  click('↻再画一张');
+  await settle();
+  click('快速组');
+  assert.equal(rerolls.length, 1);
+  assert.equal(rerolls[0][0], tag);
+  assert.equal(rerolls[0][1], 'slow', '照正在画的那次请求再来一张');
+  assert.equal(rerolls[0][2].id, 'fast');
+
+  state = {
+    ...state,
+    attempts: [{ attemptId: 'quick', status: 'generating', requestMode: 'manual', createdAt: new Date().toISOString() }, ...state.attempts],
+  };
+  card.render();
+  const note = card.root.querySelector('.stia-card__background');
+  assert.match(note.textContent, /^后台还有 1 张在画 · 已用 1[78] 分 \d\d 秒$/);
+  assert.match(card.root.querySelector('.stia-card__status .stia-card__elapsed').textContent, /^已用 0 秒$/, '新的这次从零开始计时');
+
+  state = {
+    tag: { latestResultId: 'r-quick', resultIds: ['r-quick'] },
+    attempts: [{ ...state.attempts[0], status: 'succeeded' }, state.attempts[1]],
+    results: [{ resultId: 'r-quick', status: 'available', prompt: 'a cat' }],
+  };
+  card.render();
+  assert.ok(card.root.querySelector('img'), '新的这张画好了先显示');
+  assert.match(card.root.querySelector('.stia-card__background').textContent, /后台还有 1 张在画/);
+
+  state = { tag: {}, attempts: [{ attemptId: 'quick', status: 'failed', errorMessage: 'x' }, state.attempts[1]], results: [] };
+  card.render();
+  assert.equal(buttons().includes('×删除'), false, '后台还在画时不给删除');
+
+  settings = { generationProvider: 'novelai' };
+  state = { attempts: [{ attemptId: 'nai', status: 'generating', requestMode: 'manual' }], results: [] };
+  card.render();
+  click('↻再画一张');
+  await settle();
+  assert.deepEqual(buttons(), ['↻确定再画一张', '算了'], 'NovelAI 没有 API 预设可选，确认一下就画');
+  click('↻确定再画一张');
+  assert.deepEqual(rerolls.at(-1).slice(1), ['nai', undefined]);
+
+  state = { attempts: [{ attemptId: 'auto:tag-1', status: 'queued', requestMode: 'auto' }], results: [] };
+  card.render();
+  assert.deepEqual(buttons(), ['×取消排队'], '自动排队时还没开始画，没有「再画一张」');
+});

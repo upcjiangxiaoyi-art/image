@@ -4,7 +4,8 @@ import { MODERATION_PATTERN } from '../../api/openai-direct.js';
    quality / size / n 才出图时也弹，免得把回退后的图当成按 max 出的。设置页、画廊等处的
    报错也走这里，卡片和设置页上原有的报错提示照旧保留。点一下弹窗任意位置就关；弹窗开着时
    再来的报错合并进来，内容相同只累计次数。生图失败的那条带「重新生成」键，不用再滑到卡片上点。
-   重 roll、滑走或切走聊天时还在画的图，画好后也在这里提醒一声，带「查看」键。 */
+   重 roll、滑走或切走聊天时还在画的图，以及「再画一张」后留在后台的那张，画好后也在这里
+   提醒一声，带「查看」键。 */
 
 export const PREMIUM_QUALITIES = Object.freeze(['xhigh', 'max']);
 
@@ -38,6 +39,13 @@ const MOVED_RESULT = Object.freeze({
     message: '回到那个聊天就能看到；画廊里也有。',
     failure: '这是另一个聊天里的图，回到那个聊天可以在卡片上重试。',
   },
+});
+
+/* 卡片还在眼前，但这张是「再画一张」之后留在后台的那张。 */
+const BACKGROUND_RESULT = Object.freeze({
+  title: '后台那张也画好了',
+  message: '已经存进这张卡和画廊，卡片上翻历史就能看到。',
+  failure: '这是后台那张（之后又重新 roll 过）。',
 });
 
 /* 与 openai-direct 组请求体的顺序一致：标签 quality → 默认质量（选「不发送」则不发）→
@@ -91,10 +99,18 @@ function joinLines(...lines) {
   return lines.filter(Boolean).join('\n');
 }
 
-export function describeGenerationProblem({ attempt, error, quality = '', placement = 'active' } = {}) {
+export function describeGenerationProblem({
+  attempt,
+  error,
+  quality = '',
+  placement = 'active',
+  background = false,
+} = {}) {
   /* 消息被重 roll、滑走、改动或删除后，排着的旧标签已经没有意义，不打扰。 */
   if ((attempt?.errorCode || error?.code) === 'TAG_NOT_FOUND') return null;
-  const moved = Object.hasOwn(MOVED_RESULT, placement) ? MOVED_RESULT[placement] : null;
+  const moved = Object.hasOwn(MOVED_RESULT, placement)
+    ? MOVED_RESULT[placement]
+    : (background ? BACKGROUND_RESULT : null);
   const status = attempt?.status || (error ? 'failed' : '');
   if (status === 'failed' || status === 'interrupted') {
     const interrupted = status === 'interrupted';
@@ -132,7 +148,7 @@ export function describeGenerationProblem({ attempt, error, quality = '', placem
       + `${qualityDropped ? `，不是 quality=${quality}` : ''}。`
     : '';
   const fallbackHint = qualityDropped && isPremiumQuality(quality) ? premiumQualityNote(quality) : '';
-  /* 卡片已经不在眼前：告诉用户图去了哪，带上 resultId 好「查看」。 */
+  /* 卡片已经不在眼前，或是后台那张：告诉用户图去了哪，带上 resultId 好「查看」。 */
   if (moved) {
     return {
       tone: 'info',

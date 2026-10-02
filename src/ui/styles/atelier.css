@@ -747,6 +747,36 @@
   color: var(--stia-danger);
 }
 
+/* 「再画一张」：选预设的按钮手机上一行两个，名字长了自己换行。 */
+.stia-card__reroll {
+  display: grid;
+  gap: 8px;
+}
+
+.stia-card__reroll p {
+  margin: 0;
+}
+
+.stia-actions--fill > .stia-card__reroll-preset {
+  flex: 1 1 140px;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.stia-actions--fill > .stia-card__reroll-close {
+  flex: 0 0 auto;
+}
+
+.stia-card__background {
+  color: var(--stia-muted);
+  font-size: 11px;
+}
+
+.stia-card__background .stia-card__elapsed {
+  margin-left: 0;
+}
+
 .stia-card__shimmer {
   height: 120px;
   overflow: hidden;

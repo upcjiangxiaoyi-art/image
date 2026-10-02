@@ -8,10 +8,20 @@ function defaultUuid() {
     || `${Date.now().toString(16)}-${Math.random().toString(16).slice(2)}-4000-8000-${Math.random().toString(16).slice(2).padEnd(12, '0').slice(0, 12)}`;
 }
 
+/* 同一张卡同时画好几张时，按 attemptId 原地更新，不挪顺序：卡片总是显示最近开始的那一次，
+   轮询或进度更新不能把后台那张换到最前面。 */
+function upsertAttempt(attempts = [], attempt) {
+  const index = attempts.findIndex(item => item.attemptId === attempt.attemptId);
+  if (index < 0) return [attempt, ...attempts];
+  return attempts.map((item, position) => (position === index ? attempt : item));
+}
+
 /* 生图主流程：乐观状态、手动 / 自动两种 attemptId、增强模式轮询、失败归因和报错弹窗。
    从 index.js 拆出来，酒馆的接口都从参数传进来，这样能单独测试。
+   同一张卡可以同时画好几张：等不及时「再画一张」（可换预设），正在画的留在后台接着画。
    onProblem(context, retry)：每次出结果都会调用，由报错弹窗决定弹不弹；context.placement
-   说明出结果时卡片在哪（见 placementOf），卡片不在眼前时不带 retry；
+   说明出结果时卡片在哪（见 placementOf），context.background 说明之后又 roll 过（这张是后台那张）；
+   卡片不在眼前或是后台那张时不带 retry；
    onSucceeded()：出图成功后（用来触发画廊自动清理）；onError(error, title)：取消失败等。 */
 export function createGenerationController({
   api,
@@ -23,7 +33,13 @@ export function createGenerationController({
   uuid = defaultUuid,
   pollIntervalMs = 900,
 }) {
-  const activeTags = new Set();
+  const running = new Map();
+  const newest = new Map();
+  const requests = new Map();
+
+  function isActive(tagId) {
+    return Boolean(running.get(tagId)?.size);
+  }
 
   /* 出结果时这张卡还在不在眼前：active 还在；swipe 在同一层另一个滑动版本里；
      elsewhere 已经切到别的聊天；gone 回复被重新生成、删除或改动过，卡片没了。
@@ -45,10 +61,7 @@ export function createGenerationController({
     for (;;) {
       const attempt = await api.attempt(attemptId);
       const current = store.state.tagStates.get(tagId) || { tagId, attempts: [], results: [] };
-      store.setTag(tagId, {
-        ...current,
-        attempts: [attempt, ...(current.attempts || []).filter(item => item.attemptId !== attemptId)],
-      });
+      store.setTag(tagId, { ...current, attempts: upsertAttempt(current.attempts, attempt) });
       if (TERMINAL_STATUSES.has(attempt.status)) {
         await refreshTag(tagId);
         return attempt;
@@ -57,11 +70,19 @@ export function createGenerationController({
     }
   }
 
-  async function generate(tag, mode, overrides = {}) {
-    if (activeTags.has(tag.tagId)) return undefined;
-    activeTags.add(tag.tagId);
+  /* overrides：prompt / negativePromptOverride（调整后重绘的临时提示词）、preset（这一次换用的
+     API 预设）。alongside：明确要和这张卡正在画的并行。不带时，卡片上最近开始的那次还在画就不再
+     发请求（防双击）；只剩后台那张在画时，卡片上的「重新生成」「重试」照常能用。 */
+  async function generate(tag, mode, overrides = {}, { alongside = false } = {}) {
+    if (!alongside && running.get(tag.tagId)?.has(newest.get(tag.tagId))) return undefined;
     const attemptId = mode === 'auto' ? `auto:${tag.tagId}` : uuid();
+    if (running.get(tag.tagId)?.has(attemptId)) return undefined;
+    if (!running.has(tag.tagId)) running.set(tag.tagId, new Set());
+    running.get(tag.tagId).add(attemptId);
+    newest.set(tag.tagId, attemptId);
+    requests.set(attemptId, { overrides });
     const provider = store.state.settings.generationProvider || 'openai';
+    const preset = overrides.preset || store.state.preset;
     const prompt = Object.hasOwn(overrides, 'prompt') ? String(overrides.prompt || '') : tag.prompt;
     const optimisticAttempt = {
       attemptId,
@@ -70,7 +91,7 @@ export function createGenerationController({
       provider,
       model: provider === 'novelai'
         ? (store.state.novelAi?.model || '')
-        : (store.state.preset?.selectedModel || ''),
+        : (preset?.selectedModel || ''),
       status: 'generating',
       promptSnapshot: prompt,
       createdAt: new Date().toISOString(),
@@ -79,14 +100,19 @@ export function createGenerationController({
     /* 自动生图的 attemptId 固定；已有终态记录时接口只会原样返回旧结果，不再弹旧报错。 */
     const replay = (current.attempts || [])
       .some(item => item.attemptId === attemptId && TERMINAL_STATUSES.has(item.status));
-    const quality = requestedQuality({ provider, preset: store.state.preset, tagQuality: tag.quality });
+    const quality = requestedQuality({ provider, preset, tagQuality: tag.quality });
     const chatId = tag.chatId || compat.currentChatId();
-    /* 报错弹窗里的「重新生成」：按原请求（含调整后重绘的临时提示词）再跑一次；
-       卡片已经不在眼前时不给，重跑只会被当成失效标签跳过。 */
-    const retry = { key: tag.tagId, run: () => generate(tag, 'manual', overrides) };
+    /* 报错弹窗里的「重新生成」：按原请求（含调整后重绘的临时提示词、换用的预设）再跑一次，
+       不管卡片上还有没有别的在画。卡片已经不在眼前时不给，重跑只会被当成失效标签跳过；
+       后台那张也不给，用户已经换着重新 roll 过了。 */
+    const retry = { key: tag.tagId, run: () => generate(tag, 'manual', overrides, { alongside: true }) };
     const report = context => {
       const placement = placementOf(tag.tagId, chatId);
-      onProblem({ ...context, placement }, placement === 'active' ? retry : undefined);
+      const background = newest.get(tag.tagId) !== attemptId;
+      onProblem(
+        { ...context, placement, background },
+        placement === 'active' && !background ? retry : undefined,
+      );
     };
     store.setTag(tag.tagId, { ...current, attempts: [optimisticAttempt, ...(current.attempts || [])] });
     try {
@@ -95,7 +121,7 @@ export function createGenerationController({
         attemptId,
         requestMode: mode,
         provider,
-        presetId: store.state.preset?.id || 'default',
+        presetId: preset?.id || 'default',
         artistPresetId: store.state.artistPreset?.id || 'default',
         prompt,
         ...(Object.hasOwn(overrides, 'negativePromptOverride')
@@ -110,13 +136,7 @@ export function createGenerationController({
         },
         onProgress: progressAttempt => {
           const latest = store.state.tagStates.get(tag.tagId) || current;
-          store.setTag(tag.tagId, {
-            ...latest,
-            attempts: [
-              progressAttempt,
-              ...(latest.attempts || []).filter(item => item.attemptId !== progressAttempt.attemptId),
-            ],
-          });
+          store.setTag(tag.tagId, { ...latest, attempts: upsertAttempt(latest.attempts, progressAttempt) });
         },
       });
       let completed = attempt;
@@ -157,8 +177,18 @@ export function createGenerationController({
       }
       throw error;
     } finally {
-      activeTags.delete(tag.tagId);
+      running.get(tag.tagId)?.delete(attemptId);
+      if (!running.get(tag.tagId)?.size) running.delete(tag.tagId);
+      requests.delete(attemptId);
     }
+  }
+
+  /* 「再画一张」：照正在画的那次请求（含调整后重绘的临时提示词）马上再画一张，可以换个预设；
+     正在画的那张留在后台接着画，画好了放进这张卡的历史。 */
+  function reroll(tag, attemptId, preset) {
+    const overrides = { ...(requests.get(attemptId)?.overrides || {}) };
+    if (preset) overrides.preset = preset;
+    return generate(tag, 'manual', overrides, { alongside: true });
   }
 
   async function cancel(attemptId) {
@@ -175,8 +205,9 @@ export function createGenerationController({
 
   return {
     generate,
+    reroll,
     cancel,
     refreshTag,
-    isActive: tagId => activeTags.has(tagId),
+    isActive,
   };
 }

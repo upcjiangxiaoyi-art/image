@@ -43,6 +43,21 @@ function ensureElapsedTicker() {
   elapsedTimer.unref?.();
 }
 
+function elapsedLabel(since) {
+  const node = document.createElement('span');
+  node.className = 'stia-card__elapsed';
+  node.setAttribute('role', 'timer');
+  node.dataset.since = String(since);
+  updateElapsed(node);
+  return node;
+}
+
+/* 服务端时钟比浏览器快时按现在算，不显示负数。 */
+function startedAt(attempt, current = Date.now()) {
+  const created = Date.parse(attempt?.createdAt || '');
+  return Number.isFinite(created) ? Math.min(created, current) : current;
+}
+
 function button(label, className, handler, symbol = '') {
   const element = document.createElement('button');
   element.type = 'button';
@@ -106,6 +121,8 @@ export function createCard({
   onOpenGallery,
   onCancel,
   onRemove,
+  onReroll,
+  listPresets,
 }) {
   const root = document.createElement('section');
   root.className = 'stia-card';
@@ -124,20 +141,87 @@ export function createCard({
   let lastSignature = null;
   let cachedImage = null;
   let openCurrentImage = null;
-  let elapsedNode = null;
+  let timerNodes = [];
   let timing = null;
+  /* 「再画一张」展开的选择：{ attemptId, presets }，presets 为 null 时正在读取。 */
+  let chooser = null;
 
-  /* 从这次生成开始时算起；同一次生成里状态怎么变都不重新计时。服务端时钟比浏览器快时
-     按第一次看到的时间算，不显示负数。 */
+  /* 从这次生成开始时算起；同一次生成里状态怎么变都不重新计时。 */
   function elapsedSince(attempt) {
     if (!timing || timing.attemptId !== attempt.attemptId) {
-      const created = Date.parse(attempt.createdAt || '');
-      timing = {
-        attemptId: attempt.attemptId,
-        since: Number.isFinite(created) ? Math.min(created, Date.now()) : Date.now(),
-      };
+      timing = { attemptId: attempt.attemptId, since: startedAt(attempt) };
     }
     return timing.since;
+  }
+
+  function timer(since) {
+    const node = elapsedLabel(since);
+    timerNodes.push(node);
+    ensureElapsedTicker();
+    return node;
+  }
+
+  /* 等不及时「再画一张」：GPT 有好几个 API 预设时先选用哪个（换 key、换分组），
+     只有一个或用 NovelAI 时确认一下就画。正在画的那张留在后台接着画。 */
+  function openChooser(attemptId) {
+    chooser = { attemptId, presets: null };
+    render();
+    const wantsPresets = getSettings()?.generationProvider !== 'novelai' && typeof listPresets === 'function';
+    Promise.resolve(wantsPresets ? listPresets() : [])
+      .catch(() => [])
+      .then(presets => {
+        if (chooser?.attemptId !== attemptId) return;
+        const list = Array.isArray(presets) ? presets : [];
+        chooser = { attemptId, presets: [...list.filter(item => item.active), ...list.filter(item => !item.active)] };
+        render();
+      });
+  }
+
+  function closeChooser() {
+    chooser = null;
+    render();
+  }
+
+  function startReroll(attempt, preset) {
+    chooser = null;
+    render();
+    void Promise.resolve(onReroll(tag, attempt.attemptId, preset)).catch(() => {});
+  }
+
+  function rerollChooser(attempt) {
+    const box = document.createElement('div');
+    box.className = 'stia-card__reroll';
+    const note = document.createElement('p');
+    note.className = 'stia-muted';
+    const actions = document.createElement('div');
+    actions.className = 'stia-actions stia-actions--fill';
+    const presets = chooser.presets;
+    if (presets === null) {
+      note.textContent = '正在读取 API 预设…';
+    } else if (presets.length > 1) {
+      note.textContent = '这张会在后台接着画。用哪个预设再画一张？';
+      for (const preset of presets) {
+        const label = `${preset.name}${preset.active ? '（当前）' : ''}${preset.hasApiKey === false ? '（没填 Key）' : ''}`;
+        actions.append(button(label, 'stia-card__reroll-preset', () => startReroll(attempt, preset)));
+      }
+    } else {
+      note.textContent = '这张会在后台接着画，确定再画一张？';
+      actions.append(button('确定再画一张', 'stia-button--primary', () => startReroll(attempt, presets[0]), '↻'));
+    }
+    actions.append(button('算了', 'stia-button--ghost stia-card__reroll-close', closeChooser));
+    box.append(note, actions);
+    return box;
+  }
+
+  /* 之后又 roll 过、还在后台画的那几张：说一声有几张、最早那张画了多久。 */
+  function backgroundNote(running) {
+    const note = document.createElement('div');
+    note.className = 'stia-card__background';
+    const text = document.createElement('span');
+    text.textContent = `后台还有 ${running.length} 张在画 · `;
+    const oldest = Math.min(...running.map(item => startedAt(item)));
+    note.append(text, timer(oldest));
+    return note;
   }
 
   function render() {
@@ -164,22 +248,27 @@ export function createCard({
       landscape: '横图',
     }[tag.ratio] || '';
     const src = latest ? api.fileUrl(latest.resultId) : '';
+    const running = (state.attempts || []).slice(1).filter(item => ACTIVE_STATUSES.has(item.status));
+    if (chooser && (chooser.attemptId !== attempt?.attemptId || !ACTIVE_STATUSES.has(attempt?.status))) {
+      chooser = null;
+    }
     const signature = JSON.stringify([
       attempt?.attemptId, attempt?.status, attempt?.requestMode, attempt?.statusMessage,
       attempt?.model, attempt?.provider, attempt?.errorMessage, size,
       latest?.resultId, latest?.provider, src, available.length,
       Boolean(state.tag?.resultIds?.length), actualPrompt, actualNegativePrompt, canAdjust, ratioLabel,
+      running.map(item => item.attemptId), chooser && [chooser.attemptId, chooser.presets],
     ]);
     if (signature === lastSignature) {
       /* 卡片被摘下又放回（酒馆重建这一层）时计时可能停了，顺手续上。 */
-      if (elapsedNode) {
-        updateElapsed(elapsedNode);
+      if (timerNodes.length) {
+        timerNodes.forEach(node => updateElapsed(node));
         ensureElapsedTicker();
       }
       return;
     }
     lastSignature = signature;
-    elapsedNode = null;
+    timerNodes = [];
     root.replaceChildren();
     root.className = 'stia-card';
 
@@ -201,23 +290,31 @@ export function createCard({
       );
       body.append(heading);
       if (!isAutoQueue) {
-        elapsedNode = document.createElement('span');
-        elapsedNode.className = 'stia-card__elapsed';
-        elapsedNode.setAttribute('role', 'timer');
-        elapsedNode.dataset.since = String(elapsedSince(attempt));
-        updateElapsed(elapsedNode);
-        heading.append(elapsedNode);
-        ensureElapsedTicker();
+        heading.append(timer(elapsedSince(attempt)));
         const shimmer = document.createElement('div');
         shimmer.className = 'stia-card__shimmer';
         body.append(shimmer);
       }
-      body.append(button(
-        isAutoQueue ? '取消排队' : '取消',
-        'stia-button--ghost stia-button--full',
-        () => onCancel(attempt.attemptId),
-        '×',
-      ));
+      const canReroll = !isAutoQueue && typeof onReroll === 'function';
+      if (canReroll && chooser) {
+        body.append(rerollChooser(attempt));
+      } else if (canReroll) {
+        const actions = document.createElement('div');
+        actions.className = 'stia-actions stia-actions--fill';
+        actions.append(
+          button('再画一张', '', () => openChooser(attempt.attemptId), '↻'),
+          button('取消', 'stia-button--ghost', () => onCancel(attempt.attemptId), '×'),
+        );
+        body.append(actions);
+      } else {
+        body.append(button(
+          isAutoQueue ? '取消排队' : '取消',
+          'stia-button--ghost stia-button--full',
+          () => onCancel(attempt.attemptId),
+          '×',
+        ));
+      }
+      if (running.length) body.append(backgroundNote(running));
       root.append(body);
       return;
     }
@@ -278,7 +375,9 @@ export function createCard({
           attempt,
         }), '✎'));
       }
-      body.append(completion, actions, promptDetails(actualPrompt));
+      body.append(completion, actions);
+      if (running.length) body.append(backgroundNote(running));
+      body.append(promptDetails(actualPrompt));
       root.append(media, body);
       return;
     }
@@ -304,8 +403,10 @@ export function createCard({
         provider: attempt.provider || 'openai',
         attempt,
       }), '✎'));
-      if (onRemove) actions.append(removeButton());
-      body.append(actions, promptDetails(actualPrompt));
+      if (onRemove && !running.length) actions.append(removeButton());
+      body.append(actions);
+      if (running.length) body.append(backgroundNote(running));
+      body.append(promptDetails(actualPrompt));
       root.append(body);
       return;
     }
@@ -328,7 +429,7 @@ export function createCard({
     actions.append(button(attempt ? '重新生成' : '生成图片', 'stia-button--primary', () => {
       onGenerate(tag, 'manual');
     }, '▧'));
-    if (onRemove) actions.append(removeButton());
+    if (onRemove && !running.length) actions.append(removeButton());
     if (canAdjust && attempt) actions.append(button('调整后重绘', '', () => onAdjustRegenerate(tag, {
       prompt: actualPrompt,
       negativePrompt: actualNegativePrompt,
@@ -336,6 +437,7 @@ export function createCard({
       attempt,
     }), '✎'));
     body.append(promptDetails(actualPrompt), actions);
+    if (running.length) body.append(backgroundNote(running));
     root.append(body);
   }
 

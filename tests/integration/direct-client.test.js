@@ -998,3 +998,116 @@ test('这一层正在生成新的滑动版本时，排着队的旧标签在扣�
   assert.equal(requests.length, 0, '没有发出生图请求');
   assert.deepEqual(message.swipe_info[0].extra.stImageAtelier.tags[0].attempts, [], '也没有写任何记录');
 });
+
+test('同一张卡同时画两张：后台那张晚到时不抢新图，两张都进历史；新的没画成时后台那张补上', async t => {
+  const originalFetch = globalThis.fetch;
+  const gates = [];
+  globalThis.fetch = async (url, options = {}) => {
+    if (url === '/api/images/upload') {
+      const body = JSON.parse(options.body);
+      return response(200, { path: `user/images/st-image-atelier/${body.filename}.${body.format}` });
+    }
+    if (String(url).endsWith('/v1/images/generations')) {
+      const gate = {};
+      gate.done = new Promise(resolve => { gate.release = resolve; });
+      gates.push(gate);
+      const outcome = await gate.done;
+      return outcome === 'fail'
+        ? response(502, { error: { message: 'upstream busy' } })
+        : response(200, { data: [{ b64_json: PNG_BASE64 }] });
+    }
+    throw new Error(`意外的请求：${url}`);
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const waitForRequests = async count => {
+    while (gates.length < count) await new Promise(resolve => setTimeout(resolve, 5));
+  };
+
+  const tagId = crypto.randomUUID();
+  const otherTagId = crypto.randomUUID();
+  const messageUuid = crypto.randomUUID();
+  const message = {
+    is_user: false,
+    mes: '<draw>base64</draw><draw>other</draw>',
+    extra: { stImageAtelier: tagMetadata(tagId, messageUuid) },
+  };
+  message.extra.stImageAtelier.tags.push({ ...tagMetadata(otherTagId, messageUuid, 'other').tags[0], ordinal: 1 });
+  const storage = new Map();
+  const client = createDirectApiClient({
+    compat: {
+      chat: () => [message],
+      save: async () => {},
+      headers: () => ({ 'Content-Type': 'application/json', 'X-CSRF-Token': 'test' }),
+    },
+    extensionSettings: {},
+    saveSettingsDebounced: () => {},
+    galleryStore: createMemoryGalleryMetadataStore(),
+    keyStorage: {
+      getItem: key => storage.get(key) || null,
+      setItem: (key, value) => storage.set(key, value),
+      removeItem: key => storage.delete(key),
+    },
+  });
+  await client.updatePreset({ baseUrl: 'https://upstream.test', apiKey: 'sk-test', selectedModel: 'gpt-image-1' });
+
+  const slowInput = generationInput(tagId, messageUuid);
+  const slow = client.generate(slowInput);
+  await waitForRequests(1);
+  const quickInput = generationInput(tagId, messageUuid);
+  const quick = client.generate(quickInput);
+  await waitForRequests(2);
+  gates[1].release('ok');
+  const newer = await quick;
+  gates[0].release('ok');
+  const older = await slow;
+  assert.equal(newer.status, 'succeeded');
+  assert.equal(older.status, 'succeeded', '后台那张照样画完存好');
+  const [state] = await client.resolveTags([tagId]);
+  assert.equal(state.tag.latestResultId, newer.resultIds[0], '卡片上还是新的那张');
+  assert.deepEqual(
+    [...state.tag.resultIds].sort(),
+    [...newer.resultIds, ...older.resultIds].sort(),
+    '两张都进了这张卡的历史',
+  );
+  assert.deepEqual(state.attempts.map(item => item.attemptId), [quickInput.attemptId, slowInput.attemptId]);
+
+  const otherSlow = client.generate({ ...generationInput(otherTagId, messageUuid), prompt: 'other' });
+  await waitForRequests(3);
+  const otherQuick = client.generate({ ...generationInput(otherTagId, messageUuid), prompt: 'other' });
+  await waitForRequests(4);
+  gates[3].release('fail');
+  await assert.rejects(otherQuick);
+  gates[2].release('ok');
+  const rescued = await otherSlow;
+  const [other] = await client.resolveTags([otherTagId]);
+  assert.equal(other.tag.latestResultId, rescued.resultIds[0], '新的那次没画成，后台那张画好就显示它');
+});
+
+test('老预设的超时：没改过的 3 分钟和原来的上限 10 分钟换成 1 小时，自己设的别的值不动，只迁一次', async () => {
+  const extensionSettings = {
+    stImageAtelier: {
+      presets: [
+        { id: 'untouched', name: '默认', timeoutMs: 180_000 },
+        { id: 'maxed', name: '拉满', timeoutMs: 600_000 },
+        { id: 'custom', name: '自己设的', timeoutMs: 300_000 },
+      ],
+      activePresetId: 'untouched',
+    },
+  };
+  const options = {
+    compat: { chat: () => [], save: async () => {}, headers: () => ({}) },
+    extensionSettings,
+    saveSettingsDebounced: () => {},
+    galleryStore: createMemoryGalleryMetadataStore(),
+    keyStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+  };
+  const client = createDirectApiClient(options);
+  const timeouts = async target => Object.fromEntries((await target.getPresets()).items.map(item => [item.id, item.timeoutMs]));
+  assert.deepEqual(await timeouts(client), { untouched: 3_600_000, maxed: 3_600_000, custom: 300_000 });
+  const created = await client.createPreset({ name: '新的' });
+  assert.equal(created.timeoutMs, 3_600_000, '新预设默认 1 小时');
+
+  await client.updatePreset('untouched', { timeoutMs: 180_000 });
+  const reloaded = createDirectApiClient({ ...options, galleryStore: createMemoryGalleryMetadataStore() });
+  assert.equal((await timeouts(reloaded)).untouched, 180_000, '迁过一次后自己改回 3 分钟，重新加载也不再动');
+});

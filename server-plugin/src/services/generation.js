@@ -82,22 +82,30 @@ class GenerationService {
       completedAt: null,
       schemaVersion: 1,
     };
-    const tag = this.metadata.getTag(tagId) || {
-      tagId,
-      chatId: String(input.chatId || ''),
-      messageUuid: String(input.messageUuid || ''),
-      tagOrdinal: Number(input.tagOrdinal) || 0,
-      prompt,
-      latestResultId: null,
-      resultIds: [],
-      autoAttempted: requestMode === 'auto',
-      autoSuppressed: false,
-      createdAt: timestamp(),
-      updatedAt: timestamp(),
-      schemaVersion: 1,
-    };
-    if (requestMode === 'auto') tag.autoAttempted = true;
-    await this.metadata.putTag(tag);
+    /* 同一张卡可以同时画好几张（等不及时「再画一张」），标签只在事务里就地改，
+       不拿一份旧拷贝整个写回去，免得盖掉别的那次刚存进去的图。 */
+    await this.metadata.transaction(index => {
+      const stored = index.tags[tagId];
+      if (stored) {
+        if (requestMode === 'auto') stored.autoAttempted = true;
+        return;
+      }
+      index.tags[tagId] = {
+        tagId,
+        chatId: String(input.chatId || ''),
+        messageUuid: String(input.messageUuid || ''),
+        tagOrdinal: Number(input.tagOrdinal) || 0,
+        prompt,
+        latestResultId: null,
+        resultIds: [],
+        autoAttempted: requestMode === 'auto',
+        autoSuppressed: false,
+        createdAt: timestamp(),
+        updatedAt: timestamp(),
+        schemaVersion: 1,
+      };
+    });
+    const tag = structuredClone(this.metadata.getTag(tagId));
     await this.metadata.putAttempt(attempt);
 
     const controller = new AbortController();
@@ -156,15 +164,24 @@ class GenerationService {
         };
         await this.metadata.putResult(result);
         attempt.resultIds.push(resultId);
-        tag.resultIds.push(resultId);
-        tag.latestResultId = resultId;
       }
       attempt.status = 'succeeded';
       attempt.completedAt = timestamp();
-      tag.updatedAt = timestamp();
       await this.metadata.transaction(index => {
         index.attempts[attempt.attemptId] = attempt;
-        index.tags[tag.tagId] = tag;
+        /* 合并进现在存着的标签。后台那张（之后又 roll 过）画好时，新的那次已经出图，
+           就不抢卡片上显示的那张，只进历史。 */
+        const stored = index.tags[tag.tagId] || tag;
+        stored.resultIds = [...new Set([...(stored.resultIds || []), ...attempt.resultIds])];
+        const newerSucceeded = Object.values(index.attempts).some(item => item.tagId === tag.tagId
+          && item.attemptId !== attempt.attemptId
+          && item.status === 'succeeded'
+          && String(item.createdAt) > String(attempt.createdAt));
+        if (!newerSucceeded || !stored.latestResultId) {
+          stored.latestResultId = attempt.resultIds.at(-1) || stored.latestResultId || null;
+        }
+        stored.updatedAt = timestamp();
+        index.tags[tag.tagId] = stored;
       });
     } catch (error) {
       for (const resultId of attempt.resultIds) {

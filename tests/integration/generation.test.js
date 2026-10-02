@@ -393,3 +393,43 @@ test('服务端画廊按时间和数量规则自动清理最旧图片', async t 
     assert.equal(f.metadata.getTag(item.input.tagId).autoSuppressed, true);
   }
 });
+
+test('增强模式同一张卡同时画两张：先画完的那张不会被后画完的盖掉；后台那张晚到不抢新图', async t => {
+  const f = await fixture(t);
+  const slow = request('timeout');
+  await f.generation.generate(slow);
+  const quick = request('base64', { tagId: slow.tagId });
+  await f.generation.generate(quick);
+  const newer = await waitForAttempt(f.metadata, quick.attemptId);
+  const older = await waitForAttempt(f.metadata, slow.attemptId);
+  assert.equal(newer.status, 'succeeded');
+  assert.equal(older.status, 'succeeded');
+  const [state] = await f.generation.resolveTags([slow.tagId]);
+  assert.deepEqual(
+    [...state.tag.resultIds].sort(),
+    [...newer.resultIds, ...older.resultIds].sort(),
+    '两张都留在这张卡上',
+  );
+  assert.equal(state.tag.latestResultId, newer.resultIds[0], '卡片上还是新的那张');
+  assert.deepEqual(state.attempts.map(item => item.attemptId), [quick.attemptId, slow.attemptId]);
+
+  const rescueSlow = request('timeout');
+  await f.generation.generate(rescueSlow);
+  const failing = request('500', { tagId: rescueSlow.tagId });
+  await f.generation.generate(failing);
+  assert.equal((await waitForAttempt(f.metadata, failing.attemptId)).status, 'failed');
+  const rescued = await waitForAttempt(f.metadata, rescueSlow.attemptId);
+  const [other] = await f.generation.resolveTags([rescueSlow.tagId]);
+  assert.equal(other.tag.latestResultId, rescued.resultIds[0], '新的那次没画成，后台那张画好就显示它');
+});
+
+test('增强模式预设：没改过的老超时（3 分钟）和老上限（10 分钟）换成 1 小时，只迁一次；上限 2 小时', async () => {
+  const { migratePresetTimeout, sanitizePreset, defaultPreset } = require('../../server-plugin/src/services/preset');
+  assert.equal(defaultPreset().timeoutMs, 3_600_000);
+  assert.equal(migratePresetTimeout({ timeoutMs: 180_000 }).timeoutMs, 3_600_000);
+  assert.equal(migratePresetTimeout({ timeoutMs: 600_000 }).timeoutMs, 3_600_000);
+  assert.equal(migratePresetTimeout({ timeoutMs: 300_000 }).timeoutMs, 300_000, '自己设的别的值不动');
+  assert.equal(migratePresetTimeout({ timeoutMs: 180_000, timeoutVersion: 2 }).timeoutMs, 180_000, '迁过一次后自己改回 3 分钟也不再动');
+  assert.equal(sanitizePreset({ timeoutMs: 99_999_999 }).timeoutMs, 7_200_000);
+  assert.equal(sanitizePreset({ timeoutMs: 1_800_000 }).timeoutMs, 1_800_000);
+});

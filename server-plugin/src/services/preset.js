@@ -28,7 +28,8 @@ function defaultPreset() {
     sendQuality: true,
     sendN: true,
     responseFormat: 'b64_json',
-    timeoutMs: 180000,
+    timeoutMs: 3_600_000,
+    timeoutVersion: 2,
     extraBody: {},
     ratioMap: {
       square: '1024x1024',
@@ -64,6 +65,13 @@ function maskKey(key) {
   return `sk-••••${suffix}`;
 }
 
+/* 与前端一致：没改过的老默认值（3 分钟）和老上限（10 分钟）换成新的默认 1 小时，每个预设只迁一次。 */
+function migratePresetTimeout(preset) {
+  if (Number(preset?.timeoutVersion) >= 2) return preset;
+  const timeoutMs = [180_000, 600_000].includes(Number(preset.timeoutMs)) ? 3_600_000 : preset.timeoutMs;
+  return { ...preset, timeoutMs, timeoutVersion: 2 };
+}
+
 function sanitizePreset(input, current = defaultPreset()) {
   const output = { ...current };
   const stringFields = [
@@ -81,7 +89,7 @@ function sanitizePreset(input, current = defaultPreset()) {
     output.responseFormat = ['b64_json', 'url', ''].includes(format) ? format : 'b64_json';
   }
   if ('defaultCount' in input) output.defaultCount = Math.min(4, Math.max(1, Number(input.defaultCount) || 1));
-  if ('timeoutMs' in input) output.timeoutMs = Math.min(600_000, Math.max(30_000, Number(input.timeoutMs) || 180_000));
+  if ('timeoutMs' in input) output.timeoutMs = Math.min(7_200_000, Math.max(30_000, Number(input.timeoutMs) || 3_600_000));
   if ('extraBody' in input) {
     if (!input.extraBody || typeof input.extraBody !== 'object' || Array.isArray(input.extraBody)) {
       throw new AppError('VALIDATION_FAILED', 'extraBody 必须是 JSON 对象');
@@ -125,6 +133,7 @@ class PresetService {
     await fs.mkdir(this.secretDirectory, { recursive: true, mode: 0o700 });
     const presets = await readJson(this.presetsFile, { activePresetId: 'default', items: [defaultPreset()], schemaVersion: 1 });
     if (!presets.items?.length) presets.items = [defaultPreset()];
+    presets.items = presets.items.map(migratePresetTimeout);
     await atomicWriteJson(this.presetsFile, presets);
     const settings = await readJson(this.settingsFile, defaultSettings());
     await atomicWriteJson(this.settingsFile, settings);
@@ -196,4 +205,4 @@ class PresetService {
   }
 }
 
-module.exports = { PresetService, defaultPreset, defaultSettings, maskKey, sanitizePreset };
+module.exports = { PresetService, defaultPreset, defaultSettings, maskKey, migratePresetTimeout, sanitizePreset };

@@ -1,5 +1,5 @@
 /* 唯一的前端版本号；用 npm run version:set 统一修改，测试会检查各处一致。 */
-export const VERSION = '1.6.14';
+export const VERSION = '1.6.15';
 export const MODULE_NAME = 'stImageAtelier';
 export const DISPLAY_NAME = '画笺';
 export const API_ROOT = '/api/plugins/st-image-atelier';
@@ -117,7 +117,9 @@ export const DEFAULT_PRESET = Object.freeze({
   sendQuality: true,
   sendN: true,
   responseFormat: 'b64_json',
-  timeoutMs: 180_000,
+  /* 慢的分组排队十几二十分钟也常见；等不及可以在卡片上「再画一张」，这张留在后台接着等。 */
+  timeoutMs: 3_600_000,
+  timeoutVersion: 2,
   extraBody: {},
   ratioMap: {
     square: '1024x1024',

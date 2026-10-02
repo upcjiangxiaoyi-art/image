@@ -431,6 +431,11 @@ export function createMessageRenderer(dependencies) {
       onOpenGallery: actions.openGallery,
       onCancel: actions.cancel,
       onRemove: actions.remove,
+      onReroll: actions.reroll,
+      listPresets: async () => {
+        const data = await api.getPresets();
+        return (data?.items || []).map(item => ({ ...item, active: item.id === data.activePresetId }));
+      },
     });
     cards.set(tag.tagId, card);
     card.render();
