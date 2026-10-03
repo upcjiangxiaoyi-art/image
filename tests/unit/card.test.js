@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createCard, formatElapsed } from '../../src/ui/renderer/card.js';
+import { createCard, formatDuration, formatElapsed, generationDuration } from '../../src/ui/renderer/card.js';
 
 class FakeClassList {
   constructor() {
@@ -387,4 +387,54 @@ test('生成中可以「再画一张」：选预设（当前的排前面、没�
   state = { attempts: [{ attemptId: 'auto:tag-1', status: 'queued', requestMode: 'auto' }], results: [] };
   card.render();
   assert.deepEqual(buttons(), ['×取消排队'], '自动排队时还没开始画，没有「再画一张」');
+});
+
+test('出图后图片右上角显示这张图用了多久；记录不全时不显示', async t => {
+  assert.equal(formatDuration(42_000), '42 秒');
+  assert.equal(formatDuration(997_000), '16 分 37 秒');
+  assert.equal(generationDuration({ createdAt: '2026-10-03T05:00:00.000Z', completedAt: '2026-10-03T05:16:37.400Z' }), '用时 16 分 37 秒');
+  assert.equal(generationDuration({ createdAt: '2026-10-03T05:00:00.000Z' }), '', '还没结束（没有 completedAt）');
+  assert.equal(generationDuration({ createdAt: '2026-10-03T05:00:10.000Z', completedAt: '2026-10-03T05:00:00.000Z' }), '', '时间对不上');
+  assert.equal(generationDuration(undefined), '');
+
+  const { JSDOM } = await import('jsdom');
+  const dom = new JSDOM('<!doctype html><html><body></body></html>');
+  const previous = { document: globalThis.document, window: globalThis.window };
+  globalThis.document = dom.window.document;
+  globalThis.window = dom.window;
+  t.after(() => {
+    globalThis.document = previous.document;
+    globalThis.window = previous.window;
+    dom.window.close();
+  });
+
+  const slow = { attemptId: 'slow', status: 'succeeded', createdAt: '2026-10-03T05:00:00.000Z', completedAt: '2026-10-03T05:16:37.000Z', parameters: { size: '1024x1792' } };
+  let state = {
+    tag: { latestResultId: 'r-slow', resultIds: ['r-slow'] },
+    attempts: [slow],
+    results: [{ resultId: 'r-slow', attemptId: 'slow', status: 'available', prompt: 'a cat' }],
+  };
+  const card = createCard({
+    tag: { tagId: 'tag-1', prompt: 'a cat', ratio: 'portrait' },
+    api: { fileUrl: id => `/user/images/${id}.png` },
+    getState: () => state,
+    onGenerate() {},
+    onOpenGallery() {},
+    onCancel() {},
+  });
+  card.render();
+  const badge = () => card.root.querySelector('.stia-card__media .stia-card__duration');
+  assert.equal(badge().textContent, '用时 16 分 37 秒');
+  assert.equal(card.root.querySelector('.stia-card__size').textContent, '1024×1792', '尺寸角标照旧在');
+
+  state = {
+    ...state,
+    attempts: [{ attemptId: 'quick', status: 'failed', createdAt: '2026-10-03T05:20:00.000Z', completedAt: '2026-10-03T05:20:05.000Z' }, slow],
+  };
+  card.render();
+  assert.equal(badge().textContent, '用时 16 分 37 秒', '新的那次没画成：显示的还是旧图，用时也跟着旧图');
+
+  state = { ...state, attempts: [], results: [{ resultId: 'r-slow', status: 'available', prompt: 'a cat' }] };
+  card.render();
+  assert.equal(badge(), null, '老图片没有生成记录就不显示');
 });

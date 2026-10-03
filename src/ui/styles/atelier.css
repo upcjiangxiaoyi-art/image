@@ -824,7 +824,8 @@
   outline-offset: -3px;
 }
 
-.stia-card__size {
+.stia-card__size,
+.stia-card__duration {
   position: absolute;
   right: 8px;
   bottom: 8px;
@@ -834,6 +835,14 @@
   border-radius: 6px;
   font-size: 11px;
   backdrop-filter: blur(8px);
+}
+
+/* 出图用时：图片右上角，一眼就能看到；点到它也照样打开原图。 */
+.stia-card__duration {
+  top: 8px;
+  bottom: auto;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
 }
 
 .stia-card__completion {

@@ -16,10 +16,22 @@ const STATUS_TEXT = {
 const ELAPSED_SELECTOR = '.stia-card__elapsed[data-since]';
 let elapsedTimer = null;
 
-export function formatElapsed(milliseconds) {
+export function formatDuration(milliseconds) {
   const seconds = Math.max(0, Math.floor(Number(milliseconds) / 1000) || 0);
-  if (seconds < 60) return `已用 ${seconds} 秒`;
-  return `已用 ${Math.floor(seconds / 60)} 分 ${String(seconds % 60).padStart(2, '0')} 秒`;
+  if (seconds < 60) return `${seconds} 秒`;
+  return `${Math.floor(seconds / 60)} 分 ${String(seconds % 60).padStart(2, '0')} 秒`;
+}
+
+export function formatElapsed(milliseconds) {
+  return `已用 ${formatDuration(milliseconds)}`;
+}
+
+/* 出图后的用时：画出这张图的那一次从开始到存好一共多久。记录不全或时间对不上就不显示。 */
+export function generationDuration(attempt) {
+  const started = Date.parse(attempt?.createdAt || '');
+  const finished = Date.parse(attempt?.completedAt || '');
+  if (!Number.isFinite(started) || !Number.isFinite(finished) || finished < started) return '';
+  return `用时 ${formatDuration(finished - started)}`;
 }
 
 function updateElapsed(node, current = Date.now()) {
@@ -248,6 +260,9 @@ export function createCard({
       landscape: '横图',
     }[tag.ratio] || '';
     const src = latest ? api.fileUrl(latest.resultId) : '';
+    const duration = latest
+      ? generationDuration((state.attempts || []).find(item => item.attemptId === latest.attemptId))
+      : '';
     const running = (state.attempts || []).slice(1).filter(item => ACTIVE_STATUSES.has(item.status));
     if (chooser && (chooser.attemptId !== attempt?.attemptId || !ACTIVE_STATUSES.has(attempt?.status))) {
       chooser = null;
@@ -257,7 +272,7 @@ export function createCard({
       attempt?.model, attempt?.provider, attempt?.errorMessage, size,
       latest?.resultId, latest?.provider, src, available.length,
       Boolean(state.tag?.resultIds?.length), actualPrompt, actualNegativePrompt, canAdjust, ratioLabel,
-      running.map(item => item.attemptId), chooser && [chooser.attemptId, chooser.presets],
+      running.map(item => item.attemptId), chooser && [chooser.attemptId, chooser.presets], duration,
     ]);
     if (signature === lastSignature) {
       /* 卡片被摘下又放回（酒馆重建这一层）时计时可能停了，顺手续上。 */
@@ -342,6 +357,12 @@ export function createCard({
       });
       openCurrentImage = openOriginal;
       media.append(image);
+      if (duration) {
+        const badge = document.createElement('span');
+        badge.className = 'stia-card__duration';
+        badge.textContent = duration;
+        media.append(badge);
+      }
       if (size) {
         const badge = document.createElement('span');
         badge.className = 'stia-card__size';
