@@ -496,7 +496,6 @@ export function createDirectApiClient({
 
   async function resolveTags(tagIds) {
     await ensureGalleryReady();
-    const values = [];
     let changed = false;
     for (const tagId of tagIds) {
       const found = findTag(tagId);
@@ -540,15 +539,21 @@ export function createDirectApiClient({
           .filter(resultId => resultIndex.has(resultId));
         if (JSON.stringify(availableIds) !== JSON.stringify(found.tag.resultIds || [])) changed = true;
         found.tag.resultIds = availableIds;
-        if (!availableIds.includes(found.tag.latestResultId)) {
-          found.tag.latestResultId = availableIds.at(-1) || null;
+        /* 只在真的变了时才算改动：还没出图的卡片 latestResultId 本来就是 null，
+           不能每读一次就整份聊天保存一次。 */
+        const latestResultId = availableIds.includes(found.tag.latestResultId)
+          ? found.tag.latestResultId
+          : availableIds.at(-1) || null;
+        if (latestResultId !== found.tag.latestResultId) {
+          found.tag.latestResultId = latestResultId;
           changed = true;
         }
       }
-      values.push(stateOf(tagId));
     }
     if (changed) await compat.save();
-    return values;
+    /* 等保存完再取状态：手机上酒馆保存聊天要排队，可能等好几秒，这期间图可能已经画好、
+       卡片也刷新过了。先取的快照这时候送回去，会把卡片打回「正在保存到酒馆」并一直转圈。 */
+    return tagIds.map(stateOf);
   }
 
   async function generate(input) {

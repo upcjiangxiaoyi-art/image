@@ -53,7 +53,7 @@ export function createGenerationController({
 
   async function refreshTag(tagId) {
     const [resolved] = await api.resolveTags([tagId]);
-    store.setTag(tagId, resolved);
+    store.applyResolvedTag(tagId, resolved);
     return resolved;
   }
 

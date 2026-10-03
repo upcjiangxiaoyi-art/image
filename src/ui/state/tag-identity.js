@@ -32,7 +32,9 @@ export function reconcileTagMetadata(message, parsedTags, uuid = createUuid) {
       latestResultId: saved?.latestResultId || null,
       resultIds: Array.isArray(saved?.resultIds) ? saved.resultIds : [],
       attempts: Array.isArray(saved?.attempts) ? saved.attempts : [],
-      results: Array.isArray(saved?.results) ? saved.results : [],
+      /* 旧版把整份图片记录复制在聊天里（results），读状态时会迁进画廊再删掉。只有旧数据里
+         还有时才带上；每次都补一个空的，就会每次识别都算改动、整份聊天保存两遍。 */
+      ...(Array.isArray(saved?.results) ? { results: saved.results } : {}),
       autoAttempted: Boolean(saved?.autoAttempted),
       autoSuppressed: Boolean(saved?.autoSuppressed),
     };

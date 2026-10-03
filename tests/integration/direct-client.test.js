@@ -835,7 +835,7 @@ function tagMetadata(tagId, messageUuid, prompt = 'base64') {
 }
 
 /* 生图请求卡在半路，等测试把聊天改成「重 roll 之后」的样子再放行。 */
-async function gatedClient(t, chat) {
+async function gatedClient(t, chat, { save = async () => {} } = {}) {
   const originalFetch = globalThis.fetch;
   const requests = [];
   let release;
@@ -860,7 +860,7 @@ async function gatedClient(t, chat) {
   const client = createDirectApiClient({
     compat: {
       chat: () => chat,
-      save: async () => {},
+      save,
       headers: () => ({ 'Content-Type': 'application/json', 'X-CSRF-Token': 'test' }),
     },
     extensionSettings: {},
@@ -1110,4 +1110,47 @@ test('老预设的超时：没改过的 3 分钟和原来的上限 10 分钟换�
   await client.updatePreset('untouched', { timeoutMs: 180_000 });
   const reloaded = createDirectApiClient({ ...options, galleryStore: createMemoryGalleryMetadataStore() });
   assert.equal((await timeouts(reloaded)).untouched, 180_000, '迁过一次后自己改回 3 分钟，重新加载也不再动');
+});
+
+test('读卡片状态时要等聊天保存，这期间图画好了：读回来的是保存完的最新状态，不是开始读时的旧快照', async t => {
+  const tagId = crypto.randomUUID();
+  const messageUuid = crypto.randomUUID();
+  const message = {
+    is_user: false,
+    mes: '<draw>base64</draw>',
+    extra: { stImageAtelier: tagMetadata(tagId, messageUuid) },
+  };
+  /* 手机上酒馆保存聊天要排队，一次可能等好几秒：把「读状态」里那次保存卡住。 */
+  const held = [];
+  let holdSaves = false;
+  const save = () => (holdSaves ? new Promise(resolve => held.push(resolve)) : Promise.resolve());
+  const { client, release, started } = await gatedClient(t, [message], { save });
+  const pending = client.generate(generationInput(tagId, messageUuid));
+  await started;
+
+  message.extra.stImageAtelier.tags[0].results = [];
+  holdSaves = true;
+  const reading = client.resolveTags([tagId]);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(held.length, 1, '读状态时清掉旧字段，正在等保存');
+  holdSaves = false;
+
+  release();
+  const attempt = await pending;
+  assert.equal(attempt.status, 'succeeded');
+  held.splice(0).forEach(resolve => resolve());
+  const [state] = await reading;
+  assert.equal(state.attempts[0].status, 'succeeded', '不能把开始读时的「生成中」送回卡片');
+  assert.deepEqual(state.results.map(result => result.resultId), attempt.resultIds);
+});
+
+test('读还没出图的卡片状态不会每次都整份保存聊天', async t => {
+  const tagId = crypto.randomUUID();
+  const message = { is_user: false, mes: '<draw>base64</draw>', extra: { stImageAtelier: tagMetadata(tagId, crypto.randomUUID()) } };
+  let saves = 0;
+  const { client } = await gatedClient(t, [message], { save: async () => { saves += 1; } });
+  await client.resolveTags([tagId]);
+  const before = saves;
+  for (let index = 0; index < 3; index += 1) await client.resolveTags([tagId]);
+  assert.equal(saves, before, '没有改动就不保存');
 });

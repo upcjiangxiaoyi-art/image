@@ -52,7 +52,7 @@ export function createMessageEvents({ compat, api, store, renderer, autoQueue, o
     renderer.mount(messageId, tags);
     try {
       const resolved = await api.resolveTags(tags.map(tag => tag.tagId));
-      for (const value of resolved) store.setTag(value.tagId, value);
+      for (const value of resolved) store.applyResolvedTag(value.tagId, value);
     } catch (error) {
       store.set({ serviceError: error });
     }

@@ -84,3 +84,17 @@ test('正在生成新的滑动版本时，这一层的 extra 还是上一版留�
     '「继续」也在流式输出，但没有别的版本存着这张卡，还是当前这一版',
   );
 });
+
+test('重新识别没变的标签不算改动（不触发保存聊天）；旧数据里的 results 原样带上等着迁移', () => {
+  let count = 0;
+  const uuid = () => `00000000-0000-4000-8000-${String(++count).padStart(12, '0')}`;
+  const message = { extra: {} };
+  const first = reconcileTagMetadata(message, [tag('A')], uuid);
+  assert.equal(first.changed, true);
+  assert.equal(Object.hasOwn(first.metadata.tags[0], 'results'), false, '新标签不带旧版的 results 字段');
+  assert.equal(reconcileTagMetadata(message, [tag('A')], uuid).changed, false);
+
+  const legacy = { extra: { stImageAtelier: { messageUuid: 'm', schemaVersion: 2, tags: [{ tagId: 't', prompt: 'A', results: [{ resultId: 'r' }] }] } } };
+  const migrated = reconcileTagMetadata(legacy, [tag('A')], uuid).metadata.tags[0];
+  assert.deepEqual(migrated.results, [{ resultId: 'r' }], '旧数据里的 results 留着，读状态时迁进画廊');
+});

@@ -340,3 +340,31 @@ test('增强模式轮询时，后台那张的进度不会被挪到卡片最前�
   assert.ok(polled.length > 2);
   assert.ok(polled.every(attemptId => attemptId === 'manual-2'), `卡片最前面一直是新的这次：${polled.join(',')}`);
 });
+
+test('读回来的旧状态不会把已经画好的卡片打回「正在保存到酒馆」', async () => {
+  const { store, controller } = setup({
+    generate: async (input, persisted) => {
+      persisted.set(input.tagId, [{ attemptId: input.attemptId, status: 'succeeded', resultIds: ['r-1'] }]);
+      return { attemptId: input.attemptId, tagId: input.tagId, status: 'succeeded', resultIds: ['r-1'] };
+    },
+  });
+  await controller.generate(tag, 'manual');
+  assert.equal(store.state.tagStates.get('tag-1').attempts[0].status, 'succeeded');
+
+  const stale = { tagId: 'tag-1', attempts: [{ attemptId: 'manual-1', status: 'saving' }], results: [] };
+  assert.equal(store.applyResolvedTag('tag-1', stale), false, '开始读时还在保存，读完时已经画好：不用这份');
+  assert.equal(store.state.tagStates.get('tag-1').attempts[0].status, 'succeeded');
+
+  const fresh = {
+    tagId: 'tag-1',
+    attempts: [{ attemptId: 'manual-2', status: 'generating' }, { attemptId: 'manual-1', status: 'succeeded' }],
+    results: [{ resultId: 'r-1', status: 'available' }],
+  };
+  assert.equal(store.applyResolvedTag('tag-1', fresh), true, '有新的一次在画、旧的已结束：照常更新');
+  assert.equal(
+    store.applyResolvedTag('tag-1', { ...fresh, attempts: [{ attemptId: 'manual-2', status: 'interrupted' }, fresh.attempts[1]] }),
+    true,
+    '进行中变成结束是往前走，照常更新',
+  );
+  assert.equal(store.applyResolvedTag('tag-1', { tagId: 'tag-1', tag: null, attempts: [], results: [] }), true, '标签删掉了也照常更新');
+});
