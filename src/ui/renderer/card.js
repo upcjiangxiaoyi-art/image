@@ -230,7 +230,8 @@ export function createCard({
   let navigation = null;
   let timerNodes = [];
   let timing = null;
-  /* 「再画一张」展开的选择：{ attemptId, presets }，presets 为 null 时正在读取。 */
+  /* 选用哪个 API 预设：生成中的「再画一张」（mode 'reroll'，正在画的留在后台）和出图后的
+     「重新生成」（mode 'regenerate'）共用。presets 为 null 时正在读取；originalId 是画出这张图的预设。 */
   let chooser = null;
 
   /* 从这次生成开始时算起；同一次生成里状态怎么变都不重新计时。 */
@@ -269,19 +270,29 @@ export function createCard({
     return node;
   }
 
-  /* 等不及时「再画一张」：GPT 有好几个 API 预设时先选用哪个（换 key、换分组），
-     只有一个或用 NovelAI 时确认一下就画。正在画的那张留在后台接着画。 */
-  function openChooser(attemptId) {
-    chooser = { attemptId, presets: null };
+  /* GPT 有好几个 API 预设时先选用哪个（换 key、换分组）：
+     - 「再画一张」：只有一个或用 NovelAI 时确认一下就画，正在画的那张留在后台接着画；
+     - 「重新生成」：画出这张图的「原渠道」排第一；只有一个预设、NovelAI 或增强模式时和以前一样点了就画。 */
+  function openChooser(mode, { attemptId = null, originalId = '' } = {}) {
+    chooser = { mode, attemptId, originalId, presets: null };
     render();
     const wantsPresets = getSettings()?.generationProvider !== 'novelai' && typeof listPresets === 'function';
     Promise.resolve(wantsPresets ? listPresets() : [])
       .catch(() => [])
       .then(presets => {
-        if (chooser?.attemptId !== attemptId) return;
+        if (chooser?.mode !== mode || chooser.attemptId !== attemptId) return;
         const list = Array.isArray(presets) ? presets : [];
-        const rank = item => (item.active ? 0 : item.backup ? 1 : 2);
-        chooser = { attemptId, presets: [...list].sort((left, right) => rank(left) - rank(right)) };
+        if (mode === 'regenerate' && list.length < 2) {
+          chooser = null;
+          render();
+          void Promise.resolve(onGenerate(tag, 'manual')).catch(() => {});
+          return;
+        }
+        const rank = item => {
+          if (mode === 'regenerate' && item.id === originalId) return 0;
+          return item.active ? 1 : item.backup ? 2 : 3;
+        };
+        chooser = { mode, attemptId, originalId, presets: [...list].sort((left, right) => rank(left) - rank(right)) };
         render();
       });
   }
@@ -297,6 +308,18 @@ export function createCard({
     void Promise.resolve(onReroll(tag, attempt.attemptId, preset)).catch(() => {});
   }
 
+  function startRegenerate(preset) {
+    chooser = null;
+    render();
+    void Promise.resolve(onGenerate(tag, 'manual', { preset })).catch(() => {});
+  }
+
+  function presetLabel(preset) {
+    const original = chooser.mode === 'regenerate' && preset.id === chooser.originalId;
+    return `${preset.name}${original ? '（原渠道）' : ''}${preset.active && !original ? '（当前）' : ''}`
+      + `${preset.backup ? '（备用）' : ''}${preset.hasApiKey === false ? '（没填 Key）' : ''}`;
+  }
+
   function rerollChooser(attempt) {
     const box = document.createElement('div');
     box.className = 'stia-card__reroll';
@@ -305,14 +328,17 @@ export function createCard({
     const actions = document.createElement('div');
     actions.className = 'stia-actions stia-actions--fill';
     const presets = chooser.presets;
+    const regenerate = chooser.mode === 'regenerate';
     if (presets === null) {
       note.textContent = '正在读取 API 预设…';
     } else if (presets.length > 1) {
-      note.textContent = '这张会在后台接着画。用哪个预设再画一张？';
+      note.textContent = regenerate ? '用哪个预设重新生成？' : '这张会在后台接着画。用哪个预设再画一张？';
       for (const preset of presets) {
-        const label = `${preset.name}${preset.active ? '（当前）' : ''}${preset.backup ? '（备用）' : ''}`
-          + `${preset.hasApiKey === false ? '（没填 Key）' : ''}`;
-        actions.append(button(label, 'stia-card__reroll-preset', () => startReroll(attempt, preset)));
+        actions.append(button(
+          presetLabel(preset),
+          'stia-card__reroll-preset',
+          () => (regenerate ? startRegenerate(preset) : startReroll(attempt, preset)),
+        ));
       }
     } else {
       note.textContent = '这张会在后台接着画，确定再画一张？';
@@ -384,15 +410,17 @@ export function createCard({
       && attempt?.provider !== 'novelai'
       && attempt?.presetId !== settings.backupPresetId
       && fallbackAdvice({ attempt }).manual;
-    if (chooser && (chooser.attemptId !== attempt?.attemptId || !ACTIVE_STATUSES.has(attempt?.status))) {
-      chooser = null;
-    }
+    /* 卡片换了状态（开始画了、画完了），对应的选择就收起。 */
+    const chooserStale = chooser?.mode === 'regenerate'
+      ? (!shown || ACTIVE_STATUSES.has(attempt?.status))
+      : chooser && (chooser.attemptId !== attempt?.attemptId || !ACTIVE_STATUSES.has(attempt?.status));
+    if (chooserStale) chooser = null;
     const signature = JSON.stringify([
       attempt?.attemptId, attempt?.status, attempt?.requestMode, attempt?.statusMessage,
       attempt?.model, attempt?.provider, attempt?.errorMessage, size,
       shown?.resultId, shown?.provider, src, available.map(result => result.resultId), shownIndex,
       Boolean(state.tag?.resultIds?.length), actualPrompt, actualNegativePrompt, canAdjust, ratioLabel,
-      running.map(item => item.attemptId), chooser && [chooser.attemptId, chooser.presets], duration,
+      running.map(item => item.attemptId), chooser && [chooser.mode, chooser.attemptId, chooser.presets], duration,
       info, imageSize, canUseBackup,
     ]);
     if (signature === lastSignature) {
@@ -432,13 +460,13 @@ export function createCard({
         body.append(shimmer);
       }
       const canReroll = !isAutoQueue && typeof onReroll === 'function';
-      if (canReroll && chooser) {
+      if (canReroll && chooser?.mode === 'reroll') {
         body.append(rerollChooser(attempt));
       } else if (canReroll) {
         const actions = document.createElement('div');
         actions.className = 'stia-actions stia-actions--fill';
         actions.append(
-          button('再画一张', '', () => openChooser(attempt.attemptId), '↻'),
+          button('再画一张', '', () => openChooser('reroll', { attemptId: attempt.attemptId }), '↻'),
           button('取消', 'stia-button--ghost', () => onCancel(attempt.attemptId), '×'),
         );
         body.append(actions);
@@ -515,7 +543,9 @@ export function createCard({
       const actions = document.createElement('div');
       actions.className = 'stia-actions stia-actions--fill';
       actions.append(
-        button('重新生成', '', () => onGenerate(tag, 'manual'), '↻'),
+        button('重新生成', '', () => openChooser('regenerate', {
+          originalId: shown.presetId || producer?.presetId || '',
+        }), '↻'),
         button('查看 / 保存', 'stia-button--square', openOriginal, '⌕'),
         button('画廊', 'stia-button--square', () => onOpenGallery(tag.tagId), '▦'),
       );
@@ -531,7 +561,7 @@ export function createCard({
       body.append(completion);
       const details = infoList(info);
       if (details) body.append(details);
-      body.append(actions);
+      body.append(chooser?.mode === 'regenerate' ? rerollChooser(attempt) : actions);
       if (running.length) body.append(backgroundNote(running));
       body.append(promptDetails(actualPrompt));
       root.append(media, body);

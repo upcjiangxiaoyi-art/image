@@ -641,3 +641,82 @@ test('同一张卡有好几张图时，在卡片上左右翻看：信息跟着�
   assert.equal(card.root.querySelector('.stia-card__nav'), null, '只剩一张就没有翻看按钮');
   assert.equal(counter(), '历史 1 张');
 });
+
+test('出图后的「重新生成」可以直接换预设：画这张图的「原渠道」排第一；只有一个预设或 NovelAI 时点了就画', async t => {
+  const { JSDOM } = await import('jsdom');
+  const dom = new JSDOM('<!doctype html><html><body></body></html>');
+  const previous = { document: globalThis.document, window: globalThis.window };
+  globalThis.document = dom.window.document;
+  globalThis.window = dom.window;
+  t.after(() => {
+    globalThis.document = previous.document;
+    globalThis.window = previous.window;
+    dom.window.close();
+  });
+
+  const tag = { tagId: 'tag-1', prompt: 'a cat', ratio: 'portrait' };
+  const state = {
+    tag: { latestResultId: 'r1', resultIds: ['r1'] },
+    attempts: [{ attemptId: 'a1', status: 'succeeded', provider: 'openai', presetId: 'old', model: 'm' }],
+    results: [{ resultId: 'r1', attemptId: 'a1', status: 'available', prompt: 'a cat', provider: 'openai', presetId: 'old' }],
+  };
+  let settings = { generationProvider: 'openai' };
+  let presets = [
+    { id: 'other', name: '别的组', active: false, backup: false },
+    { id: 'stable', name: '稳定组', active: false, backup: true },
+    { id: 'cheap', name: '纯爱二号', active: true, backup: false },
+    { id: 'old', name: '老渠道', active: false, backup: false, hasApiKey: false },
+  ];
+  const generated = [];
+  const card = createCard({
+    tag,
+    api: { fileUrl: id => `/user/images/${id}.png` },
+    getState: () => state,
+    getSettings: () => settings,
+    onGenerate: (...args) => generated.push(args),
+    onOpenGallery() {},
+    onCancel() {},
+    listPresets: async () => presets,
+  });
+  card.render();
+  const settle = () => new Promise(resolve => setTimeout(resolve, 0));
+  const buttons = () => [...card.root.querySelectorAll('.stia-card__body button')].map(button => button.textContent);
+  const click = label => [...card.root.querySelectorAll('button')].find(button => button.textContent === label).click();
+
+  click('↻重新生成');
+  await settle();
+  assert.match(card.root.textContent, /用哪个预设重新生成？/);
+  assert.deepEqual(
+    buttons(),
+    ['老渠道（原渠道）（没填 Key）', '纯爱二号（当前）', '稳定组（备用）', '别的组', '算了'],
+    '画这张图的原渠道第一，然后当前、备用、其他',
+  );
+  click('算了');
+  assert.deepEqual(buttons(), ['↻重新生成', '⌕查看 / 保存', '▦画廊'], '「算了」收起');
+
+  click('↻重新生成');
+  await settle();
+  click('稳定组（备用）');
+  assert.equal(generated.length, 1);
+  assert.equal(generated[0][0], tag);
+  assert.equal(generated[0][1], 'manual');
+  assert.equal(generated[0][2].preset.id, 'stable', '用选的预设重新生成');
+  assert.deepEqual(buttons(), ['↻重新生成', '⌕查看 / 保存', '▦画廊']);
+
+  presets = [{ id: 'old', name: '老渠道', active: true, backup: false }, { id: 'stable', name: '稳定组', active: false, backup: true }];
+  click('↻重新生成');
+  await settle();
+  assert.deepEqual(buttons().slice(0, 2), ['老渠道（原渠道）', '稳定组（备用）'], '原渠道就是当前预设时只写原渠道');
+  click('算了');
+
+  presets = [{ id: 'old', name: '老渠道', active: true }];
+  click('↻重新生成');
+  await settle();
+  assert.deepEqual(generated.at(-1), [tag, 'manual'], '只有一个预设：和以前一样点了就画');
+
+  settings = { generationProvider: 'novelai' };
+  click('↻重新生成');
+  await settle();
+  assert.deepEqual(generated.at(-1), [tag, 'manual'], 'NovelAI 没有 API 预设可选');
+  assert.equal(generated.length, 3);
+});
