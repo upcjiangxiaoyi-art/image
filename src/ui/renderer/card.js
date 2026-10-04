@@ -103,6 +103,54 @@ function displaySize(value) {
   return String(value || '').replace(/(\d)x(\d)/gi, '$1×$2');
 }
 
+/* 卡片下方这张图的信息：用的哪个预设、模型、画质、尺寸。以画出这张图的那一次为准，
+   图片记录里有的先用图片记录；旧记录里没有的项不显示。智能重试去掉过的参数显示「默认」。 */
+export function imageInfo(result, producer) {
+  const novelai = (result?.provider || producer?.provider) === 'novelai';
+  const dropped = new Set([
+    ...(producer?.compatibilityRetry?.adjustedParameters || []),
+    ...(result?.compatibilityRetry?.adjustedParameters || []),
+  ]);
+  const requested = producer?.qualitySnapshot ?? producer?.parameters?.quality ?? '';
+  let quality = '';
+  if (!novelai) {
+    if (dropped.has('quality')) quality = requested ? `默认（${requested} 被拒）` : '默认';
+    else if (typeof producer?.qualitySnapshot === 'string') quality = producer.qualitySnapshot || '默认';
+    else quality = String(producer?.parameters?.quality || '');
+  }
+  return {
+    presetLabel: novelai ? '画师串' : '预设',
+    preset: novelai
+      ? (result?.artistPresetNameSnapshot || producer?.artistPresetNameSnapshot || '')
+      : (result?.presetNameSnapshot || producer?.presetNameSnapshot || ''),
+    model: result?.apiModel || producer?.model || '',
+    quality,
+    size: dropped.has('size') ? '默认尺寸' : displaySize(producer?.parameters?.size || ''),
+  };
+}
+
+function infoList(info) {
+  const items = [
+    [info.presetLabel, info.preset, 'is-start'],
+    ['画质', info.quality, 'is-end'],
+    ['模型', info.model, 'is-wide'],
+  ].filter(([, value]) => value);
+  if (!items.length) return null;
+  const list = document.createElement('dl');
+  list.className = 'stia-card__info';
+  for (const [label, value, modifier] of items) {
+    const item = document.createElement('div');
+    item.className = `stia-card__info-item ${modifier}`;
+    const term = document.createElement('dt');
+    term.textContent = label;
+    const detail = document.createElement('dd');
+    detail.textContent = value;
+    item.append(term, detail);
+    list.append(item);
+  }
+  return list;
+}
+
 function statusHeading(symbol, title, subtitle, tone = '') {
   const heading = document.createElement('div');
   heading.className = `stia-card__status ${tone}`.trim();
@@ -260,9 +308,13 @@ export function createCard({
       landscape: '横图',
     }[tag.ratio] || '';
     const src = latest ? api.fileUrl(latest.resultId) : '';
-    const duration = latest
-      ? generationDuration((state.attempts || []).find(item => item.attemptId === latest.attemptId))
-      : '';
+    const producer = latest
+      ? (state.attempts || []).find(item => item.attemptId === latest.attemptId)
+      : null;
+    const duration = latest ? generationDuration(producer) : '';
+    const info = latest ? imageInfo(latest, producer) : null;
+    /* 图片角上的尺寸跟着这张图；没有生成记录的老图片退回用最近那次的。 */
+    const imageSize = info ? (info.size === '默认尺寸' ? '' : info.size || size) : '';
     const running = (state.attempts || []).slice(1).filter(item => ACTIVE_STATUSES.has(item.status));
     if (chooser && (chooser.attemptId !== attempt?.attemptId || !ACTIVE_STATUSES.has(attempt?.status))) {
       chooser = null;
@@ -273,6 +325,7 @@ export function createCard({
       latest?.resultId, latest?.provider, src, available.length,
       Boolean(state.tag?.resultIds?.length), actualPrompt, actualNegativePrompt, canAdjust, ratioLabel,
       running.map(item => item.attemptId), chooser && [chooser.attemptId, chooser.presets], duration,
+      info, imageSize,
     ]);
     if (signature === lastSignature) {
       /* 卡片被摘下又放回（酒馆重建这一层）时计时可能停了，顺手续上。 */
@@ -353,7 +406,7 @@ export function createCard({
         alt: image.alt,
         filename: latest.resultId,
         prompt: actualPrompt,
-        meta: [attempt?.model, size].filter(Boolean).join(' · '),
+        meta: [info.model, imageSize].filter(Boolean).join(' · '),
       });
       openCurrentImage = openOriginal;
       media.append(image);
@@ -363,10 +416,10 @@ export function createCard({
         badge.textContent = duration;
         media.append(badge);
       }
-      if (size) {
+      if (imageSize) {
         const badge = document.createElement('span');
         badge.className = 'stia-card__size';
-        badge.textContent = size;
+        badge.textContent = imageSize;
         media.append(badge);
       }
       const body = document.createElement('div');
@@ -376,10 +429,20 @@ export function createCard({
       const done = document.createElement('span');
       done.className = 'stia-success';
       done.textContent = '✓ 已完成';
+      const meta = document.createElement('span');
+      meta.className = 'stia-card__completion-meta';
       const history = document.createElement('span');
       history.className = 'stia-muted';
       history.textContent = `历史 ${available.length} 张`;
-      completion.append(done, history);
+      meta.append(history);
+      const sizeText = info.size || imageSize;
+      if (sizeText) {
+        const sizeNote = document.createElement('span');
+        sizeNote.className = 'stia-card__completion-size';
+        sizeNote.textContent = sizeText;
+        meta.append(sizeNote);
+      }
+      completion.append(done, meta);
       const actions = document.createElement('div');
       actions.className = 'stia-actions stia-actions--fill';
       actions.append(
@@ -396,7 +459,10 @@ export function createCard({
           attempt,
         }), '✎'));
       }
-      body.append(completion, actions);
+      body.append(completion);
+      const details = infoList(info);
+      if (details) body.append(details);
+      body.append(actions);
       if (running.length) body.append(backgroundNote(running));
       body.append(promptDetails(actualPrompt));
       root.append(media, body);

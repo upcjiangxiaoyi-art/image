@@ -1154,3 +1154,23 @@ test('读还没出图的卡片状态不会每次都整份保存聊天', async t 
   for (let index = 0; index < 3; index += 1) await client.resolveTags([tagId]);
   assert.equal(saves, before, '没有改动就不保存');
 });
+
+test('每次生成记下实际发出去的画质：预设默认、「不发送」、额外请求参数 JSON 覆盖都算进去', async t => {
+  const tagId = crypto.randomUUID();
+  const messageUuid = crypto.randomUUID();
+  const message = { is_user: false, mes: '<draw>base64</draw>', extra: { stImageAtelier: tagMetadata(tagId, messageUuid) } };
+  const { client, release, requests } = await gatedClient(t, [message]);
+  release();
+  const qualityOf = async patch => {
+    await client.updatePreset(patch);
+    const attempt = await client.generate(generationInput(tagId, messageUuid));
+    return { snapshot: attempt.qualitySnapshot, sent: requests.at(-1).quality };
+  };
+  assert.deepEqual(await qualityOf({ defaultQuality: 'max', sendQuality: true }), { snapshot: 'max', sent: 'max' });
+  assert.deepEqual(await qualityOf({ sendQuality: false }), { snapshot: '', sent: undefined }, '选了不发送');
+  assert.deepEqual(
+    await qualityOf({ sendQuality: true, defaultQuality: 'high', extraBody: { quality: 'xhigh' } }),
+    { snapshot: 'xhigh', sent: 'xhigh' },
+    '额外请求参数 JSON 最后覆盖',
+  );
+});

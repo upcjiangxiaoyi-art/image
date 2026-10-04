@@ -117,6 +117,9 @@ class GenerationService {
   async execute(context) {
     const { attempt, tag, preset, apiKey, settings, prompt, parameters, controller } = context;
     try {
+      /* 记下这次实际发出去的画质（和请求体同一套规则），卡片下方显示用。 */
+      const core = await adapter.loadCore();
+      attempt.qualitySnapshot = String(core.buildRequestBody({ preset, prompt, parameters }).quality || '');
       attempt.status = 'generating';
       await this.metadata.putAttempt(attempt);
       const sources = await adapter.generate({

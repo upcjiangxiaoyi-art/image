@@ -433,3 +433,14 @@ test('增强模式预设：没改过的老超时（3 分钟）和老上限（10 
   assert.equal(sanitizePreset({ timeoutMs: 99_999_999 }).timeoutMs, 7_200_000);
   assert.equal(sanitizePreset({ timeoutMs: 1_800_000 }).timeoutMs, 1_800_000);
 });
+
+test('增强模式每次生成也记下实际发出去的画质', async t => {
+  const f = await fixture(t);
+  await f.preset.update({ defaultQuality: 'max', sendQuality: true });
+  const input = request('base64');
+  await f.generation.generate(input);
+  const attempt = await waitForAttempt(f.metadata, input.attemptId);
+  assert.equal(attempt.status, 'succeeded');
+  assert.equal(attempt.qualitySnapshot, 'max');
+  assert.equal(f.upstream.state.generationBodies.at(-1).quality, 'max', '和真正发出去的一致');
+});

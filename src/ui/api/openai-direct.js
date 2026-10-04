@@ -49,6 +49,7 @@ export const {
   fetchJson,
   detectCompatibilityRetry,
   rejectsResponseFormat,
+  buildRequestBody,
   generateImages,
 } = core;
 export const listModelsDirect = core.listModels;

@@ -10,6 +10,7 @@ import {
 import {
   DirectError,
   base64ToBytes,
+  buildRequestBody,
   bytesToBase64,
   detectImageType,
   generateImages,
@@ -610,6 +611,15 @@ export function createDirectApiClient({
       completedAt: null,
       schemaVersion: SCHEMA_VERSION,
     };
+    /* 记下这次实际发出去的画质：预设默认值、标签里写的、「不发送」、额外请求参数 JSON 都算进去，
+       和真正的请求体同一套规则。卡片下方显示用；没发 quality 时是空字符串。 */
+    if (provider !== 'novelai') {
+      attempt.qualitySnapshot = String(buildRequestBody({
+        preset,
+        prompt: input.prompt,
+        parameters: attempt.parameters,
+      }).quality || '');
+    }
 
     const controller = new AbortController();
     controllers.set(attempt.attemptId, controller);

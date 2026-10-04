@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createCard, formatDuration, formatElapsed, generationDuration } from '../../src/ui/renderer/card.js';
+import { createCard, formatDuration, formatElapsed, generationDuration, imageInfo } from '../../src/ui/renderer/card.js';
 
 class FakeClassList {
   constructor() {
@@ -437,4 +437,60 @@ test('出图后图片右上角显示这张图用了多久；记录不全时不�
   state = { ...state, attempts: [], results: [{ resultId: 'r-slow', status: 'available', prompt: 'a cat' }] };
   card.render();
   assert.equal(badge(), null, '老图片没有生成记录就不显示');
+});
+
+test('出图后卡片下方显示这张图的预设、画质、模型，尺寸放在「历史 N 张」旁边', async t => {
+  const result = { resultId: 'r1', attemptId: 'a1', status: 'available', prompt: 'a cat', provider: 'openai', presetNameSnapshot: '纯爱2.5', apiModel: 'gpt-image-2.5-sunburst' };
+  const producer = { attemptId: 'a1', status: 'succeeded', provider: 'openai', model: 'gpt-image-2.5-sunburst', presetNameSnapshot: '纯爱2.5', qualitySnapshot: 'max', parameters: { size: '1024x1792' } };
+  assert.deepEqual(imageInfo(result, producer), {
+    presetLabel: '预设', preset: '纯爱2.5', model: 'gpt-image-2.5-sunburst', quality: 'max', size: '1024×1792',
+  });
+  assert.equal(imageInfo(result, { ...producer, qualitySnapshot: '' }).quality, '默认', '没发 quality 时按上游默认');
+  assert.equal(
+    imageInfo(result, { ...producer, compatibilityRetry: { adjustedParameters: ['quality'] } }).quality,
+    '默认（max 被拒）',
+    '智能重试去掉了 quality',
+  );
+  assert.equal(imageInfo(result, { ...producer, compatibilityRetry: { adjustedParameters: ['size'] } }).size, '默认尺寸');
+  const { qualitySnapshot: _omit, ...old } = producer;
+  assert.equal(imageInfo(result, { ...old, parameters: { size: '1024x1792', quality: 'high' } }).quality, 'high', '旧记录里标签写过画质');
+  assert.equal(imageInfo(result, old).quality, '', '旧记录里没有就不显示');
+  const novelai = imageInfo(
+    { ...result, provider: 'novelai', artistPresetNameSnapshot: '水彩画师串', apiModel: 'nai-diffusion-4-5-full' },
+    { ...producer, provider: 'novelai', qualitySnapshot: undefined },
+  );
+  assert.equal(novelai.presetLabel, '画师串');
+  assert.equal(novelai.preset, '水彩画师串');
+  assert.equal(novelai.quality, '', 'NovelAI 没有画质参数');
+
+  const { JSDOM } = await import('jsdom');
+  const dom = new JSDOM('<!doctype html><html><body></body></html>');
+  const previous = { document: globalThis.document, window: globalThis.window };
+  globalThis.document = dom.window.document;
+  globalThis.window = dom.window;
+  t.after(() => {
+    globalThis.document = previous.document;
+    globalThis.window = previous.window;
+    dom.window.close();
+  });
+  let state = { tag: { latestResultId: 'r1', resultIds: ['r1'] }, attempts: [producer], results: [result] };
+  const card = createCard({
+    tag: { tagId: 'tag-1', prompt: 'a cat', ratio: 'portrait' },
+    api: { fileUrl: id => `/user/images/${id}.png` },
+    getState: () => state,
+    onGenerate() {},
+    onOpenGallery() {},
+    onCancel() {},
+  });
+  card.render();
+  const rows = () => [...card.root.querySelectorAll('.stia-card__info-item')].map(item => item.textContent);
+  assert.deepEqual(rows(), ['预设纯爱2.5', '画质max', '模型gpt-image-2.5-sunburst']);
+  assert.equal(card.root.querySelector('.stia-card__completion-meta').textContent, '历史 1 张1024×1792');
+  const body = card.root.querySelector('.stia-card__body');
+  const order = [...body.children].map(child => child.className.split(' ')[0]);
+  assert.deepEqual(order.slice(0, 3), ['stia-card__completion', 'stia-card__info', 'stia-actions'], '信息在「已完成」下面、按钮上面');
+
+  state = { ...state, attempts: [], results: [{ resultId: 'r1', status: 'available', prompt: 'a cat' }] };
+  card.render();
+  assert.equal(card.root.querySelector('.stia-card__info'), null, '老图片什么记录都没有就不显示这一块');
 });

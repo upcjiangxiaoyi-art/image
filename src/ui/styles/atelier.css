@@ -845,6 +845,64 @@
   pointer-events: none;
 }
 
+/* 「历史 N 张 | 1024×1792」 */
+.stia-card__completion-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.stia-card__completion-size {
+  padding-left: 8px;
+  color: var(--stia-secondary);
+  border-left: 1px solid var(--stia-border-subtle);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 这张图用的预设、画质、模型：一行预设 + 画质，模型单独一行，下面一条分隔线隔开按钮。 */
+.stia-card__info {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 12px;
+  margin: 0;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--stia-border-subtle);
+  font-size: 12px;
+}
+
+.stia-card__info-item {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.stia-card__info-item.is-start {
+  grid-column: 1;
+}
+
+.stia-card__info-item.is-end {
+  grid-column: 2;
+  justify-self: end;
+}
+
+.stia-card__info-item.is-wide {
+  grid-column: 1 / -1;
+}
+
+.stia-card__info dt {
+  flex: 0 0 auto;
+  margin: 0;
+  color: var(--stia-muted);
+}
+
+.stia-card__info dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--stia-text);
+  overflow-wrap: anywhere;
+}
+
 .stia-card__completion {
   display: flex;
   align-items: center;
