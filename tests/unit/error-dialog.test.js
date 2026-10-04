@@ -8,6 +8,7 @@ import {
   createErrorDialog,
   createProblemReporter,
   describeError,
+  fallbackAdvice,
   describeGenerationProblem,
   requestedQuality,
 } from '../../src/ui/pages/error-dialog/error-dialog.js';
@@ -504,6 +505,11 @@ test('报错弹窗开关只存在浏览器本地，增强模式也不发给服�
 
   await api.updateSettings({ enableErrorPopup: true, enableSmartRetry: true });
   assert.deepEqual(patches.at(-1), { enableSmartRetry: true }, '其他设置照常同步');
+
+  const backup = await api.updateSettings({ backupPresetId: 'stable', enableAutoFallback: true });
+  assert.equal(backup.backupPresetId, 'stable');
+  assert.equal(backup.enableAutoFallback, true);
+  assert.equal(patches.some(patch => 'backupPresetId' in patch || 'enableAutoFallback' in patch), false, '备用线路也只存本地');
 });
 
 test('卡片不在眼前时画好的图：提醒图去了哪并带「查看」；没画成的注明是上一版的图', () => {
@@ -609,4 +615,52 @@ test('「再画一张」之后后台那张：画好提醒并带「查看」，�
   });
   assert.equal(failed.title, '请求超时');
   assert.match(failed.hint, /后台那张/);
+});
+
+test('哪些失败值得换备用线路：审核拦截和存进酒馆失败不给；只有明显是线路挂了才自动换', () => {
+  const advice = (code, message, status = 0) => fallbackAdvice({
+    attempt: { status: 'failed', errorCode: code, errorMessage: message },
+    error: Object.assign(new DirectError(code, message, status), { status }),
+  });
+  const pick = ({ manual, auto }) => ({ manual, auto });
+  assert.deepEqual(pick(advice('UPSTREAM_HTTP_ERROR', '上游生图请求失败（HTTP 502）：bad gateway', 502)), { manual: true, auto: true });
+  assert.deepEqual(pick(advice('DIRECT_FETCH_BLOCKED', 'Failed to fetch')), { manual: true, auto: true }, '连不上');
+  assert.deepEqual(pick(advice('UPSTREAM_RATE_LIMITED', 'too many requests', 429)), { manual: true, auto: true });
+  assert.deepEqual(pick(advice('UPSTREAM_AUTH_FAILED', 'invalid api key', 401)), { manual: true, auto: true });
+  assert.deepEqual(pick(advice('UPSTREAM_HTTP_ERROR', '上游生图请求失败（HTTP 402）：余额不足', 402)), { manual: true, auto: true }, '余额');
+  assert.deepEqual(pick(advice('API_KEY_MISSING', '当前预设尚未保存密钥')), { manual: true, auto: true }, '主线路没配好');
+  assert.deepEqual(pick(advice('UPSTREAM_TIMEOUT', '请求已超时或取消', 504)), { manual: true, auto: false }, '超时可能还在画');
+  assert.deepEqual(
+    pick(advice('DIRECT_FETCH_BLOCKED', '无法下载图片，可能被浏览器 CORS 阻止：Failed to fetch')),
+    { manual: true, auto: false },
+    '图已经画好了只是下载失败，不自动再花一次',
+  );
+  assert.deepEqual(pick(advice('UPSTREAM_HTTP_ERROR', '上游生图请求失败（HTTP 400）：quality not supported', 400)), { manual: true, auto: false });
+  assert.deepEqual(pick(advice('UPSTREAM_HTTP_ERROR', '上游生图请求失败（HTTP 400）：prompt is unsafe', 400)), { manual: false, auto: false }, '审核拦截换了也出不来');
+  assert.deepEqual(pick(advice('LOCAL_SAVE_FAILED', '无法保存到酒馆')), { manual: false, auto: false });
+});
+
+test('弹窗里「换备用线路重画」：写着备用线路的名字，点了收起这一条、照原请求换线路重画；审核拦截不给', t => {
+  withDom(t);
+  const shown = [];
+  const reporter = createProblemReporter({ store: createStore(), getDialog: () => ({ show: problem => shown.push(problem) }) });
+  const retry = { key: 'tag-1', run() {} };
+  const fallback = { key: 'tag-1', label: '稳定组', run() {} };
+  reporter.reportProblem({ attempt: { status: 'failed', errorCode: 'UPSTREAM_HTTP_ERROR', errorMessage: '上游生图请求失败（HTTP 502）' } }, retry, fallback);
+  assert.equal(shown.at(-1).fallback, fallback);
+  reporter.reportProblem({ attempt: { status: 'failed', errorCode: 'UPSTREAM_HTTP_ERROR', errorMessage: '上游生图请求失败（HTTP 400）：prompt is unsafe' } }, retry, fallback);
+  assert.equal('fallback' in shown.at(-1), false, '审核拦截不给换备用线路');
+  assert.equal(shown.at(-1).retry, retry);
+
+  const dialog = createErrorDialog();
+  const runs = [];
+  const failure = { tone: 'danger', title: '上游服务器出错', message: '上游生图请求失败（HTTP 502）' };
+  dialog.show({ ...failure, retry: { key: 'a', run: () => runs.push('retry-a') }, fallback: { key: 'a', label: '稳定组', run: () => runs.push('backup-a') } });
+  const buttons = () => [...dialog.root.querySelectorAll('.stia-error-dialog__actions button')].map(button => button.textContent);
+  assert.deepEqual(buttons(), ['⇄ 换「稳定组」重画', '↻ 重新生成']);
+  dialog.show({ ...failure, retry: { key: 'b', run: () => runs.push('retry-b') }, fallback: { key: 'b', label: '稳定组', run: () => runs.push('backup-b') } });
+  assert.deepEqual(buttons(), ['⇄ 全部换「稳定组」重画', '↻ 全部重新生成'], '同一条合并了两张');
+  dialog.root.querySelector('.stia-error-dialog__fallback').click();
+  assert.deepEqual(runs, ['backup-a', 'backup-b'], '两张都换备用线路，原线路不重跑');
+  assert.equal(dialog.root.hidden, true, '只有这一条，点了就关');
 });

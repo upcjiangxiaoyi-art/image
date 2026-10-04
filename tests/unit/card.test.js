@@ -494,3 +494,67 @@ test('出图后卡片下方显示这张图的预设、画质、模型，尺寸�
   card.render();
   assert.equal(card.root.querySelector('.stia-card__info'), null, '老图片什么记录都没有就不显示这一块');
 });
+
+test('失败的卡片上「换备用线路」：设了备用线路、这次用的不是它才给；审核拦截、取消、增强模式不给；「再画一张」里标出备用', async t => {
+  const { JSDOM } = await import('jsdom');
+  const dom = new JSDOM('<!doctype html><html><body></body></html>');
+  const previous = { document: globalThis.document, window: globalThis.window };
+  globalThis.document = dom.window.document;
+  globalThis.window = dom.window;
+  t.after(() => {
+    globalThis.document = previous.document;
+    globalThis.window = previous.window;
+    dom.window.close();
+  });
+
+  const tag = { tagId: 'tag-1', prompt: 'a cat', ratio: 'portrait' };
+  const failed = { attemptId: 'a1', status: 'failed', provider: 'openai', presetId: 'cheap', errorCode: 'UPSTREAM_HTTP_ERROR', errorMessage: '上游生图请求失败（HTTP 502）' };
+  let state = { attempts: [failed], results: [] };
+  let settings = { generationProvider: 'openai', executionMode: 'direct', backupPresetId: 'stable' };
+  const fallbacks = [];
+  const card = createCard({
+    tag,
+    api: { fileUrl: id => `/user/images/${id}.png` },
+    getState: () => state,
+    getSettings: () => settings,
+    onGenerate() {},
+    onOpenGallery() {},
+    onCancel() {},
+    onRemove() {},
+    onReroll() {},
+    onFallback: value => fallbacks.push(value),
+    listPresets: async () => [
+      { id: 'other', name: '别的组', active: false, backup: false },
+      { id: 'stable', name: '稳定组', active: false, backup: true },
+      { id: 'cheap', name: '便宜组', active: true, backup: false },
+    ],
+  });
+  card.render();
+  const buttons = () => [...card.root.querySelectorAll('button')].map(button => button.textContent);
+  assert.deepEqual(buttons(), ['↻重试', '⇄换备用线路', '×删除']);
+  [...card.root.querySelectorAll('button')].find(button => button.textContent === '⇄换备用线路').click();
+  assert.deepEqual(fallbacks, [tag]);
+
+  const without = expected => {
+    card.render();
+    assert.equal(buttons().includes('⇄换备用线路'), false, expected);
+  };
+  state = { attempts: [{ ...failed, presetId: 'stable' }], results: [] };
+  without('这次用的本来就是备用线路');
+  state = { attempts: [{ ...failed, errorMessage: '上游生图请求失败（HTTP 400）：prompt is unsafe' }], results: [] };
+  without('审核拦截，换了也出不来');
+  state = { attempts: [{ ...failed, status: 'cancelled', errorMessage: '已取消' }], results: [] };
+  without('用户自己取消的');
+  state = { attempts: [failed], results: [] };
+  settings = { ...settings, executionMode: 'server' };
+  without('增强模式只有一个预设');
+  settings = { ...settings, executionMode: 'direct', backupPresetId: '' };
+  without('没设备用线路');
+
+  settings = { ...settings, backupPresetId: 'stable' };
+  state = { attempts: [{ attemptId: 'a2', status: 'generating', requestMode: 'manual' }], results: [] };
+  card.render();
+  [...card.root.querySelectorAll('button')].find(button => button.textContent === '↻再画一张').click();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(buttons(), ['便宜组（当前）', '稳定组（备用）', '别的组', '算了'], '当前的第一，备用的第二');
+});

@@ -432,9 +432,15 @@ export function createMessageRenderer(dependencies) {
       onCancel: actions.cancel,
       onRemove: actions.remove,
       onReroll: actions.reroll,
+      onFallback: actions.fallback,
       listPresets: async () => {
         const data = await api.getPresets();
-        return (data?.items || []).map(item => ({ ...item, active: item.id === data.activePresetId }));
+        const backupId = store.state.settings?.backupPresetId;
+        return (data?.items || []).map(item => ({
+          ...item,
+          active: item.id === data.activePresetId,
+          backup: Boolean(backupId) && item.id === backupId,
+        }));
       },
     });
     cards.set(tag.tagId, card);

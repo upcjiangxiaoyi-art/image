@@ -1,4 +1,4 @@
-import { requestedQuality } from '../pages/error-dialog/error-dialog.js';
+import { fallbackAdvice, requestedQuality } from '../pages/error-dialog/error-dialog.js';
 import { locateTag } from './tag-identity.js';
 
 export const TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'interrupted', 'cancelled']);
@@ -21,7 +21,7 @@ function upsertAttempt(attempts = [], attempt) {
    同一张卡可以同时画好几张：等不及时「再画一张」（可换预设），正在画的留在后台接着画。
    onProblem(context, retry)：每次出结果都会调用，由报错弹窗决定弹不弹；context.placement
    说明出结果时卡片在哪（见 placementOf），context.background 说明之后又 roll 过（这张是后台那张）；
-   卡片不在眼前或是后台那张时不带 retry；
+   卡片不在眼前或是后台那张时不带 retry；设了备用线路时，失败还会带 fallback（换备用线路重画）；
    onSucceeded()：出图成功后（用来触发画廊自动清理）；onError(error, title)：取消失败等。 */
 export function createGenerationController({
   api,
@@ -51,6 +51,20 @@ export function createGenerationController({
     return chatId && chatId !== compat.currentChatId() ? 'elsewhere' : 'gone';
   }
 
+  /* 备用线路：设置里选的那个 API 预设。没设、失败的这次本来就是备用线路、用 NovelAI，
+     或者在增强模式（只有一个预设）时没有。 */
+  async function backupPresetFor(usedPresetId, provider = store.state.settings.generationProvider) {
+    const backupId = store.state.settings.backupPresetId;
+    if (!backupId || backupId === usedPresetId || provider === 'novelai') return null;
+    if (api.mode?.() === 'server' || typeof api.getPresets !== 'function') return null;
+    try {
+      const data = await api.getPresets();
+      return (data?.items || []).find(item => item.id === backupId) || null;
+    } catch {
+      return null;
+    }
+  }
+
   async function refreshTag(tagId) {
     const [resolved] = await api.resolveTags([tagId]);
     store.applyResolvedTag(tagId, resolved);
@@ -73,7 +87,7 @@ export function createGenerationController({
   /* overrides：prompt / negativePromptOverride（调整后重绘的临时提示词）、preset（这一次换用的
      API 预设）。alongside：明确要和这张卡正在画的并行。不带时，卡片上最近开始的那次还在画就不再
      发请求（防双击）；只剩后台那张在画时，卡片上的「重新生成」「重试」照常能用。 */
-  async function generate(tag, mode, overrides = {}, { alongside = false } = {}) {
+  async function generate(tag, mode, overrides = {}, { alongside = false, statusMessage = '' } = {}) {
     if (!alongside && running.get(tag.tagId)?.has(newest.get(tag.tagId))) return undefined;
     const attemptId = mode === 'auto' ? `auto:${tag.tagId}` : uuid();
     if (running.get(tag.tagId)?.has(attemptId)) return undefined;
@@ -95,6 +109,7 @@ export function createGenerationController({
       status: 'generating',
       promptSnapshot: prompt,
       createdAt: new Date().toISOString(),
+      ...(statusMessage ? { statusMessage } : {}),
     };
     const current = store.state.tagStates.get(tag.tagId) || { tagId: tag.tagId, attempts: [], results: [] };
     /* 自动生图的 attemptId 固定；已有终态记录时接口只会原样返回旧结果，不再弹旧报错。 */
@@ -129,6 +144,7 @@ export function createGenerationController({
         chatId,
         messageUuid: tag.messageUuid,
         tagOrdinal: tag.ordinal,
+        ...(statusMessage ? { statusMessage } : {}),
         parameters: {
           ratio: tag.ratio,
           quality: tag.quality,
@@ -167,13 +183,25 @@ export function createGenerationController({
         console.info('[画笺] 生图标签已失效（消息重新生成或改动过），跳过', tag.tagId);
         return null;
       }
-      /* 落盘的失败记录带「已尝试移除 … 后重试一次」等补充说明，优先用它。 */
       if (!replay) {
-        report({
-          attempt: persisted?.status === 'failed' ? persisted : optimisticAttempt,
-          error,
-          quality,
-        });
+        /* 落盘的失败记录带「已尝试移除 … 后重试一次」等补充说明，优先用它。 */
+        const failed = persisted?.status === 'failed' ? persisted : optimisticAttempt;
+        const placement = placementOf(tag.tagId, chatId);
+        const background = newest.get(tag.tagId) !== attemptId;
+        const visible = placement === 'active' && !background;
+        const backup = visible ? await backupPresetFor(preset?.id, provider) : null;
+        const advice = fallbackAdvice({ attempt: failed, error });
+        const onBackup = extra => generate(tag, 'manual', { ...overrides, preset: backup }, { alongside: true, ...extra });
+        /* 开了「自动换备用线路」、又明显是这条线路挂了：不弹报错，直接用备用线路照原请求重画，
+           卡片上写一句。备用线路自己再失败时 backupPresetFor 不会再给，不会来回打转。 */
+        if (backup && advice.auto && store.state.settings.enableAutoFallback === true) {
+          return onBackup({ statusMessage: `主线路${advice.title}，已换备用线路「${backup.name}」重画` });
+        }
+        onProblem(
+          { attempt: failed, error, quality, placement, background },
+          visible ? retry : undefined,
+          backup ? { key: tag.tagId, label: backup.name, run: () => onBackup() } : undefined,
+        );
       }
       throw error;
     } finally {
@@ -191,6 +219,13 @@ export function createGenerationController({
     return generate(tag, 'manual', overrides, { alongside: true });
   }
 
+  /* 失败卡片上的「换备用线路」：用备用线路照这张卡的提示词重画一张。 */
+  async function generateWithBackup(tag) {
+    const backup = await backupPresetFor('');
+    if (!backup) return undefined;
+    return generate(tag, 'manual', { preset: backup }, { alongside: true });
+  }
+
   async function cancel(attemptId) {
     try {
       await api.cancel(attemptId);
@@ -206,6 +241,7 @@ export function createGenerationController({
   return {
     generate,
     reroll,
+    generateWithBackup,
     cancel,
     refreshTag,
     isActive,

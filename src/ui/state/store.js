@@ -21,6 +21,8 @@ export function createStore() {
       enabled: true,
       autoGenerate: false,
       enableErrorPopup: true,
+      backupPresetId: '',
+      enableAutoFallback: false,
       generationProvider: 'openai',
       themeMode: 'tavern',
     },

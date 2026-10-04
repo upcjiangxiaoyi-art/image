@@ -135,6 +135,8 @@ function normalizeSettings(value = {}) {
   return {
     ...merged,
     generationProvider: merged.generationProvider === 'novelai' ? 'novelai' : 'openai',
+    backupPresetId: String(merged.backupPresetId || ''),
+    enableAutoFallback: merged.enableAutoFallback === true,
     executionMode: merged.executionMode === 'server' ? 'server' : 'direct',
     themeMode: normalizeThemeMode(merged.themeMode),
     ...normalizeRetentionSettings(merged),
@@ -604,6 +606,8 @@ export function createDirectApiClient({
       artistNegativePromptSnapshot: artistPreset?.negativePrompt || '',
       parameters: { ...clone(input.parameters || {}), size: requestedSize },
       status: 'generating',
+      /* 自动换备用线路时卡片上那句「主线路……已换备用线路……」，画完就清掉。 */
+      statusMessage: input.statusMessage ? String(input.statusMessage).slice(0, 200) : null,
       resultIds: [],
       errorCode: null,
       errorMessage: null,
@@ -1071,6 +1075,7 @@ export function createDirectApiClient({
       if (index < 0) throw new DirectError('VALIDATION_FAILED', '找不到要删除的 API 预设');
       const [removed] = namespace.presets.splice(index, 1);
       setApiKey(removed.id, '');
+      if (namespace.settings.backupPresetId === removed.id) namespace.settings.backupPresetId = '';
       if (namespace.activePresetId === removed.id) {
         namespace.activePresetId = namespace.presets[Math.min(index, namespace.presets.length - 1)].id;
       }

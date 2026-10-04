@@ -1338,11 +1338,18 @@
   text-align: center;
 }
 
-.stia-error-dialog__retry,
-.stia-error-dialog__view {
-  justify-self: end;
-  min-height: 34px;
+.stia-error-dialog__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
   margin-top: 4px;
+}
+
+.stia-error-dialog__retry,
+.stia-error-dialog__view,
+.stia-error-dialog__fallback {
+  min-height: 34px;
   padding: 5px 14px;
   font-size: 13px;
 }
@@ -1565,4 +1572,9 @@
 
 .stia-actions--fill > .stia-card__remove {
   flex: 0 0 auto;
+}
+
+.stia-actions--fill.stia-actions--pairs > .stia-button,
+.stia-actions--fill.stia-actions--pairs > .stia-card__remove {
+  flex: 1 1 calc(50% - var(--stia-gap) / 2);
 }

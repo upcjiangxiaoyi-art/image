@@ -155,6 +155,7 @@ export function createToolPanel({ api, store, onError = () => {} }) {
   const autoGenerate = input('checkbox');
   const enablePromptOverrideRegenerate = input('checkbox');
   const enableSmartRetry = input('checkbox');
+  const enableAutoFallback = input('checkbox');
   const enableErrorPopup = input('checkbox');
   const themeMode = select([
     ['tavern', '跟随酒馆主题'],
@@ -180,6 +181,8 @@ export function createToolPanel({ api, store, onError = () => {} }) {
   generationProvider.value = 'openai';
   const presetSelector = select();
   presetSelector.setAttribute('aria-label', '选择 API 预设');
+  const backupSelector = select();
+  backupSelector.setAttribute('aria-label', '选择备用线路');
   const presetName = input();
   presetName.placeholder = '例如：主站 API、备用 API';
   const baseUrl = input('url');
@@ -423,6 +426,14 @@ export function createToolPanel({ api, store, onError = () => {} }) {
   enableErrorPopup.addEventListener('change', () => {
     void persistBooleanSetting(enableErrorPopup, 'enableErrorPopup', '报错弹窗已开启', '报错弹窗已关闭');
   });
+  enableAutoFallback.addEventListener('change', () => {
+    void persistBooleanSetting(
+      enableAutoFallback,
+      'enableAutoFallback',
+      '主线路挂了会自动换备用线路重画',
+      '已关闭自动换备用线路',
+    );
+  });
 
   function updateModelList(models, selectedValue = '') {
     const values = (models || []).map(item => item.id).filter(Boolean);
@@ -620,7 +631,35 @@ export function createToolPanel({ api, store, onError = () => {} }) {
       presetSelector.append(option);
     }
     presetSelector.value = activeId;
+    updateBackupSelector();
   }
+
+  /* 备用线路：从已有的 API 预设里挑一个，或者不用。预设增删改名时跟着更新。 */
+  function updateBackupSelector() {
+    const current = store.state.settings?.backupPresetId || '';
+    const none = document.createElement('option');
+    none.value = '';
+    none.textContent = '不用';
+    backupSelector.replaceChildren(none, ...presets.map(preset => {
+      const option = document.createElement('option');
+      option.value = preset.id;
+      option.textContent = preset.name;
+      return option;
+    }));
+    backupSelector.value = presets.some(preset => preset.id === current) ? current : '';
+  }
+
+  backupSelector.addEventListener('change', async () => {
+    const previous = store.state.settings?.backupPresetId || '';
+    const desired = backupSelector.value;
+    const name = presets.find(preset => preset.id === desired)?.name || '';
+    await run(backupSelector, async () => {
+      const nextSettings = await api.updateSettings({ backupPresetId: desired });
+      store.set({ settings: { ...store.state.settings, ...nextSettings } });
+      status.textContent = desired ? `备用线路已设为“${name}”` : '已不用备用线路';
+    });
+    if ((store.state.settings?.backupPresetId || '') !== desired) backupSelector.value = previous;
+  });
 
   function parseExtraBody() {
     try {
@@ -718,8 +757,12 @@ export function createToolPanel({ api, store, onError = () => {} }) {
     const current = presets.find(item => item.id === activePresetId);
     if (!current || !confirm(`确定删除 API 预设“${current.name}”吗？`)) return;
     await run(deletePreset, async () => {
-      const result = await api.deletePreset(activePresetId);
-      presets = presets.filter(item => item.id !== activePresetId);
+      const deletedId = activePresetId;
+      const result = await api.deletePreset(deletedId);
+      presets = presets.filter(item => item.id !== deletedId);
+      if (store.state.settings?.backupPresetId === deletedId) {
+        store.set({ settings: { ...store.state.settings, backupPresetId: '' } });
+      }
       const preset = result.activePreset;
       activePresetId = preset.id;
       updatePresetSelector(preset.id);
@@ -916,6 +959,11 @@ export function createToolPanel({ api, store, onError = () => {} }) {
   const apiGrid = document.createElement('div');
   apiGrid.className = 'stia-form-stack';
   const presetField = field('API 预设', presetRow);
+  const backupField = field('备用线路', backupSelector);
+  const backupDescription = document.createElement('small');
+  backupDescription.className = 'stia-muted';
+  backupDescription.textContent = '主线路（这次出图用的预设）失败时，弹窗和失败的卡片上可以一键换它重画；挑一个稳定的。';
+  backupField.append(backupDescription);
   const keyRow = document.createElement('div');
   keyRow.className = 'stia-inline-control';
   keyRow.append(apiKey, clearKey);
@@ -923,6 +971,7 @@ export function createToolPanel({ api, store, onError = () => {} }) {
   urlField.append(urlPreview);
   apiGrid.append(
     presetField,
+    backupField,
     field('预设名称', presetName),
     urlField,
     field('API Key', keyRow),
@@ -1105,7 +1154,20 @@ export function createToolPanel({ api, store, onError = () => {} }) {
   const errorPopupDescription = document.createElement('small');
   errorPopupDescription.textContent = '生图失败、连不上、超时、被审核拦截等报错时弹出提示，点一下就关；重 roll 后上一版的图画好了也在这里提醒';
   errorPopupField.querySelector('span')?.append(errorPopupDescription);
-  automationSection.append(autoField, promptOverrideField, smartRetryField, errorPopupField);
+  const autoFallbackField = field('主线路挂了自动换备用线路', enableAutoFallback);
+  autoFallbackField.classList.add('stia-switch-field', 'stia-switch-field--row');
+  const autoFallbackDescription = document.createElement('small');
+  autoFallbackDescription.textContent = '要先设好备用线路。只在连不上、上游 5xx、限流、密钥或余额出问题时自动换一次，不弹报错；'
+    + '超时和审核拦截不换。会多花一次备用线路的钱';
+  autoFallbackField.querySelector('span')?.append(autoFallbackDescription);
+  automationSection.append(autoField, promptOverrideField, smartRetryField, autoFallbackField, errorPopupField);
+
+  /* 备用线路只在免服务端模式的 GPT 下有：NovelAI 只有一套配置，增强模式只有一个预设。 */
+  function syncBackupControls() {
+    const unavailable = generationProvider.value === 'novelai' || executionMode.value === 'server';
+    backupField.hidden = unavailable;
+    autoFallbackField.hidden = unavailable;
+  }
 
   const appearanceSection = document.createElement('section');
   appearanceSection.className = 'stia-section';
@@ -1214,6 +1276,7 @@ export function createToolPanel({ api, store, onError = () => {} }) {
     if (isNovelAi) executionMode.value = 'direct';
     createPreset.disabled = !isNovelAi && executionMode.value === 'server';
     deletePreset.disabled = !isNovelAi && executionMode.value === 'server';
+    syncBackupControls();
     health.textContent = isNovelAi
       ? '● NovelAI 兼容接口已就绪'
       : api.mode() === 'server'
@@ -1354,6 +1417,7 @@ export function createToolPanel({ api, store, onError = () => {} }) {
       enablePromptOverrideRegenerate.checked = settings.enablePromptOverrideRegenerate === true;
       enableSmartRetry.checked = settings.enableSmartRetry === true;
       enableErrorPopup.checked = settings.enableErrorPopup !== false;
+      enableAutoFallback.checked = settings.enableAutoFallback === true;
       themeMode.value = ['tavern', 'light', 'dark'].includes(settings.themeMode)
         ? settings.themeMode
         : 'tavern';
@@ -1381,6 +1445,7 @@ export function createToolPanel({ api, store, onError = () => {} }) {
         artistPreset,
         serviceError: null,
       });
+      updateBackupSelector();
       setProvider(provider, false);
     } catch (error) {
       health.textContent = api.mode() === 'server'
@@ -1398,6 +1463,7 @@ export function createToolPanel({ api, store, onError = () => {} }) {
     const serverMode = executionMode.value === 'server';
     createPreset.disabled = serverMode;
     deletePreset.disabled = serverMode;
+    syncBackupControls();
   });
 
   function showTab(name) {

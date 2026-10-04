@@ -5,10 +5,10 @@ import { createProblemReporter } from '../../src/ui/pages/error-dialog/error-dia
 import { createStore } from '../../src/ui/state/store.js';
 import { DirectError } from '../../src/ui/api/openai-direct.js';
 
-function setup({ generate, attempt, cancel, resolveTags, preset, compat } = {}) {
+function setup({ generate, attempt, cancel, resolveTags, preset, compat, settings, presets } = {}) {
   const store = createStore();
   store.set({
-    settings: { enabled: true, generationProvider: 'openai' },
+    settings: { enabled: true, generationProvider: 'openai', ...settings },
     preset: preset || { id: 'p1', selectedModel: 'gpt-image-2.5-sunburst', defaultQuality: 'high', sendQuality: true },
   });
   const calls = { generate: [], problems: [], succeeded: 0, errors: [] };
@@ -25,13 +25,15 @@ function setup({ generate, attempt, cancel, resolveTags, preset, compat } = {}) 
       attempts: persisted.get(tagId) || [],
       results: [],
     }))),
+    mode: () => 'direct',
+    getPresets: async () => ({ activePresetId: 'p1', items: presets || [] }),
   };
   let sequence = 0;
   const controller = createGenerationController({
     api,
     store,
     compat: compat || { currentChatId: () => 'chat-1' },
-    onProblem: (context, retry) => calls.problems.push({ context, retry }),
+    onProblem: (context, retry, fallback) => calls.problems.push({ context, retry, fallback }),
     onSucceeded: () => { calls.succeeded += 1; },
     onError: (error, title) => calls.errors.push({ error, title }),
     uuid: () => `manual-${sequence += 1}`,
@@ -367,4 +369,99 @@ test('读回来的旧状态不会把已经画好的卡片打回「正在保存�
     '进行中变成结束是往前走，照常更新',
   );
   assert.equal(store.applyResolvedTag('tag-1', { tagId: 'tag-1', tag: null, attempts: [], results: [] }), true, '标签删掉了也照常更新');
+});
+
+const BACKUP = { id: 'stable', name: '稳定组', selectedModel: 'gpt-image-2.5-sunburst', defaultQuality: 'max', sendQuality: true };
+const MAIN = { id: 'p1', name: '便宜组', selectedModel: 'gpt-image-2.5-sunburst', defaultQuality: 'high', sendQuality: true };
+
+test('备用线路：主线路失败时弹窗带「换备用线路重画」，照原请求只换线路；备用线路自己失败就不再给', async () => {
+  const outcomes = [new DirectError('UPSTREAM_HTTP_ERROR', 'bad gateway', 502, true, '上游生图请求失败（HTTP 502）：bad gateway')];
+  const { controller, calls } = setup({
+    preset: MAIN,
+    presets: [MAIN, BACKUP],
+    settings: { backupPresetId: 'stable' },
+    generate: async input => {
+      const outcome = outcomes.shift();
+      if (outcome) throw outcome;
+      return { attemptId: input.attemptId, tagId: input.tagId, status: 'succeeded', resultIds: ['r'] };
+    },
+  });
+  await assert.rejects(controller.generate(tag, 'manual', { prompt: '调整过的提示词' }));
+  const [{ context, retry }] = calls.problems.slice(-1);
+  const fallback = calls.problems.at(-1).fallback;
+  assert.ok(retry, '原线路的「重新生成」照旧在');
+  assert.equal(fallback.label, '稳定组');
+  assert.equal(context.attempt.status, 'failed');
+
+  const rerolled = await fallback.run();
+  assert.equal(rerolled.status, 'succeeded');
+  assert.equal(calls.generate[1].presetId, 'stable', '换成备用线路');
+  assert.equal(calls.generate[1].prompt, '调整过的提示词', '临时提示词照带');
+
+  outcomes.push(new DirectError('UPSTREAM_HTTP_ERROR', 'still down', 502, true, '上游生图请求失败（HTTP 502）'));
+  await assert.rejects(controller.generate(tag, 'manual', { preset: BACKUP }));
+  assert.equal(calls.problems.at(-1).fallback, undefined, '这次用的本来就是备用线路，不再给换');
+});
+
+test('自动换备用线路：开了开关又明显是线路挂了，不弹报错直接换，卡片上写一句；超时、审核拦截不自动换', async () => {
+  const outcomes = [];
+  const { store, controller, calls } = setup({
+    preset: MAIN,
+    presets: [MAIN, BACKUP],
+    settings: { backupPresetId: 'stable', enableAutoFallback: true },
+    generate: async input => {
+      const outcome = outcomes.shift();
+      if (outcome) throw outcome;
+      return { attemptId: input.attemptId, tagId: input.tagId, status: 'succeeded', resultIds: ['r'] };
+    },
+  });
+  const seen = [];
+  store.subscribe(state => seen.push(state.tagStates.get('tag-1')?.attempts?.[0]?.statusMessage));
+
+  outcomes.push(new DirectError('DIRECT_FETCH_BLOCKED', 'Failed to fetch', 0, true));
+  const result = await controller.generate(tag, 'auto');
+  assert.equal(result.status, 'succeeded', '自动换了备用线路，最后拿到的是备用线路的结果');
+  assert.equal(calls.generate.length, 2);
+  assert.equal(calls.generate[1].presetId, 'stable');
+  assert.equal(calls.generate[1].statusMessage, '主线路连不上服务器，已换备用线路「稳定组」重画');
+  assert.ok(seen.includes('主线路连不上服务器，已换备用线路「稳定组」重画'), '卡片上写了换线路的原因');
+  assert.equal(calls.problems.filter(item => item.context.attempt.status === 'failed').length, 0, '主线路的失败不弹窗');
+
+  outcomes.push(new DirectError('UPSTREAM_TIMEOUT', '请求已超时或取消', 504, true));
+  await assert.rejects(controller.generate(tag, 'manual'));
+  assert.equal(calls.generate.length, 3, '超时不自动换：中转站可能还在画、照样扣钱');
+  assert.equal(calls.problems.at(-1).fallback.label, '稳定组', '但弹窗里可以自己点');
+
+  outcomes.push(new DirectError('UPSTREAM_HTTP_ERROR', 'prompt is unsafe', 400, false, '上游生图请求失败（HTTP 400）：prompt is unsafe'));
+  await assert.rejects(controller.generate(tag, 'manual'));
+  assert.equal(calls.generate.length, 4, '审核拦截不自动换');
+
+  outcomes.push(
+    new DirectError('UPSTREAM_RATE_LIMITED', 'too many requests', 429, true),
+    new DirectError('UPSTREAM_HTTP_ERROR', 'backup down', 502, true, '上游生图请求失败（HTTP 502）'),
+  );
+  await assert.rejects(controller.generate(tag, 'manual'));
+  assert.equal(calls.generate.length, 6, '主线路限流自动换一次；备用线路也失败就停，不来回打转');
+  assert.equal(calls.problems.at(-1).context.attempt.status, 'failed');
+  assert.equal(calls.problems.at(-1).fallback, undefined);
+});
+
+test('失败卡片上的「换备用线路」；没设备用线路、NovelAI、增强模式时没有备用线路', async () => {
+  const { store, controller, calls, api } = setup({
+    preset: MAIN,
+    presets: [MAIN, BACKUP],
+    settings: { backupPresetId: 'stable' },
+    generate: async input => ({ attemptId: input.attemptId, tagId: input.tagId, status: 'succeeded' }),
+  });
+  await controller.generateWithBackup(tag);
+  assert.equal(calls.generate.at(-1).presetId, 'stable');
+
+  store.set({ settings: { ...store.state.settings, backupPresetId: '' } });
+  assert.equal(await controller.generateWithBackup(tag), undefined);
+  store.set({ settings: { ...store.state.settings, backupPresetId: 'stable', generationProvider: 'novelai' } });
+  assert.equal(await controller.generateWithBackup(tag), undefined);
+  store.set({ settings: { ...store.state.settings, generationProvider: 'openai' } });
+  api.mode = () => 'server';
+  assert.equal(await controller.generateWithBackup(tag), undefined);
+  assert.equal(calls.generate.length, 1);
 });

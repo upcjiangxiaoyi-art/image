@@ -52,6 +52,10 @@ MESSAGE_RECEIVED (live)
 - 遗留的活动状态（刷新、切走聊天、画到一半被滑走）：画廊里已有这次 attemptId 存下的图就接回卡片，没有才改为 `interrupted`，都不会自动重发。
 - 酒馆还在流式输出这一层时只挂卡片、不排自动生图，等 `MESSAGE_RECEIVED` 拿到定稿再排；消息被重 roll、滑走、改动或删除后，旧标签的生图在发请求之前就停下（`TAG_NOT_FOUND`）。这一层正在生成新的滑动版本时，`extra` 还是上一版留下的，同样按失效处理。
 
+## 备用线路
+
+`settings.backupPresetId`（全局一条）和 `settings.enableAutoFallback` 只存在浏览器本地，增强模式下也不发给服务端。失败时由 `generation-controller` 决定：卡片还在眼前、不是后台那张、这次用的预设不是备用线路时，取出备用预设，把「换备用线路重画」作为第三个参数交给 `onProblem`；报错弹窗按 `fallbackAdvice` 决定给不给（审核拦截、存进酒馆失败不给）。开了自动切换且 `fallbackAdvice().auto`（连不上、5xx、限流、密钥或余额、接口没配好；不含超时）时，不报这次失败，直接用备用预设照原请求重画，并把一句说明放进 `statusMessage`。备用线路自己失败时取不到备用预设，所以不会循环。
+
 ## 慢的图等多久
 
 预设的「超时」默认 1 小时、最多 2 小时（1.6.15 之前是 3 分钟、最多 10 分钟；没改过的老默认值和老上限会一次性换成 1 小时）。等不及时用「再画一张」，不用等超时。Node 自带的 fetch 300 秒拿不到响应头就放弃，所以 Server Plugin 发生图请求用自己的 `server-plugin/src/utils/long-fetch.js`（`node:http(s)`，不设响应头 / 正文超时，开 TCP keepalive），超时只由预设决定；共用请求逻辑通过 `fetchImpl` 换用它。浏览器直连时，手机锁屏或切走太久，浏览器自己也可能断开连接，这种情况插件管不了。

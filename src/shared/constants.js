@@ -1,5 +1,5 @@
 /* 唯一的前端版本号；用 npm run version:set 统一修改，测试会检查各处一致。 */
-export const VERSION = '1.6.18';
+export const VERSION = '1.6.19';
 export const MODULE_NAME = 'stImageAtelier';
 export const DISPLAY_NAME = '画笺';
 export const API_ROOT = '/api/plugins/st-image-atelier';
@@ -48,6 +48,9 @@ export const DEFAULT_SETTINGS = Object.freeze({
   enablePromptOverrideRegenerate: false,
   enableSmartRetry: false,
   enableErrorPopup: true,
+  /* 备用线路：主线路（这次出图用的 API 预设）失败时可以一键换它重画；空字符串是不用。 */
+  backupPresetId: '',
+  enableAutoFallback: false,
   generationProvider: 'openai',
   executionMode: 'direct',
   themeMode: 'tavern',

@@ -90,6 +90,38 @@ function problemTitle({ code, httpStatus, text, fallback }) {
   return fallback;
 }
 
+/* 主线路失败后换备用线路值不值得：
+   - manual（弹窗和失败的卡片上给「换备用线路」）：除了审核拦截（换了也照样被拦）和存进酒馆失败
+     （是本地的问题）都给；
+   - auto（开了「自动换备用线路」时直接换）：只在明显是这条线路挂了的时候——连不上、上游 5xx、限流、
+     密钥或余额有问题、接口没配好。超时不自动换（中转站可能还在画、照样扣钱），参数被拒、图片下载
+     失败也不自动换。 */
+const CHANNEL_DOWN_TITLES = new Set([
+  '连不上服务器',
+  '上游服务器出错',
+  '请求太频繁，被限流了',
+  '密钥或权限有问题',
+  '接口还没配置好',
+]);
+const QUOTA_PATTERN = /余额|额度|欠费|quota|insufficient|billing/i;
+
+export function fallbackAdvice({ attempt, error } = {}) {
+  const message = withDetails(attempt?.errorMessage || error?.message || '', error?.details);
+  const code = attempt?.errorCode || error?.code || '';
+  const title = problemTitle({
+    code,
+    httpStatus: httpStatusOf(attempt, error),
+    text: message,
+    fallback: '生成失败',
+  });
+  const moderation = title === '内容被审核拦截';
+  return {
+    title,
+    manual: !moderation && code !== 'LOCAL_SAVE_FAILED',
+    auto: !moderation && (CHANNEL_DOWN_TITLES.has(title) || QUOTA_PATTERN.test(message)),
+  };
+}
+
 function premiumQualityNote(quality) {
   return `本次请求的 quality 是 ${quality}：xhigh / max 只有 gpt-image-2.5-flare / gpt-image-2.5-sunburst 支持，`
     + '其他模型最高是 high；走中转站时以中转站为准。';
@@ -185,8 +217,9 @@ export function describeError(error, fallbackTitle = '操作失败') {
   };
 }
 
-/* 报错弹窗开不开、生图失败那条带不带「重新生成」键、画好的图带不带「查看」键，都在这里决定。
-   弹窗要等酒馆页面就绪后才创建，所以用 getDialog 按需取；viewResult(resultId, attempt) 打开原图。 */
+/* 报错弹窗开不开、生图失败那条带不带「重新生成」「换备用线路」键、画好的图带不带「查看」键，
+   都在这里决定。弹窗要等酒馆页面就绪后才创建，所以用 getDialog 按需取；
+   viewResult(resultId, attempt) 打开原图。 */
 export function createProblemReporter({ store, getDialog, viewResult }) {
   function show(describe) {
     if (store.state.settings.enableErrorPopup === false) return;
@@ -199,10 +232,15 @@ export function createProblemReporter({ store, getDialog, viewResult }) {
   }
 
   return {
-    reportProblem(context, retry) {
+    reportProblem(context, retry, fallback) {
       show(() => {
         const problem = describeGenerationProblem(context);
-        if (problem?.tone === 'danger' && retry) return { ...problem, retry };
+        if (problem?.tone === 'danger') {
+          const actions = {};
+          if (retry) actions.retry = retry;
+          if (fallback && fallbackAdvice(context).manual) actions.fallback = fallback;
+          return { ...problem, ...actions };
+        }
         if (problem?.resultId && typeof viewResult === 'function') {
           return { ...problem, view: () => viewResult(problem.resultId, context.attempt) };
         }
@@ -266,28 +304,37 @@ export function createErrorDialog() {
       }
       item.append(block('stia-error-dialog__message', entry.message));
       if (entry.hint) item.append(block('stia-error-dialog__hint', entry.hint));
-      if (entry.retries.size) {
-        const retry = document.createElement('button');
-        retry.type = 'button';
-        retry.className = 'stia-button stia-button--primary stia-error-dialog__retry';
-        retry.textContent = entry.retries.size > 1 ? '↻ 全部重新生成' : '↻ 重新生成';
-        retry.addEventListener('click', event => {
+      const actions = block('stia-error-dialog__actions');
+      const actionButton = (className, text, handler) => {
+        const element = document.createElement('button');
+        element.type = 'button';
+        element.className = `stia-button ${className}`;
+        element.textContent = text;
+        element.addEventListener('click', event => {
           event.stopPropagation();
-          retryEntry(entry);
+          handler();
         });
-        item.append(retry);
+        actions.append(element);
+      };
+      if (entry.fallbacks.size) {
+        const all = entry.fallbacks.size > 1 ? '全部' : '';
+        actionButton(
+          'stia-error-dialog__fallback',
+          entry.fallbackLabel ? `⇄ ${all}换「${entry.fallbackLabel}」重画` : `⇄ ${all}换备用线路重画`,
+          () => runEntry(entry, entry.fallbacks),
+        );
+      }
+      if (entry.retries.size) {
+        actionButton(
+          'stia-button--primary stia-error-dialog__retry',
+          entry.retries.size > 1 ? '↻ 全部重新生成' : '↻ 重新生成',
+          () => runEntry(entry, entry.retries),
+        );
       }
       if (entry.view) {
-        const view = document.createElement('button');
-        view.type = 'button';
-        view.className = 'stia-button stia-button--primary stia-error-dialog__view';
-        view.textContent = '⌕ 查看';
-        view.addEventListener('click', event => {
-          event.stopPropagation();
-          viewEntry(entry);
-        });
-        item.append(view);
+        actionButton('stia-button--primary stia-error-dialog__view', '⌕ 查看', () => viewEntry(entry));
       }
+      if (actions.childElementCount) item.append(actions);
       return item;
     }));
   }
@@ -302,9 +349,9 @@ export function createErrorDialog() {
     }
   }
 
-  /* 只收起这一条再重跑；别的报错还留在弹窗里。重跑失败会再弹一次，这里不必再管。 */
-  function retryEntry(entry) {
-    const runs = [...entry.retries.values()];
+  /* 只收起这一条再重跑（原线路或备用线路）；别的报错还留在弹窗里。重跑失败会再弹一次，这里不必再管。 */
+  function runEntry(entry, actions) {
+    const runs = [...actions.values()];
     entries = entries.filter(item => item !== entry);
     if (entries.length) {
       render();
@@ -324,6 +371,12 @@ export function createErrorDialog() {
   function addRetry(entry, retry) {
     if (typeof retry?.run !== 'function') return;
     entry.retries.set(retry.key ?? `retry-${entry.retries.size}`, retry.run);
+  }
+
+  function addFallback(entry, fallback) {
+    if (typeof fallback?.run !== 'function') return;
+    entry.fallbacks.set(fallback.key ?? `fallback-${entry.fallbacks.size}`, fallback.run);
+    if (fallback.label) entry.fallbackLabel = fallback.label;
   }
 
   function open() {
@@ -360,17 +413,18 @@ export function createErrorDialog() {
 
   function show(problem) {
     if (!problem?.message) return;
-    const { retry, view, ...details } = problem;
+    const { retry, fallback, view, ...details } = problem;
     /* 画好的每张图各占一条，各自「查看」；报错按标题和内容合并计次。 */
     const key = [details.title, details.message, details.resultId || ''].join('\n');
     let entry = entries.find(item => item.key === key);
     if (entry) {
       entry.count += 1;
     } else {
-      entry = { ...details, key, count: 1, retries: new Map(), view: null };
+      entry = { ...details, key, count: 1, retries: new Map(), fallbacks: new Map(), fallbackLabel: '', view: null };
       entries = [...entries, entry].slice(-MAX_ENTRIES);
     }
     addRetry(entry, retry);
+    addFallback(entry, fallback);
     if (typeof view === 'function') entry.view = view;
     render();
     if (!root.hidden && root.hasAttribute('open')) return;

@@ -1174,3 +1174,32 @@ test('每次生成记下实际发出去的画质：预设默认、「不发送�
     '额外请求参数 JSON 最后覆盖',
   );
 });
+
+test('备用线路设置：默认不用、自动换默认关；删掉当备用线路的预设时一起清掉；自动换线路的说明记在生成记录上', async t => {
+  const tagId = crypto.randomUUID();
+  const messageUuid = crypto.randomUUID();
+  const message = { is_user: false, mes: '<draw>base64</draw>', extra: { stImageAtelier: tagMetadata(tagId, messageUuid) } };
+  const { client, release } = await gatedClient(t, [message]);
+  release();
+  const defaults = await client.getSettings();
+  assert.equal(defaults.backupPresetId, '');
+  assert.equal(defaults.enableAutoFallback, false);
+
+  const stable = await client.createPreset({ name: '稳定组' });
+  await client.updatePreset(stable.id, { baseUrl: 'https://upstream.test', apiKey: 'sk-stable', selectedModel: 'gpt-image-1' });
+  const saved = await client.updateSettings({ backupPresetId: stable.id, enableAutoFallback: true });
+  assert.equal(saved.backupPresetId, stable.id);
+  assert.equal(saved.enableAutoFallback, true);
+
+  const attempt = await client.generate({
+    ...generationInput(tagId, messageUuid),
+    presetId: stable.id,
+    statusMessage: '主线路连不上服务器，已换备用线路「稳定组」重画',
+  });
+  assert.equal(attempt.status, 'succeeded');
+  assert.equal(attempt.presetNameSnapshot, '稳定组');
+  assert.equal(attempt.statusMessage, null, '画完就清掉');
+
+  await client.deletePreset(stable.id);
+  assert.equal((await client.getSettings()).backupPresetId, '', '备用线路的预设删了，设置一起清掉');
+});

@@ -1,4 +1,5 @@
 import { makeImageSaveable, openImageViewer } from '../media/image-viewer.js';
+import { fallbackAdvice } from '../pages/error-dialog/error-dialog.js';
 
 const ACTIVE_STATUSES = new Set(['queued', 'generating', 'downloading', 'saving']);
 
@@ -182,6 +183,7 @@ export function createCard({
   onCancel,
   onRemove,
   onReroll,
+  onFallback,
   listPresets,
 }) {
   const root = document.createElement('section');
@@ -232,7 +234,8 @@ export function createCard({
       .then(presets => {
         if (chooser?.attemptId !== attemptId) return;
         const list = Array.isArray(presets) ? presets : [];
-        chooser = { attemptId, presets: [...list.filter(item => item.active), ...list.filter(item => !item.active)] };
+        const rank = item => (item.active ? 0 : item.backup ? 1 : 2);
+        chooser = { attemptId, presets: [...list].sort((left, right) => rank(left) - rank(right)) };
         render();
       });
   }
@@ -261,7 +264,8 @@ export function createCard({
     } else if (presets.length > 1) {
       note.textContent = '这张会在后台接着画。用哪个预设再画一张？';
       for (const preset of presets) {
-        const label = `${preset.name}${preset.active ? '（当前）' : ''}${preset.hasApiKey === false ? '（没填 Key）' : ''}`;
+        const label = `${preset.name}${preset.active ? '（当前）' : ''}${preset.backup ? '（备用）' : ''}`
+          + `${preset.hasApiKey === false ? '（没填 Key）' : ''}`;
         actions.append(button(label, 'stia-card__reroll-preset', () => startReroll(attempt, preset)));
       }
     } else {
@@ -316,6 +320,17 @@ export function createCard({
     /* 图片角上的尺寸跟着这张图；没有生成记录的老图片退回用最近那次的。 */
     const imageSize = info ? (info.size === '默认尺寸' ? '' : info.size || size) : '';
     const running = (state.attempts || []).slice(1).filter(item => ACTIVE_STATUSES.has(item.status));
+    /* 失败的卡片上给「换备用线路」：设了备用线路、这次用的不是它、不是 NovelAI 也不在增强模式，
+       而且不是审核拦截（换了也照样被拦）或用户自己取消的。 */
+    const settings = getSettings() || {};
+    const canUseBackup = typeof onFallback === 'function'
+      && Boolean(settings.backupPresetId)
+      && settings.executionMode !== 'server'
+      && settings.generationProvider !== 'novelai'
+      && ['failed', 'interrupted'].includes(attempt?.status)
+      && attempt?.provider !== 'novelai'
+      && attempt?.presetId !== settings.backupPresetId
+      && fallbackAdvice({ attempt }).manual;
     if (chooser && (chooser.attemptId !== attempt?.attemptId || !ACTIVE_STATUSES.has(attempt?.status))) {
       chooser = null;
     }
@@ -325,7 +340,7 @@ export function createCard({
       latest?.resultId, latest?.provider, src, available.length,
       Boolean(state.tag?.resultIds?.length), actualPrompt, actualNegativePrompt, canAdjust, ratioLabel,
       running.map(item => item.attemptId), chooser && [chooser.attemptId, chooser.presets], duration,
-      info, imageSize,
+      info, imageSize, canUseBackup,
     ]);
     if (signature === lastSignature) {
       /* 卡片被摘下又放回（酒馆重建这一层）时计时可能停了，顺手续上。 */
@@ -484,6 +499,11 @@ export function createCard({
       actions.append(button('重试', 'stia-button--danger-soft', () => {
         onGenerate(tag, 'manual');
       }, '↻'));
+      if (canUseBackup) {
+        actions.append(button('换备用线路', '', () => {
+          void Promise.resolve(onFallback(tag)).catch(() => {});
+        }, '⇄'));
+      }
       if (canAdjust) actions.append(button('调整后重绘', '', () => onAdjustRegenerate(tag, {
         prompt: actualPrompt,
         negativePrompt: actualNegativePrompt,
@@ -491,6 +511,8 @@ export function createCard({
         attempt,
       }), '✎'));
       if (onRemove && !running.length) actions.append(removeButton());
+      /* 四个按钮挤一行在手机上每个都要折成两行字，改成两个一行。 */
+      if (actions.children.length >= 4) actions.classList.add('stia-actions--pairs');
       body.append(actions);
       if (running.length) body.append(backgroundNote(running));
       body.append(promptDetails(actualPrompt));

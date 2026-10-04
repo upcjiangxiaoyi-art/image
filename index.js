@@ -106,6 +106,8 @@ const actions = {
   },
   /* 等不及时「再画一张」（可换预设），正在画的那张留在后台接着画。 */
   reroll: (tag, attemptId, preset) => controller.reroll(tag, attemptId, preset),
+  /* 失败的卡片上「换备用线路」：用设置里的备用线路重画。 */
+  fallback: tag => controller.generateWithBackup(tag),
   cancel: attemptId => controller.cancel(attemptId),
   openGallery: () => panel.show('gallery'),
   remove: async tag => removeTag(tag),
