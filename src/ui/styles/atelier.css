@@ -824,24 +824,18 @@
   outline-offset: -3px;
 }
 
-.stia-card__size,
+/* 出图用时：图片右上角，一眼就能看到；点到它也照样打开原图。 */
 .stia-card__duration {
   position: absolute;
+  top: 8px;
   right: 8px;
-  bottom: 8px;
   padding: 3px 8px;
   color: white;
   background: rgb(0 0 0 / 52%);
   border-radius: 6px;
   font-size: 11px;
-  backdrop-filter: blur(8px);
-}
-
-/* 出图用时：图片右上角，一眼就能看到；点到它也照样打开原图。 */
-.stia-card__duration {
-  top: 8px;
-  bottom: auto;
   font-variant-numeric: tabular-nums;
+  backdrop-filter: blur(8px);
   pointer-events: none;
 }
 
@@ -901,6 +895,10 @@
   margin: 0;
   color: var(--stia-text);
   overflow-wrap: anywhere;
+}
+
+.stia-card__info dd.is-unknown {
+  color: var(--stia-muted);
 }
 
 .stia-card__completion {

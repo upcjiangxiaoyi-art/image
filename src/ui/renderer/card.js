@@ -131,9 +131,13 @@ export function imageInfo(result, producer) {
 }
 
 function infoList(info) {
+  /* GPT 的图总给一个画质栏：1.6.18 之前画的图没记实际发出去的画质，写「未记录」，
+     不让这一栏时有时无。什么记录都没有的老图片整块不显示。 */
+  const known = Boolean(info.preset || info.model);
+  const qualityUnknown = !info.quality && known && info.presetLabel === '预设';
   const items = [
     [info.presetLabel, info.preset, 'is-start'],
-    ['画质', info.quality, 'is-end'],
+    ['画质', qualityUnknown ? '未记录' : info.quality, 'is-end'],
     ['模型', info.model, 'is-wide'],
   ].filter(([, value]) => value);
   if (!items.length) return null;
@@ -146,6 +150,7 @@ function infoList(info) {
     term.textContent = label;
     const detail = document.createElement('dd');
     detail.textContent = value;
+    if (label === '画质' && qualityUnknown) detail.className = 'is-unknown';
     item.append(term, detail);
     list.append(item);
   }
@@ -431,12 +436,7 @@ export function createCard({
         badge.textContent = duration;
         media.append(badge);
       }
-      if (imageSize) {
-        const badge = document.createElement('span');
-        badge.className = 'stia-card__size';
-        badge.textContent = imageSize;
-        media.append(badge);
-      }
+      /* 尺寸在下面「历史 N 张」旁边，图片上不再压一个角标。 */
       const body = document.createElement('div');
       body.className = 'stia-card__body';
       const completion = document.createElement('div');

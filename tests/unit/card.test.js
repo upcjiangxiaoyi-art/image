@@ -425,7 +425,8 @@ test('出图后图片右上角显示这张图用了多久；记录不全时不�
   card.render();
   const badge = () => card.root.querySelector('.stia-card__media .stia-card__duration');
   assert.equal(badge().textContent, '用时 16 分 37 秒');
-  assert.equal(card.root.querySelector('.stia-card__size').textContent, '1024×1792', '尺寸角标照旧在');
+  assert.equal(card.root.querySelector('.stia-card__size'), null, '图片上不再压尺寸角标');
+  assert.match(card.root.querySelector('.stia-card__completion-meta').textContent, /1024×1792/, '尺寸在「历史 N 张」旁边');
 
   state = {
     ...state,
@@ -489,6 +490,12 @@ test('出图后卡片下方显示这张图的预设、画质、模型，尺寸�
   const body = card.root.querySelector('.stia-card__body');
   const order = [...body.children].map(child => child.className.split(' ')[0]);
   assert.deepEqual(order.slice(0, 3), ['stia-card__completion', 'stia-card__info', 'stia-actions'], '信息在「已完成」下面、按钮上面');
+
+  const { qualitySnapshot: _old, ...beforeQualityWasRecorded } = producer;
+  state = { ...state, attempts: [beforeQualityWasRecorded] };
+  card.render();
+  assert.deepEqual(rows(), ['预设纯爱2.5', '画质未记录', '模型gpt-image-2.5-sunburst'], '1.6.18 之前的图没记画质：写「未记录」');
+  assert.equal(card.root.querySelector('.stia-card__info dd.is-unknown').textContent, '未记录');
 
   state = { ...state, attempts: [], results: [{ resultId: 'r1', status: 'available', prompt: 'a cat' }] };
   card.render();
