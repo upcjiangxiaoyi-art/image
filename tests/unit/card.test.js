@@ -191,7 +191,7 @@ test('别的卡片有动静时这张卡不重建：图片不换、不闪，展�
 
   state = { ...state, results: [result('r0', 'older'), result('r1')] };
   card.render();
-  assert.match(card.root.textContent, /历史 2 张/, '历史张数变了就更新');
+  assert.match(card.root.textContent, /第 2 \/ 2 张/, '张数变了就更新（两张以上显示正在看第几张）');
   assert.equal(card.root.querySelector('img'), image, '还是同一张图时沿用原来的 <img>，不重新加载');
 
   state = { ...state, attempts: [{ attemptId: 'a2', status: 'generating', model: 'gpt-image-2.5-sunburst' }, ...state.attempts] };
@@ -564,4 +564,80 @@ test('失败的卡片上「换备用线路」：设了备用线路、这次用�
   [...card.root.querySelectorAll('button')].find(button => button.textContent === '↻再画一张').click();
   await new Promise(resolve => setTimeout(resolve, 0));
   assert.deepEqual(buttons(), ['便宜组（当前）', '稳定组（备用）', '别的组', '算了'], '当前的第一，备用的第二');
+});
+
+test('同一张卡有好几张图时，在卡片上左右翻看：信息跟着看的那张，来回切不重新加载；有新图画好回到新图', async t => {
+  const { JSDOM } = await import('jsdom');
+  const dom = new JSDOM('<!doctype html><html><body></body></html>');
+  const previous = { document: globalThis.document, window: globalThis.window };
+  globalThis.document = dom.window.document;
+  globalThis.window = dom.window;
+  t.after(() => {
+    globalThis.document = previous.document;
+    globalThis.window = previous.window;
+    dom.window.close();
+  });
+
+  const attemptFor = (id, preset, quality, minutes) => ({
+    attemptId: id, status: 'succeeded', provider: 'openai', model: 'gpt-image-2.5-sunburst', presetNameSnapshot: preset,
+    qualitySnapshot: quality, parameters: { size: '1024x1792' },
+    createdAt: '2026-10-05T01:00:00.000Z', completedAt: new Date(Date.parse('2026-10-05T01:00:00.000Z') + minutes * 60_000).toISOString(),
+  });
+  const resultFor = (id, attemptId, prompt) => ({ resultId: id, attemptId, status: 'available', prompt, provider: 'openai', apiModel: 'gpt-image-2.5-sunburst' });
+  let state = {
+    tag: { latestResultId: 'r3', resultIds: ['r1', 'r2', 'r3'] },
+    attempts: [attemptFor('a3', '纯爱二号', 'max', 3), attemptFor('a2', '稳定组', 'high', 2), attemptFor('a1', '纯爱二号', 'max', 1)],
+    results: [resultFor('r1', 'a1', '第一版'), resultFor('r2', 'a2', '第二版'), resultFor('r3', 'a3', '第三版')],
+  };
+  const card = createCard({
+    tag: { tagId: 'tag-1', prompt: 'a cat', ratio: 'portrait' },
+    api: { fileUrl: id => `/user/images/${id}.png` },
+    getState: () => state,
+    onGenerate() {},
+    onOpenGallery() {},
+    onCancel() {},
+  });
+  card.render();
+  document.body.append(card.root);
+  const shownSrc = () => card.root.querySelector('img').getAttribute('src');
+  const counter = () => card.root.querySelector('.stia-card__completion-meta .stia-muted').textContent;
+  const rows = () => [...card.root.querySelectorAll('.stia-card__info-item')].map(item => item.textContent);
+  const click = label => card.root.querySelector(`.stia-card__nav[aria-label="${label}"]`).click();
+
+  assert.equal(shownSrc(), '/user/images/r3.png', '先显示最新那张');
+  assert.equal(counter(), '第 3 / 3 张');
+  assert.equal(card.root.querySelector('.stia-card__duration').textContent, '用时 3 分 00 秒');
+  const newest = card.root.querySelector('img');
+
+  click('上一张');
+  assert.equal(shownSrc(), '/user/images/r2.png');
+  assert.equal(counter(), '第 2 / 3 张');
+  assert.deepEqual(rows(), ['预设稳定组', '画质high', '模型gpt-image-2.5-sunburst'], '预设、画质跟着正在看的这张');
+  assert.equal(card.root.querySelector('.stia-card__duration').textContent, '用时 2 分 00 秒');
+  assert.equal(card.root.querySelector('.stia-prompt pre').textContent, '第二版', '提示词也跟着');
+
+  click('上一张');
+  click('上一张');
+  assert.equal(counter(), '第 3 / 3 张', '到头了绕回来');
+  assert.equal(card.root.querySelector('img'), newest, '切回来还是原来那个 <img>，不重新加载');
+
+  click('下一张');
+  assert.equal(counter(), '第 1 / 3 张');
+  state = { ...state, attempts: [{ attemptId: 'other', status: 'failed' }, ...state.attempts] };
+  card.render();
+  assert.equal(counter(), '第 1 / 3 张', '别的动静（比如新的一次没画成）不打断正在看的');
+
+  state = {
+    tag: { latestResultId: 'r4', resultIds: ['r1', 'r2', 'r3', 'r4'] },
+    attempts: [attemptFor('a4', '纯爱二号', 'max', 4), ...state.attempts.slice(1)],
+    results: [...state.results, resultFor('r4', 'a4', '第四版')],
+  };
+  card.render();
+  assert.equal(shownSrc(), '/user/images/r4.png', '有新图画好就回到新图');
+  assert.equal(counter(), '第 4 / 4 张');
+
+  state = { tag: { latestResultId: 'r4', resultIds: ['r4'] }, attempts: state.attempts, results: [state.results.at(-1)] };
+  card.render();
+  assert.equal(card.root.querySelector('.stia-card__nav'), null, '只剩一张就没有翻看按钮');
+  assert.equal(counter(), '历史 1 张');
 });

@@ -824,6 +824,41 @@
   outline-offset: -3px;
 }
 
+/* 同一张卡有好几张图时，图片左右两边的翻看按钮。 */
+.stia-card__nav {
+  position: absolute;
+  top: 50%;
+  z-index: 1;
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  margin: 0;
+  padding: 0 0 3px;
+  color: white;
+  background: rgb(0 0 0 / 42%);
+  border: 0;
+  border-radius: 50%;
+  font: 400 24px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  transform: translateY(-50%);
+  backdrop-filter: blur(8px);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.stia-card__nav.is-prev {
+  left: 8px;
+}
+
+.stia-card__nav.is-next {
+  right: 8px;
+}
+
+.stia-card__nav:focus-visible {
+  outline: 2px solid white;
+  outline-offset: 2px;
+}
+
 /* 出图用时：图片右上角，一眼就能看到；点到它也照样打开原图。 */
 .stia-card__duration {
   position: absolute;

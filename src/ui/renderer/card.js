@@ -157,6 +157,19 @@ function infoList(info) {
   return list;
 }
 
+function navButton(symbol, label, className, handler) {
+  const element = document.createElement('button');
+  element.type = 'button';
+  element.className = `stia-card__nav ${className}`;
+  element.textContent = symbol;
+  element.setAttribute('aria-label', label);
+  element.addEventListener('click', event => {
+    event?.stopPropagation();
+    handler();
+  });
+  return element;
+}
+
 function statusHeading(symbol, title, subtitle, tone = '') {
   const heading = document.createElement('div');
   heading.className = `stia-card__status ${tone}`.trim();
@@ -206,8 +219,15 @@ export function createCard({
      同一张图沿用原来那个已经加载、解码好的 <img>。不然每次都换新元素，图片重新加载，
      看起来就是在闪，展开的「查看提示词」也会被收起。 */
   let lastSignature = null;
-  let cachedImage = null;
+  /* 按地址缓存这张卡的 <img>：同一张图沿用已经加载、解码好的元素，左右翻看来回切也不重新加载。 */
+  const imageCache = new Map();
   let openCurrentImage = null;
+  /* 在卡片上翻看这张卡的其他图：viewingId 是正在看的那张；只是看，不改记录里显示哪张，
+     有新图画好时回到新图。翻过一次以后其余几张在后台先加载好。 */
+  let viewingId = null;
+  let lastLatestId = null;
+  let preloadOthers = false;
+  let navigation = null;
   let timerNodes = [];
   let timing = null;
   /* 「再画一张」展开的选择：{ attemptId, presets }，presets 为 null 时正在读取。 */
@@ -219,6 +239,27 @@ export function createCard({
       timing = { attemptId: attempt.attemptId, since: startedAt(attempt) };
     }
     return timing.since;
+  }
+
+  function imageFor(source, { eager = false } = {}) {
+    let image = imageCache.get(source);
+    if (!image) {
+      image = document.createElement('img');
+      image.className = 'stia-card__image';
+      image.loading = eager ? 'eager' : 'lazy';
+      image.src = source;
+      makeImageSaveable(image, () => openCurrentImage?.());
+      imageCache.set(source, image);
+    }
+    return image;
+  }
+
+  function step(delta) {
+    if (!navigation || navigation.ids.length < 2) return;
+    const { ids, index } = navigation;
+    viewingId = ids[(index + delta + ids.length) % ids.length];
+    preloadOthers = true;
+    render();
   }
 
   function timer(since) {
@@ -299,13 +340,20 @@ export function createCard({
     const available = (state.results || []).filter(result => result.status === 'available');
     const latest = available.find(result => result.resultId === state.tag?.latestResultId)
       || available.at(-1);
-    const actualPrompt = latest?.prompt
-      || latest?.promptSnapshot
+    if ((latest?.resultId || null) !== lastLatestId) {
+      lastLatestId = latest?.resultId || null;
+      viewingId = null;
+    }
+    /* 卡片上显示、下面信息跟着的那张：在翻看就是正在看的，不然是最新那张。 */
+    const shown = (viewingId && available.find(result => result.resultId === viewingId)) || latest;
+    const shownIndex = shown ? available.indexOf(shown) : -1;
+    const actualPrompt = shown?.prompt
+      || shown?.promptSnapshot
       || attempt?.promptSnapshot
       || attempt?.resolvedPrompt
       || tag.prompt;
-    const actualNegativePrompt = latest?.negativePrompt
-      || latest?.negativePromptSnapshot
+    const actualNegativePrompt = shown?.negativePrompt
+      || shown?.negativePromptSnapshot
       || attempt?.negativePromptSnapshot
       || '';
     const canAdjust = getSettings()?.enablePromptOverrideRegenerate === true
@@ -316,12 +364,12 @@ export function createCard({
       portrait: '竖图',
       landscape: '横图',
     }[tag.ratio] || '';
-    const src = latest ? api.fileUrl(latest.resultId) : '';
-    const producer = latest
-      ? (state.attempts || []).find(item => item.attemptId === latest.attemptId)
+    const src = shown ? api.fileUrl(shown.resultId) : '';
+    const producer = shown
+      ? (state.attempts || []).find(item => item.attemptId === shown.attemptId)
       : null;
-    const duration = latest ? generationDuration(producer) : '';
-    const info = latest ? imageInfo(latest, producer) : null;
+    const duration = shown ? generationDuration(producer) : '';
+    const info = shown ? imageInfo(shown, producer) : null;
     /* 图片角上的尺寸跟着这张图；没有生成记录的老图片退回用最近那次的。 */
     const imageSize = info ? (info.size === '默认尺寸' ? '' : info.size || size) : '';
     const running = (state.attempts || []).slice(1).filter(item => ACTIVE_STATUSES.has(item.status));
@@ -342,7 +390,7 @@ export function createCard({
     const signature = JSON.stringify([
       attempt?.attemptId, attempt?.status, attempt?.requestMode, attempt?.statusMessage,
       attempt?.model, attempt?.provider, attempt?.errorMessage, size,
-      latest?.resultId, latest?.provider, src, available.length,
+      shown?.resultId, shown?.provider, src, available.map(result => result.resultId), shownIndex,
       Boolean(state.tag?.resultIds?.length), actualPrompt, actualNegativePrompt, canAdjust, ratioLabel,
       running.map(item => item.attemptId), chooser && [chooser.attemptId, chooser.presets], duration,
       info, imageSize, canUseBackup,
@@ -407,29 +455,33 @@ export function createCard({
       return;
     }
 
-    if (latest) {
+    if (shown) {
       root.classList.add('stia-card--succeeded');
       const media = document.createElement('div');
       media.className = 'stia-card__media';
-      let image = cachedImage?.src === src ? cachedImage.element : null;
-      if (!image) {
-        image = document.createElement('img');
-        image.className = 'stia-card__image';
-        image.src = src;
-        image.loading = 'lazy';
-        makeImageSaveable(image, () => openCurrentImage?.());
-        cachedImage = { src, element: image };
+      const sources = available.map(result => api.fileUrl(result.resultId));
+      for (const key of imageCache.keys()) {
+        if (!sources.includes(key)) imageCache.delete(key);
       }
+      const image = imageFor(src);
+      if (preloadOthers) sources.forEach(source => imageFor(source, { eager: true }));
       image.alt = actualPrompt.slice(0, 120);
       const openOriginal = () => openImageViewer({
         src,
         alt: image.alt,
-        filename: latest.resultId,
+        filename: shown.resultId,
         prompt: actualPrompt,
         meta: [info.model, imageSize].filter(Boolean).join(' · '),
       });
       openCurrentImage = openOriginal;
       media.append(image);
+      navigation = { ids: available.map(result => result.resultId), index: shownIndex };
+      if (available.length > 1) {
+        media.append(
+          navButton('‹', '上一张', 'is-prev', () => step(-1)),
+          navButton('›', '下一张', 'is-next', () => step(1)),
+        );
+      }
       if (duration) {
         const badge = document.createElement('span');
         badge.className = 'stia-card__duration';
@@ -448,7 +500,9 @@ export function createCard({
       meta.className = 'stia-card__completion-meta';
       const history = document.createElement('span');
       history.className = 'stia-muted';
-      history.textContent = `历史 ${available.length} 张`;
+      history.textContent = available.length > 1
+        ? `第 ${shownIndex + 1} / ${available.length} 张`
+        : `历史 ${available.length} 张`;
       meta.append(history);
       const sizeText = info.size || imageSize;
       if (sizeText) {
@@ -469,8 +523,8 @@ export function createCard({
         actions.append(button('调整后重绘', '', () => onAdjustRegenerate(tag, {
           prompt: actualPrompt,
           negativePrompt: actualNegativePrompt,
-          provider: latest.provider || attempt?.provider || 'openai',
-          result: latest,
+          provider: shown.provider || attempt?.provider || 'openai',
+          result: shown,
           attempt,
         }), '✎'));
       }
