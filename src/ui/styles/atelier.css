@@ -824,61 +824,25 @@
   outline-offset: -3px;
 }
 
-/* 同一张卡有好几张图时，图片左右两边的翻看按钮。 */
-.stia-card__nav {
-  position: absolute;
-  top: 50%;
-  z-index: 1;
-  display: grid;
-  width: 36px;
-  height: 36px;
-  place-items: center;
-  margin: 0;
-  padding: 0 0 3px;
-  color: white;
-  background: rgb(0 0 0 / 42%);
-  border: 0;
-  border-radius: 50%;
-  font: 400 24px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  transform: translateY(-50%);
-  backdrop-filter: blur(8px);
-  cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
+/* 「✓ 已完成　用时 16 分 37 秒」 */
+.stia-card__completion-status {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
 }
 
-.stia-card__nav.is-prev {
-  left: 8px;
-}
-
-.stia-card__nav.is-next {
-  right: 8px;
-}
-
-.stia-card__nav:focus-visible {
-  outline: 2px solid white;
-  outline-offset: 2px;
-}
-
-/* 出图用时：图片右上角，一眼就能看到；点到它也照样打开原图。 */
 .stia-card__duration {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  padding: 3px 8px;
-  color: white;
-  background: rgb(0 0 0 / 52%);
-  border-radius: 6px;
+  color: var(--stia-muted);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
-  backdrop-filter: blur(8px);
-  pointer-events: none;
 }
 
-/* 「历史 N 张 | 1024×1792」 */
+/* 「历史 N 张 | 1024×1792」；一行放不下时折到下一行，仍然靠右。 */
 .stia-card__completion-meta {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  margin-left: auto;
 }
 
 .stia-card__completion-size {
@@ -936,11 +900,43 @@
   color: var(--stia-muted);
 }
 
-.stia-card__completion {
+/* 同一张卡有好几张图时，分隔线下面的「‹上一张　2 / 4　›下一张」；到头了那边的按钮变灰。 */
+.stia-card__pager {
   display: flex;
   align-items: center;
+  justify-content: center;
+  gap: 16px;
+}
+
+.stia-card__pager .stia-card__nav {
+  min-height: 34px;
+  padding: 5px 12px;
+  font-size: 12px;
+}
+
+.stia-card__pager .stia-card__nav:disabled {
+  cursor: default;
+  opacity: .42;
+}
+
+.stia-card__pager .stia-card__nav:disabled:hover {
+  background: var(--stia-hover);
+}
+
+.stia-card__pager-count {
+  min-width: 3.5em;
+  color: var(--stia-secondary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.stia-card__completion {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 4px 8px;
   font-size: 12px;
 }
 

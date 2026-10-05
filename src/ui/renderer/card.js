@@ -157,19 +157,6 @@ function infoList(info) {
   return list;
 }
 
-function navButton(symbol, label, className, handler) {
-  const element = document.createElement('button');
-  element.type = 'button';
-  element.className = `stia-card__nav ${className}`;
-  element.textContent = symbol;
-  element.setAttribute('aria-label', label);
-  element.addEventListener('click', event => {
-    event?.stopPropagation();
-    handler();
-  });
-  return element;
-}
-
 function statusHeading(symbol, title, subtitle, tone = '') {
   const heading = document.createElement('div');
   heading.className = `stia-card__status ${tone}`.trim();
@@ -255,12 +242,28 @@ export function createCard({
     return image;
   }
 
+  /* 到头了就停，不绕回去：那边的按钮是灰的。 */
   function step(delta) {
-    if (!navigation || navigation.ids.length < 2) return;
-    const { ids, index } = navigation;
-    viewingId = ids[(index + delta + ids.length) % ids.length];
+    const target = navigation ? navigation.index + delta : -1;
+    if (target < 0 || target >= navigation.ids.length) return;
+    viewingId = navigation.ids[target];
     preloadOthers = true;
     render();
+  }
+
+  /* 同一张卡有好几张图时，分隔线下面的「‹上一张　2 / 4　›下一张」。图片上什么都不压。 */
+  function pager(index, total) {
+    const row = document.createElement('div');
+    row.className = 'stia-card__pager';
+    const previous = button('上一张', 'stia-card__nav is-prev', () => step(-1), '‹');
+    previous.disabled = index <= 0;
+    const count = document.createElement('span');
+    count.className = 'stia-card__pager-count';
+    count.textContent = `${index + 1} / ${total}`;
+    const next = button('下一张', 'stia-card__nav is-next', () => step(1), '›');
+    next.disabled = index >= total - 1;
+    row.append(previous, count, next);
+    return row;
   }
 
   function timer(since) {
@@ -396,7 +399,7 @@ export function createCard({
       : null;
     const duration = shown ? generationDuration(producer) : '';
     const info = shown ? imageInfo(shown, producer) : null;
-    /* 图片角上的尺寸跟着这张图；没有生成记录的老图片退回用最近那次的。 */
+    /* 「历史 N 张」旁边的尺寸跟着这张图；没有生成记录的老图片退回用最近那次的。 */
     const imageSize = info ? (info.size === '默认尺寸' ? '' : info.size || size) : '';
     const running = (state.attempts || []).slice(1).filter(item => ACTIVE_STATUSES.has(item.status));
     /* 失败的卡片上给「换备用线路」：设了备用线路、这次用的不是它、不是 NovelAI 也不在增强模式，
@@ -502,35 +505,30 @@ export function createCard({
         meta: [info.model, imageSize].filter(Boolean).join(' · '),
       });
       openCurrentImage = openOriginal;
+      /* 图片上不压任何东西：用时在「已完成」旁边，尺寸在「历史 N 张」旁边，翻看在分隔线下面。 */
       media.append(image);
       navigation = { ids: available.map(result => result.resultId), index: shownIndex };
-      if (available.length > 1) {
-        media.append(
-          navButton('‹', '上一张', 'is-prev', () => step(-1)),
-          navButton('›', '下一张', 'is-next', () => step(1)),
-        );
-      }
-      if (duration) {
-        const badge = document.createElement('span');
-        badge.className = 'stia-card__duration';
-        badge.textContent = duration;
-        media.append(badge);
-      }
-      /* 尺寸在下面「历史 N 张」旁边，图片上不再压一个角标。 */
       const body = document.createElement('div');
       body.className = 'stia-card__body';
       const completion = document.createElement('div');
       completion.className = 'stia-card__completion';
+      const status = document.createElement('span');
+      status.className = 'stia-card__completion-status';
       const done = document.createElement('span');
       done.className = 'stia-success';
       done.textContent = '✓ 已完成';
+      status.append(done);
+      if (duration) {
+        const spent = document.createElement('span');
+        spent.className = 'stia-card__duration';
+        spent.textContent = duration;
+        status.append(spent);
+      }
       const meta = document.createElement('span');
       meta.className = 'stia-card__completion-meta';
       const history = document.createElement('span');
       history.className = 'stia-muted';
-      history.textContent = available.length > 1
-        ? `第 ${shownIndex + 1} / ${available.length} 张`
-        : `历史 ${available.length} 张`;
+      history.textContent = `历史 ${available.length} 张`;
       meta.append(history);
       const sizeText = info.size || imageSize;
       if (sizeText) {
@@ -539,7 +537,7 @@ export function createCard({
         sizeNote.textContent = sizeText;
         meta.append(sizeNote);
       }
-      completion.append(done, meta);
+      completion.append(status, meta);
       const actions = document.createElement('div');
       actions.className = 'stia-actions stia-actions--fill';
       actions.append(
@@ -561,7 +559,10 @@ export function createCard({
       body.append(completion);
       const details = infoList(info);
       if (details) body.append(details);
-      body.append(chooser?.mode === 'regenerate' ? rerollChooser(attempt) : actions);
+      const choosing = chooser?.mode === 'regenerate';
+      /* 选预设重新生成时先收起翻看：「原渠道」是按打开时看的那张标的。 */
+      if (available.length > 1 && !choosing) body.append(pager(shownIndex, available.length));
+      body.append(choosing ? rerollChooser(attempt) : actions);
       if (running.length) body.append(backgroundNote(running));
       body.append(promptDetails(actualPrompt));
       root.append(media, body);

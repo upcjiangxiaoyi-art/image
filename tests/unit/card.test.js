@@ -191,7 +191,8 @@ test('别的卡片有动静时这张卡不重建：图片不换、不闪，展�
 
   state = { ...state, results: [result('r0', 'older'), result('r1')] };
   card.render();
-  assert.match(card.root.textContent, /第 2 \/ 2 张/, '张数变了就更新（两张以上显示正在看第几张）');
+  assert.match(card.root.textContent, /历史 2 张/, '张数变了就更新');
+  assert.equal(card.root.querySelector('.stia-card__pager-count').textContent, '2 / 2', '两张以上出现翻看那一行');
   assert.equal(card.root.querySelector('img'), image, '还是同一张图时沿用原来的 <img>，不重新加载');
 
   state = { ...state, attempts: [{ attemptId: 'a2', status: 'generating', model: 'gpt-image-2.5-sunburst' }, ...state.attempts] };
@@ -389,7 +390,7 @@ test('生成中可以「再画一张」：选预设（当前的排前面、没�
   assert.deepEqual(buttons(), ['×取消排队'], '自动排队时还没开始画，没有「再画一张」');
 });
 
-test('出图后图片右上角显示这张图用了多久；记录不全时不显示', async t => {
+test('出图后「已完成」旁边显示这张图用了多久，图片上不压东西；记录不全时不显示', async t => {
   assert.equal(formatDuration(42_000), '42 秒');
   assert.equal(formatDuration(997_000), '16 分 37 秒');
   assert.equal(generationDuration({ createdAt: '2026-10-03T05:00:00.000Z', completedAt: '2026-10-03T05:16:37.400Z' }), '用时 16 分 37 秒');
@@ -423,9 +424,14 @@ test('出图后图片右上角显示这张图用了多久；记录不全时不�
     onCancel() {},
   });
   card.render();
-  const badge = () => card.root.querySelector('.stia-card__media .stia-card__duration');
+  const badge = () => card.root.querySelector('.stia-card__completion-status .stia-card__duration');
   assert.equal(badge().textContent, '用时 16 分 37 秒');
-  assert.equal(card.root.querySelector('.stia-card__size'), null, '图片上不再压尺寸角标');
+  assert.equal(card.root.querySelector('.stia-card__completion-status').textContent, '✓ 已完成用时 16 分 37 秒');
+  assert.deepEqual(
+    [...card.root.querySelector('.stia-card__media').children].map(child => child.tagName),
+    ['IMG'],
+    '图片上不再压用时和尺寸角标',
+  );
   assert.match(card.root.querySelector('.stia-card__completion-meta').textContent, /1024×1792/, '尺寸在「历史 N 张」旁边');
 
   state = {
@@ -596,36 +602,78 @@ test('同一张卡有好几张图时，在卡片上左右翻看：信息跟着�
     onGenerate() {},
     onOpenGallery() {},
     onCancel() {},
+    listPresets: async () => [{ id: 'p1', name: '纯爱二号', active: true }, { id: 'p2', name: '稳定组' }],
   });
   card.render();
   document.body.append(card.root);
   const shownSrc = () => card.root.querySelector('img').getAttribute('src');
-  const counter = () => card.root.querySelector('.stia-card__completion-meta .stia-muted').textContent;
+  const counter = () => card.root.querySelector('.stia-card__pager-count')?.textContent;
+  const history = () => card.root.querySelector('.stia-card__completion-meta .stia-muted').textContent;
+  const duration = () => card.root.querySelector('.stia-card__completion .stia-card__duration').textContent;
   const rows = () => [...card.root.querySelectorAll('.stia-card__info-item')].map(item => item.textContent);
-  const click = label => card.root.querySelector(`.stia-card__nav[aria-label="${label}"]`).click();
+  const pagerButton = label => [...card.root.querySelectorAll('.stia-card__pager button')]
+    .find(item => item.textContent.endsWith(label));
+  const click = label => pagerButton(label).click();
 
   assert.equal(shownSrc(), '/user/images/r3.png', '先显示最新那张');
-  assert.equal(counter(), '第 3 / 3 张');
-  assert.equal(card.root.querySelector('.stia-card__duration').textContent, '用时 3 分 00 秒');
+  assert.equal(counter(), '3 / 3');
+  assert.deepEqual(
+    [...card.root.querySelectorAll('.stia-card__pager > *')].map(item => item.textContent),
+    ['‹上一张', '3 / 3', '›下一张'],
+  );
+  assert.equal(history(), '历史 3 张');
+  assert.equal(duration(), '用时 3 分 00 秒');
+  assert.deepEqual(
+    [...card.root.querySelector('.stia-card__media').children].map(child => child.tagName),
+    ['IMG'],
+    '翻看按钮和用时都不压在图片上',
+  );
+  const order = [...card.root.querySelector('.stia-card__body').children].map(child => child.className.split(' ')[0]);
+  assert.deepEqual(
+    order.slice(0, 4),
+    ['stia-card__completion', 'stia-card__info', 'stia-card__pager', 'stia-actions'],
+    '翻看那一行在分隔线下面、按钮上面',
+  );
+  assert.equal(pagerButton('下一张').disabled, true, '已经是最新那张：「下一张」是灰的');
+  assert.equal(pagerButton('上一张').disabled, false);
   const newest = card.root.querySelector('img');
 
   click('上一张');
   assert.equal(shownSrc(), '/user/images/r2.png');
-  assert.equal(counter(), '第 2 / 3 张');
+  assert.equal(counter(), '2 / 3');
+  assert.equal(history(), '历史 3 张', '右上角还是一共几张');
   assert.deepEqual(rows(), ['预设稳定组', '画质high', '模型gpt-image-2.5-sunburst'], '预设、画质跟着正在看的这张');
-  assert.equal(card.root.querySelector('.stia-card__duration').textContent, '用时 2 分 00 秒');
+  assert.equal(duration(), '用时 2 分 00 秒');
   assert.equal(card.root.querySelector('.stia-prompt pre').textContent, '第二版', '提示词也跟着');
+  assert.equal(pagerButton('上一张').disabled, false);
+  assert.equal(pagerButton('下一张').disabled, false);
 
   click('上一张');
+  assert.equal(counter(), '1 / 3');
+  assert.equal(pagerButton('上一张').disabled, true, '到第一张了：「上一张」是灰的');
   click('上一张');
-  assert.equal(counter(), '第 3 / 3 张', '到头了绕回来');
-  assert.equal(card.root.querySelector('img'), newest, '切回来还是原来那个 <img>，不重新加载');
+  assert.equal(counter(), '1 / 3', '到头了不绕回去');
+  assert.equal(shownSrc(), '/user/images/r1.png');
 
   click('下一张');
-  assert.equal(counter(), '第 1 / 3 张');
+  click('下一张');
+  assert.equal(counter(), '3 / 3');
+  assert.equal(card.root.querySelector('img'), newest, '切回来还是原来那个 <img>，不重新加载');
+
+  click('上一张');
+  click('上一张');
+  assert.equal(counter(), '1 / 3');
   state = { ...state, attempts: [{ attemptId: 'other', status: 'failed' }, ...state.attempts] };
   card.render();
-  assert.equal(counter(), '第 1 / 3 张', '别的动静（比如新的一次没画成）不打断正在看的');
+  assert.equal(counter(), '1 / 3', '别的动静（比如新的一次没画成）不打断正在看的');
+
+  const bodyButton = label => [...card.root.querySelectorAll('.stia-card__body button')].find(item => item.textContent === label);
+  bodyButton('↻重新生成').click();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(card.root.querySelector('.stia-card__pager'), null, '选预设重新生成时先收起翻看');
+  assert.ok(bodyButton('纯爱二号（当前）'));
+  bodyButton('算了').click();
+  assert.equal(counter(), '1 / 3', '「算了」以后翻看回来，还在看原来那张');
 
   state = {
     tag: { latestResultId: 'r4', resultIds: ['r1', 'r2', 'r3', 'r4'] },
@@ -634,12 +682,13 @@ test('同一张卡有好几张图时，在卡片上左右翻看：信息跟着�
   };
   card.render();
   assert.equal(shownSrc(), '/user/images/r4.png', '有新图画好就回到新图');
-  assert.equal(counter(), '第 4 / 4 张');
+  assert.equal(counter(), '4 / 4');
+  assert.equal(history(), '历史 4 张');
 
   state = { tag: { latestResultId: 'r4', resultIds: ['r4'] }, attempts: state.attempts, results: [state.results.at(-1)] };
   card.render();
-  assert.equal(card.root.querySelector('.stia-card__nav'), null, '只剩一张就没有翻看按钮');
-  assert.equal(counter(), '历史 1 张');
+  assert.equal(card.root.querySelector('.stia-card__pager'), null, '只剩一张就没有翻看那一行');
+  assert.equal(history(), '历史 1 张');
 });
 
 test('出图后的「重新生成」可以直接换预设：画这张图的「原渠道」排第一；只有一个预设或 NovelAI 时点了就画', async t => {
