@@ -8,6 +8,9 @@
 export const MODERATION_PATTERN = /moderation|moderated|content (?:was )?rejected|safety|unsafe|nsfw|content policy|policy violation|内容审核|审核不通过|审核未通过|内容政策|安全策略|内容违规|违规内容|涉嫌违规|违规词|敏感词|敏感内容|不安全内容|内容不安全/i;
 export const MODERATION_HINT = '；提示词被上游内容审核拒绝，请减少强迫、暴力、露骨或高风险内容后重试';
 export const RESPONSE_FORMATS = Object.freeze(['b64_json', 'url', '']);
+/* OpenAI 官方 SDK：GPT Image 系列的 prompt 最多 32000 个字符（dall-e-3 是 4000，dall-e-2 是 1000）。
+   Server Plugin 的 validatePrompt 用的是同一个数。 */
+export const MAX_PROMPT_LENGTH = 32_000;
 
 const SMART_RETRY_PARAMETERS = Object.freeze([
   ['response_format', /response[_ -]?format/i],
@@ -284,8 +287,8 @@ export function createOpenAiImagesCore({
     if (!preset.baseUrl) throw fail('PRESET_NOT_CONFIGURED');
     if (!apiKey) throw fail('API_KEY_MISSING');
     if (!preset.selectedModel) throw fail('MODEL_NOT_SELECTED');
-    if (typeof prompt !== 'string' || !prompt.trim() || prompt.length > 20_000) {
-      throw fail('VALIDATION_FAILED', '提示词必须为 1-20000 个字符');
+    if (typeof prompt !== 'string' || !prompt.trim() || prompt.length > MAX_PROMPT_LENGTH) {
+      throw fail('VALIDATION_FAILED', `提示词必须为 1-${MAX_PROMPT_LENGTH} 个字符`);
     }
     const endpoint = normalizeEndpoint(preset.baseUrl, preset.generationPath);
     validateEndpoint(endpoint, settings.allowHttp);

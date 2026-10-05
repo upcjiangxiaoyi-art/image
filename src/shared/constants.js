@@ -1,5 +1,5 @@
 /* 唯一的前端版本号；用 npm run version:set 统一修改，测试会检查各处一致。 */
-export const VERSION = '1.6.22';
+export const VERSION = '1.6.23';
 export const MODULE_NAME = 'stImageAtelier';
 export const DISPLAY_NAME = '画笺';
 export const API_ROOT = '/api/plugins/st-image-atelier';

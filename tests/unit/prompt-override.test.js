@@ -20,9 +20,12 @@ function withDom(t) {
   return dom;
 }
 
-test('临时提示词校验非空与 20000 字符上限', () => {
+test('临时提示词校验非空与字符上限：GPT 跟 OpenAI 官方一样 32000，NovelAI 和负面提示词 20000', () => {
   assert.throws(() => validatePromptOverride('   '), /不能为空/);
-  assert.throws(() => validatePromptOverride('x'.repeat(20_001)), /20000/);
+  assert.equal(validatePromptOverride('x'.repeat(32_000)).prompt.length, 32_000, 'GPT 最多 32000');
+  assert.throws(() => validatePromptOverride('x'.repeat(32_001)), /32000/);
+  assert.throws(() => validatePromptOverride('x'.repeat(20_001), '', { provider: 'novelai' }), /20000/);
+  assert.equal(validatePromptOverride('x'.repeat(20_000), '', { provider: 'novelai' }).prompt.length, 20_000);
   assert.throws(() => validatePromptOverride('ok', 'x'.repeat(20_001)), /20000/);
   assert.deepEqual(validatePromptOverride('  new prompt  ', '  bad hands  '), {
     prompt: 'new prompt',
@@ -85,4 +88,18 @@ test('调整后重绘入口受总开关控制，并以上次实际提示词快�
     .find(button => button.textContent.includes('调整后重绘')).click();
   assert.equal(contexts[0].prompt, 'last actual prompt');
   assert.equal(contexts[0].negativePrompt, 'last actual negative');
+});
+
+test('调整后重绘的输入框按引擎给上限：GPT 32000，NovelAI 20000', async t => {
+  withDom(t);
+  const dialog = createPromptOverrideDialog();
+  const textarea = () => dialog.root.querySelector('textarea');
+  const gpt = dialog.open({ prompt: 'a', provider: 'openai' });
+  assert.equal(textarea().maxLength, 32_000);
+  dialog.root.querySelector('button').click();
+  await gpt;
+  const nai = dialog.open({ prompt: 'a', provider: 'novelai' });
+  assert.equal(textarea().maxLength, 20_000);
+  dialog.root.querySelector('button').click();
+  await nai;
 });

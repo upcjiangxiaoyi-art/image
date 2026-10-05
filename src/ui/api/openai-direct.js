@@ -1,6 +1,7 @@
 import {
   createOpenAiImagesCore,
   extractUpstreamError,
+  MAX_PROMPT_LENGTH,
   MODERATION_PATTERN,
   normalizeImageSize,
   normalizeResponseFormat,
@@ -55,6 +56,7 @@ export const {
 export const listModelsDirect = core.listModels;
 export {
   extractUpstreamError,
+  MAX_PROMPT_LENGTH,
   MODERATION_PATTERN,
   normalizeImageSize,
   normalizeResponseFormat,

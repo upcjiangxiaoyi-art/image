@@ -183,3 +183,19 @@ test('Server Plugin 的 HTTP 客户端：读状态和正文、解压缩、不跟
   await assert.rejects(pending, /timeout/, '预设里的「超时」到了或用户取消时照常断开');
   await assert.rejects(longFetch(url, { signal: AbortSignal.abort() }), error => error.name === 'AbortError');
 });
+
+test('提示词上限和 OpenAI 官方一致：GPT Image 最多 32000 个字符，直连和增强模式都是', async () => {
+  const { validatePrompt, MAX_PROMPT_LENGTH: serverLimit } = require('../../server-plugin/src/utils/validation');
+  const { MAX_PROMPT_LENGTH } = await import('../../src/shared/openai-images-core.js');
+  assert.equal(MAX_PROMPT_LENGTH, 32_000);
+  assert.equal(serverLimit, MAX_PROMPT_LENGTH, '服务端和共用请求逻辑用同一个数');
+  assert.equal(validatePrompt('x'.repeat(32_000)).length, 32_000);
+  assert.throws(() => validatePrompt('x'.repeat(32_001)), error => error.code === 'VALIDATION_FAILED' && /32000/.test(error.details));
+
+  const preset = { baseUrl: 'https://api.example.com', generationPath: '/v1/images/generations', selectedModel: 'gpt-image-2.5-sunburst', timeoutMs: 1000, extraBody: {} };
+  await assert.rejects(
+    adapter.generate({ preset, apiKey: 'sk', prompt: 'x'.repeat(32_001), parameters: {}, settings: {} }),
+    error => error.code === 'VALIDATION_FAILED' && /32000/.test(`${error.message}${error.details || ''}`),
+    '超过 32000 在发请求之前就拦下',
+  );
+});

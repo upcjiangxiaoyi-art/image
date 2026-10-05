@@ -36,11 +36,15 @@ function detectImageType(buffer) {
   return null;
 }
 
+/* 和 src/shared/openai-images-core.js 的 MAX_PROMPT_LENGTH 一致：OpenAI 官方 SDK 里
+   GPT Image 系列的 prompt 最多 32000 个字符。 */
+const MAX_PROMPT_LENGTH = 32_000;
+
 function validatePrompt(prompt) {
-  if (typeof prompt !== 'string' || !prompt.trim() || prompt.length > 20_000) {
-    throw new AppError('VALIDATION_FAILED', '提示词必须为 1-20000 个字符');
+  if (typeof prompt !== 'string' || !prompt.trim() || prompt.length > MAX_PROMPT_LENGTH) {
+    throw new AppError('VALIDATION_FAILED', `提示词必须为 1-${MAX_PROMPT_LENGTH} 个字符`);
   }
   return prompt.trim();
 }
 
-module.exports = { assertUuidLike, assertInside, detectImageType, validatePrompt };
+module.exports = { assertUuidLike, assertInside, detectImageType, validatePrompt, MAX_PROMPT_LENGTH };

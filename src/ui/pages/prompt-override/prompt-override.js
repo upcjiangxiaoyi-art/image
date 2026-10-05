@@ -1,9 +1,22 @@
-export function validatePromptOverride(prompt, negativePrompt = '') {
+import { MAX_PROMPT_LENGTH } from '../../api/openai-direct.js';
+
+/* 提示词上限：GPT Image 跟 OpenAI 官方一致是 32000 个字符；NovelAI 真正的限制按 token 算、
+   小得多，这里的 20000 只是兜底，和 novelai-direct 一致。负面提示词只有 NovelAI 用。 */
+const NOVELAI_PROMPT_LENGTH = 20_000;
+
+export function promptLimitFor(provider = 'openai') {
+  return provider === 'novelai' ? NOVELAI_PROMPT_LENGTH : MAX_PROMPT_LENGTH;
+}
+
+export function validatePromptOverride(prompt, negativePrompt = '', { provider = 'openai' } = {}) {
   const normalizedPrompt = String(prompt || '').trim();
   const normalizedNegative = String(negativePrompt || '').trim();
+  const limit = promptLimitFor(provider);
   if (!normalizedPrompt) throw new Error('本次提示词不能为空');
-  if (normalizedPrompt.length > 20_000) throw new Error('本次提示词不能超过 20000 个字符');
-  if (normalizedNegative.length > 20_000) throw new Error('本次负面提示词不能超过 20000 个字符');
+  if (normalizedPrompt.length > limit) throw new Error(`本次提示词不能超过 ${limit} 个字符`);
+  if (normalizedNegative.length > NOVELAI_PROMPT_LENGTH) {
+    throw new Error(`本次负面提示词不能超过 ${NOVELAI_PROMPT_LENGTH} 个字符`);
+  }
   return { prompt: normalizedPrompt, negativePrompt: normalizedNegative };
 }
 
@@ -40,10 +53,10 @@ export function createPromptOverrideDialog() {
   hint.textContent = '本次修改只用于下一次生成，不会改写聊天正文或原生图标签。';
   const prompt = document.createElement('textarea');
   prompt.rows = 9;
-  prompt.maxLength = 20_000;
+  prompt.maxLength = MAX_PROMPT_LENGTH;
   const negative = document.createElement('textarea');
   negative.rows = 5;
-  negative.maxLength = 20_000;
+  negative.maxLength = NOVELAI_PROMPT_LENGTH;
   const negativeField = field('本次负面提示词', negative);
   const error = document.createElement('p');
   error.className = 'stia-status stia-error';
@@ -59,6 +72,7 @@ export function createPromptOverrideDialog() {
   document.body.append(overlay);
 
   let resolvePending = null;
+  let currentProvider = 'openai';
 
   function finish(value) {
     if (!resolvePending) return;
@@ -78,7 +92,7 @@ export function createPromptOverrideDialog() {
   });
   submit.addEventListener('click', () => {
     try {
-      const value = validatePromptOverride(prompt.value, negative.value);
+      const value = validatePromptOverride(prompt.value, negative.value, { provider: currentProvider });
       error.hidden = true;
       finish(value);
     } catch (validationError) {
@@ -89,6 +103,8 @@ export function createPromptOverrideDialog() {
 
   function open({ prompt: initialPrompt, negativePrompt = '', provider = 'openai' }) {
     if (resolvePending) finish(null);
+    currentProvider = provider === 'novelai' ? 'novelai' : 'openai';
+    prompt.maxLength = promptLimitFor(currentProvider);
     prompt.value = String(initialPrompt || '');
     negative.value = String(negativePrompt || '');
     negativeField.hidden = provider !== 'novelai';
