@@ -543,7 +543,7 @@ test('失败的卡片上「换备用线路」：设了备用线路、这次用�
     ],
   });
   card.render();
-  const buttons = () => [...card.root.querySelectorAll('button')].map(button => button.textContent);
+  const buttons = () => [...card.root.querySelectorAll('button:not(.stia-copy)')].map(button => button.textContent);
   assert.deepEqual(buttons(), ['↻重试', '⇄换备用线路', '×删除']);
   [...card.root.querySelectorAll('button')].find(button => button.textContent === '⇄换备用线路').click();
   assert.deepEqual(fallbacks, [tag]);
@@ -729,7 +729,7 @@ test('出图后的「重新生成」可以直接换预设：画这张图的「�
   });
   card.render();
   const settle = () => new Promise(resolve => setTimeout(resolve, 0));
-  const buttons = () => [...card.root.querySelectorAll('.stia-card__body button')].map(button => button.textContent);
+  const buttons = () => [...card.root.querySelectorAll('.stia-card__body button:not(.stia-copy)')].map(button => button.textContent);
   const click = label => [...card.root.querySelectorAll('button')].find(button => button.textContent === label).click();
 
   click('↻重新生成');
@@ -768,4 +768,64 @@ test('出图后的「重新生成」可以直接换预设：画这张图的「�
   await settle();
   assert.deepEqual(generated.at(-1), [tag, 'manual'], 'NovelAI 没有 API 预设可选');
   assert.equal(generated.length, 3);
+});
+
+test('「查看提示词」展开后下面有「一键复制」：没展开时看不到，点了复制这张图的提示词', async t => {
+  const { JSDOM } = await import('jsdom');
+  const dom = new JSDOM('<!doctype html><html><body></body></html>');
+  const previous = { document: globalThis.document, window: globalThis.window };
+  const navigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  const written = [];
+  globalThis.document = dom.window.document;
+  globalThis.window = dom.window;
+  Object.defineProperty(globalThis, 'navigator', {
+    configurable: true,
+    value: { clipboard: { writeText: async text => { written.push(text); } } },
+  });
+  t.after(() => {
+    globalThis.document = previous.document;
+    globalThis.window = previous.window;
+    if (navigatorDescriptor) Object.defineProperty(globalThis, 'navigator', navigatorDescriptor);
+    else delete globalThis.navigator;
+    dom.window.close();
+  });
+
+  let state = {
+    tag: { latestResultId: 'r1', resultIds: ['r1'] },
+    attempts: [{ attemptId: 'a1', status: 'succeeded' }],
+    results: [{ resultId: 'r1', attemptId: 'a1', status: 'available', prompt: 'a cat in the rain\n\nNo watermark.' }],
+  };
+  const card = createCard({
+    tag: { tagId: 'tag-1', prompt: 'a cat', ratio: 'portrait' },
+    api: { fileUrl: id => `/user/images/${id}.png` },
+    getState: () => state,
+    onGenerate() {},
+    onOpenGallery() {},
+    onCancel() {},
+  });
+  card.render();
+  document.body.append(card.root);
+  const details = card.root.querySelector('.stia-prompt');
+  assert.deepEqual(
+    [...details.children].map(child => child.className || child.tagName),
+    ['SUMMARY', 'PRE', 'stia-copy-row'],
+    '复制按钮在 details 里、提示词下面：没展开时跟着收起来',
+  );
+  const copy = details.querySelector('.stia-copy');
+  assert.equal(copy.textContent, '一键复制');
+
+  details.open = true;
+  copy.click();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(written, ['a cat in the rain\n\nNo watermark.'], '复制的是这张图实际用的提示词，原样保留换行');
+  assert.equal(copy.textContent, '✓ 已复制');
+  card.render();
+  assert.equal(card.root.querySelector('.stia-copy'), copy, '别的卡片有动静时不重建，「✓ 已复制」不会被冲掉');
+  assert.equal(details.open, true);
+
+  state = { attempts: [{ attemptId: 'a2', status: 'failed', errorMessage: 'HTTP 500', promptSnapshot: 'failed prompt' }], results: [] };
+  card.render();
+  card.root.querySelector('.stia-prompt .stia-copy').click();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(written.at(-1), 'failed prompt', '失败的卡片也能复制');
 });

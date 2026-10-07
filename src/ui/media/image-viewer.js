@@ -1,3 +1,5 @@
+import { createCopyRow } from './copy-text.js';
+
 const HISTORY_KEY = 'stImageAtelierViewer';
 let activeViewer = null;
 
@@ -107,7 +109,7 @@ export function openImageViewer(options, environment = {}) {
     summary.textContent = '查看提示词';
     const prompt = documentRef.createElement('pre');
     prompt.textContent = options.prompt;
-    details.append(summary, prompt);
+    details.append(summary, prompt, createCopyRow(options.prompt, { document: documentRef, navigator: navigatorRef }));
     footer.append(details);
   }
 

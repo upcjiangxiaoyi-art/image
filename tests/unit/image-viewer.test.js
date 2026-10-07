@@ -145,3 +145,21 @@ test('手机返回事件关闭查看器，图片没有拦截长按菜单', () =>
   assert.equal(environment.document.body.children.includes(viewer.root), false);
   assert.equal(environment.window.history.backCalls, 0);
 });
+
+test('原图查看层的「查看提示词」展开后也有「一键复制」', async () => {
+  const environment = fakeEnvironment();
+  const written = [];
+  environment.navigator = { clipboard: { writeText: async text => { written.push(text); } } };
+  const viewer = openImageViewer({ src: '/user/images/c.png', prompt: 'a cat in the rain' }, environment);
+  const all = element => [element, ...element.children.flatMap(all)];
+  const details = all(viewer.root).find(element => element.className === 'stia-image-viewer__prompt');
+  assert.deepEqual(details.children.map(child => child.className || child.tagName), ['summary', 'pre', 'stia-copy-row']);
+  const copy = details.children[2].children[0];
+  assert.equal(copy.textContent, '一键复制');
+
+  copy.dispatch('click');
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(written, ['a cat in the rain']);
+  assert.equal(copy.textContent, '✓ 已复制');
+  viewer.destroy();
+});

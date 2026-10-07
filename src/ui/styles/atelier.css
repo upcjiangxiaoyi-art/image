@@ -977,6 +977,27 @@
   font: 12px/1.5 inherit;
 }
 
+/* 「查看提示词」展开后下面的「一键复制」；没展开时跟着收起来，看不到。 */
+.stia-copy-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 6px;
+}
+
+.stia-copy {
+  min-height: 32px;
+  padding: 4px 14px;
+  font-size: 12px;
+}
+
+.stia-copy.is-copied {
+  color: var(--stia-success);
+}
+
+.stia-copy.is-failed {
+  color: var(--stia-danger);
+}
+
 .stia-gallery-page {
   display: flex;
   flex-direction: column;
@@ -1501,6 +1522,10 @@
   color: var(--stia-secondary);
   background: var(--stia-input);
   border-radius: 8px;
+}
+
+.stia-image-viewer__prompt .stia-copy-row {
+  justify-content: center;
 }
 
 .stia-image-viewer__actions {

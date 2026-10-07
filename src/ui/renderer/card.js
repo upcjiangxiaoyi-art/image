@@ -1,4 +1,5 @@
 import { makeImageSaveable, openImageViewer } from '../media/image-viewer.js';
+import { createCopyRow } from '../media/copy-text.js';
 import { fallbackAdvice } from '../pages/error-dialog/error-dialog.js';
 
 const ACTIVE_STATUSES = new Set(['queued', 'generating', 'downloading', 'saving']);
@@ -96,7 +97,8 @@ function promptDetails(prompt) {
   summary.textContent = '◉  查看提示词';
   const text = document.createElement('pre');
   text.textContent = prompt;
-  details.append(summary, text);
+  /* 「一键复制」放在 details 里：展开前看不到，展开后在提示词下面。 */
+  details.append(summary, text, createCopyRow(prompt));
   return details;
 }
 
