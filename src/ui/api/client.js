@@ -188,6 +188,9 @@ export function createApiClient({
     downloadUrl: resultId => direct.hasResult(resultId)
       ? direct.downloadUrl(resultId)
       : server.downloadUrl(resultId),
+    /* 聊天瘦身和标签的生成记录清理都只关乎聊天文件和浏览器这一端的独立存储，增强模式下也走直连这份。 */
+    slimChat: options => direct.slimChat(options),
+    forgetTag: tagId => direct.forgetTag(tagId),
     mode: () => direct.mode(),
   };
 }

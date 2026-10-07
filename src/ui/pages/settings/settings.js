@@ -1,4 +1,5 @@
 import { createGalleryPage } from '../gallery/gallery.js';
+import { describeBytes } from '../../state/tag-footprint.js';
 import {
   NOVELAI_MODELS,
   NOVELAI_SAMPLERS,
@@ -1222,6 +1223,44 @@ export function createToolPanel({ api, store, onError = () => {} }) {
     });
   }, true);
   saveMaintenance.classList.add('stia-button--full');
+
+  /* 聊天瘦身：1.7.0 之前每次生成都把整份记录写进楼层的 extra，楼层一多聊天文件就几十 MB，
+     酒馆每次保存都整份上传、重写、备份。先算账再确认，做完只保存一次聊天。 */
+  const slimHeading = document.createElement('h4');
+  slimHeading.className = 'stia-subheading';
+  slimHeading.textContent = '聊天瘦身';
+  const slimNotice = document.createElement('p');
+  slimNotice.className = 'stia-muted';
+  slimNotice.textContent = '把旧版留在当前聊天里的生成记录搬到独立文件，每一楼只留图片引用；每张卡最多留 10 张图，更早的会删除（收藏的不删）。做完只保存一次聊天，重复执行没有副作用。';
+  const slimChat = action('◫  瘦身当前聊天', async () => {
+    await run(slimChat, async () => {
+      const plan = await api.slimChat({ dryRun: true });
+      if (!plan.messages) {
+        status.textContent = '当前没有打开聊天';
+        return;
+      }
+      const summary = `当前聊天 ${plan.messages} 楼，生图标签数据 ${describeBytes(plan.before.bytes)}`
+        + `（${plan.tags} 个标签，${plan.legacyTags} 个带着旧版记录）。`;
+      const deletion = plan.deletedImages
+        ? `会删除 ${plan.deletedImages} 张超过每张卡 10 张上限的旧图（收藏的不删）；`
+        : '';
+      if (!confirm(`${summary}\n瘦身会把生成记录搬到独立文件、楼层里只留图片引用；${deletion}然后保存一次聊天。确定继续吗？`)) {
+        status.textContent = '已取消瘦身';
+        return;
+      }
+      const result = await api.slimChat();
+      const saved = Math.max(0, result.before.bytes - result.after.bytes);
+      const percent = result.before.bytes ? Math.round((saved / result.before.bytes) * 100) : 0;
+      status.textContent = result.changed
+        ? `瘦身完成：${describeBytes(result.before.bytes)} → ${describeBytes(result.after.bytes)}（省下 ${percent}%）；`
+          + `搬走 ${result.movedAttempts} 条生成记录`
+          + `${result.restoredResults ? `，补回 ${result.restoredResults} 张图的画廊记录` : ''}`
+          + `${result.deletedImages ? `，删除 ${result.deletedImages} 张超出上限的旧图` : ''}`
+          + `${result.droppedRefs ? `，去掉 ${result.droppedRefs} 个文件已不在的引用` : ''}；聊天已保存`
+        : `当前聊天已经是精简形（${describeBytes(result.after.bytes)}），没有需要改的`;
+    });
+  });
+  slimChat.classList.add('stia-button--full');
   appearanceSection.append(
     appearanceTitle,
     themeField,
@@ -1229,6 +1268,9 @@ export function createToolPanel({ api, store, onError = () => {} }) {
     retentionGrid,
     cleanupNotice,
     saveMaintenance,
+    slimHeading,
+    slimNotice,
+    slimChat,
   );
 
   const warning = document.createElement('p');

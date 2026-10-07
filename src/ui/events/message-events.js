@@ -1,5 +1,6 @@
 import { parseDrawTags, shouldProcessMessage } from '../parser/draw-parser.js';
 import { reconcileTagMetadata } from '../state/tag-identity.js';
+import { warnIfHeavy } from '../state/tag-footprint.js';
 
 const DOM_SETTLE_MS = 140;
 const SOURCE_SCAN_INTERVAL_MS = 1_500;
@@ -35,6 +36,8 @@ export function createMessageEvents({ compat, api, store, renderer, autoQueue, o
 
     const { metadata, changed } = reconcileTagMetadata(message, parsed);
     if (changed) {
+      /* 写入前检查：这一楼的标签数据超过 20 KB 就在控制台警告并列出各字段大小。 */
+      warnIfHeavy(message, messageId);
       try {
         await compat.save();
       } catch (error) {

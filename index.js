@@ -134,6 +134,10 @@ async function removeTag(tag) {
   renderer.removeCard(tag.tagId);
   store.removeTag(tag.tagId);
   if (!changed) return false;
+  /* 它的生成记录在独立存储里，一起清掉（硬删除）。 */
+  void Promise.resolve(api.forgetTag?.(tag.tagId)).catch(error => {
+    console.warn('[画笺] 清理生图标签的生成记录失败', error);
+  });
   try {
     await compat.save();
   } catch (error) {

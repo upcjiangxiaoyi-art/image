@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { DEFAULT_SETTINGS } from '../../src/shared/constants.js';
 import { createDirectApiClient } from '../../src/ui/api/direct-client.js';
 import { createMemoryGalleryMetadataStore } from '../../src/ui/api/gallery-metadata-store.js';
+import { createMemoryAttemptStore } from '../../src/ui/api/attempt-store.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -37,6 +38,7 @@ test('报错弹窗开关默认开启，设置界面有中文入口，直连设�
     extensionSettings,
     saveSettingsDebounced: () => {},
     galleryStore: createMemoryGalleryMetadataStore(),
+    attemptStore: createMemoryAttemptStore(),
     keyStorage: { getItem: () => null, setItem() {}, removeItem() {} },
   });
   assert.equal((await create().getSettings()).enableErrorPopup, true, '旧设置自动补为开启');
@@ -52,6 +54,7 @@ test('两个新开关在直连设置中持久化，旧设置自动补默认值',
     extensionSettings,
     saveSettingsDebounced: () => {},
     galleryStore,
+    attemptStore: createMemoryAttemptStore(),
     keyStorage: { getItem: () => null, setItem() {}, removeItem() {} },
   });
   let client = create();
@@ -80,6 +83,7 @@ test('全量元数据接口不受旧画廊每页 30 张限制', async () => {
     extensionSettings: { stImageAtelier: { gallery } },
     saveSettingsDebounced: () => {},
     galleryStore: createMemoryGalleryMetadataStore(),
+    attemptStore: createMemoryAttemptStore(),
     keyStorage: { getItem: () => null, setItem() {}, removeItem() {} },
   });
   assert.equal((await client.gallery()).items.length, 30);
@@ -96,6 +100,7 @@ test('消息被重 roll 或删掉后，旧标签的生图在发请求之前就�
     extensionSettings: { stImageAtelier: { settings: { enabled: true } } },
     saveSettingsDebounced: () => {},
     galleryStore: createMemoryGalleryMetadataStore(),
+    attemptStore: createMemoryAttemptStore(),
     keyStorage: { getItem: () => null, setItem() {}, removeItem() {} },
   });
   await assert.rejects(

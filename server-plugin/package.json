@@ -1,6 +1,6 @@
 {
   "name": "st-image-atelier-server",
-  "version": "1.6.25",
+  "version": "1.7.0",
   "description": "画笺的可选 Server Plugin",
   "main": "index.js",
   "type": "commonjs",

@@ -1,3 +1,5 @@
+import { canonicalTag } from './tag-storage.js';
+
 function createUuid() {
   if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, character => {
@@ -22,7 +24,10 @@ export function reconcileTagMetadata(message, parsedTags, uuid = createUuid) {
     }
     const saved = matchedIndex >= 0 ? previousTags[matchedIndex] : null;
     if (matchedIndex >= 0) unused.delete(matchedIndex);
-    return {
+    /* 聊天里只留轻量引用（见 tag-storage.js）。旧版的 resultIds / attempts / results 只在旧数据里
+       还有时原样带上，读状态或瘦身时搬走；每次都补一个空的就会每次识别都算改动、整份聊天保存两遍。
+       新标签直接用精简形。 */
+    return canonicalTag({
       tagId: saved?.tagId || uuid(),
       prompt: tag.prompt,
       ordinal,
@@ -30,14 +35,13 @@ export function reconcileTagMetadata(message, parsedTags, uuid = createUuid) {
       quality: tag.quality,
       count: tag.count,
       latestResultId: saved?.latestResultId || null,
-      resultIds: Array.isArray(saved?.resultIds) ? saved.resultIds : [],
-      attempts: Array.isArray(saved?.attempts) ? saved.attempts : [],
-      /* 旧版把整份图片记录复制在聊天里（results），读状态时会迁进画廊再删掉。只有旧数据里
-         还有时才带上；每次都补一个空的，就会每次识别都算改动、整份聊天保存两遍。 */
+      ...(Array.isArray(saved?.resultIds) ? { resultIds: saved.resultIds } : {}),
+      ...(Array.isArray(saved?.attempts) ? { attempts: saved.attempts } : {}),
       ...(Array.isArray(saved?.results) ? { results: saved.results } : {}),
+      ...(Array.isArray(saved?.resultRefs) ? { resultRefs: saved.resultRefs } : (saved ? {} : { resultRefs: [] })),
       autoAttempted: Boolean(saved?.autoAttempted),
       autoSuppressed: Boolean(saved?.autoSuppressed),
-    };
+    });
   });
 
   const metadata = {

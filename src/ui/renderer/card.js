@@ -28,10 +28,15 @@ export function formatElapsed(milliseconds) {
   return `已用 ${formatDuration(milliseconds)}`;
 }
 
-/* 出图后的用时：画出这张图的那一次从开始到存好一共多久。记录不全或时间对不上就不显示。 */
-export function generationDuration(attempt) {
-  const started = Date.parse(attempt?.createdAt || '');
-  const finished = Date.parse(attempt?.completedAt || '');
+/* 出图后的用时：画出这张图的那一次从开始到存好一共多久。生成记录被清掉以后用图片记录里
+   记的开始时间和存好时间；记录不全或时间对不上就不显示。 */
+export function generationDuration(attempt, result = null) {
+  let started = Date.parse(attempt?.createdAt || '');
+  let finished = Date.parse(attempt?.completedAt || '');
+  if (!Number.isFinite(started) || !Number.isFinite(finished)) {
+    started = Date.parse(result?.startedAt || '');
+    finished = Date.parse(result?.createdAt || '');
+  }
   if (!Number.isFinite(started) || !Number.isFinite(finished) || finished < started) return '';
   return `用时 ${formatDuration(finished - started)}`;
 }
@@ -107,18 +112,22 @@ function displaySize(value) {
 }
 
 /* 卡片下方这张图的信息：用的哪个预设、模型、画质、尺寸。以画出这张图的那一次为准，
-   图片记录里有的先用图片记录；旧记录里没有的项不显示。智能重试去掉过的参数显示「默认」。 */
+   图片记录里有的先用图片记录；生成记录被清掉以后画质和尺寸也从图片记录拿（1.7.0 起记）；
+   旧记录里没有的项不显示。智能重试去掉过的参数显示「默认」。 */
 export function imageInfo(result, producer) {
   const novelai = (result?.provider || producer?.provider) === 'novelai';
   const dropped = new Set([
     ...(producer?.compatibilityRetry?.adjustedParameters || []),
     ...(result?.compatibilityRetry?.adjustedParameters || []),
   ]);
-  const requested = producer?.qualitySnapshot ?? producer?.parameters?.quality ?? '';
+  const qualitySnapshot = typeof producer?.qualitySnapshot === 'string'
+    ? producer.qualitySnapshot
+    : (typeof result?.qualitySnapshot === 'string' ? result.qualitySnapshot : undefined);
+  const requested = qualitySnapshot ?? producer?.parameters?.quality ?? '';
   let quality = '';
   if (!novelai) {
     if (dropped.has('quality')) quality = requested ? `默认（${requested} 被拒）` : '默认';
-    else if (typeof producer?.qualitySnapshot === 'string') quality = producer.qualitySnapshot || '默认';
+    else if (typeof qualitySnapshot === 'string') quality = qualitySnapshot || '默认';
     else quality = String(producer?.parameters?.quality || '');
   }
   return {
@@ -128,7 +137,7 @@ export function imageInfo(result, producer) {
       : (result?.presetNameSnapshot || producer?.presetNameSnapshot || ''),
     model: result?.apiModel || producer?.model || '',
     quality,
-    size: dropped.has('size') ? '默认尺寸' : displaySize(producer?.parameters?.size || ''),
+    size: dropped.has('size') ? '默认尺寸' : displaySize(producer?.parameters?.size || result?.requestedSize || ''),
   };
 }
 
@@ -399,7 +408,7 @@ export function createCard({
     const producer = shown
       ? (state.attempts || []).find(item => item.attemptId === shown.attemptId)
       : null;
-    const duration = shown ? generationDuration(producer) : '';
+    const duration = shown ? generationDuration(producer, shown) : '';
     const info = shown ? imageInfo(shown, producer) : null;
     /* 「历史 N 张」旁边的尺寸跟着这张图；没有生成记录的老图片退回用最近那次的。 */
     const imageSize = info ? (info.size === '默认尺寸' ? '' : info.size || size) : '';

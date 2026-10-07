@@ -98,3 +98,36 @@ test('重新识别没变的标签不算改动（不触发保存聊天）；旧�
   const migrated = reconcileTagMetadata(legacy, [tag('A')], uuid).metadata.tags[0];
   assert.deepEqual(migrated.results, [{ resultId: 'r' }], '旧数据里的 results 留着，读状态时迁进画廊');
 });
+
+test('新标签只带轻量引用；旧数据里的 resultIds / attempts 原样带上，再识别一遍不算改动', () => {
+  let count = 0;
+  const uuid = () => `00000000-0000-4000-8000-${String(++count).padStart(12, '0')}`;
+  const fresh = { extra: {} };
+  const created = reconcileTagMetadata(fresh, [tag('A')], uuid).metadata.tags[0];
+  assert.deepEqual(Object.keys(created), ['tagId', 'prompt', 'ordinal', 'count', 'latestResultId', 'resultRefs', 'autoAttempted', 'autoSuppressed']);
+  assert.deepEqual(created.resultRefs, []);
+  assert.equal('attempts' in created, false, '生成记录不再写进聊天');
+  assert.equal('resultIds' in created, false);
+  assert.equal(reconcileTagMetadata(fresh, [tag('A')], uuid).changed, false);
+
+  const legacyTag = {
+    tagId: 't', prompt: 'A', ordinal: 0, count: 1, latestResultId: 'r',
+    resultIds: ['r'], attempts: [{ attemptId: 'a', promptSnapshot: 'A' }], autoAttempted: true, autoSuppressed: false,
+  };
+  /* 聊天文件里的顺序就是识别时写出来的顺序：messageUuid、tags、schemaVersion。 */
+  const legacy = { extra: { stImageAtelier: { messageUuid: 'm', tags: [structuredClone(legacyTag)], schemaVersion: 2 } } };
+  const first = reconcileTagMetadata(legacy, [tag('A')], uuid);
+  assert.equal(first.changed, false, '旧格式原样带上，不算改动，不会每楼都保存一遍');
+  assert.deepEqual(first.metadata.tags[0], legacyTag);
+  assert.equal('resultRefs' in first.metadata.tags[0], false, '不给旧数据补新字段');
+
+  /* 瘦身或出图后改写成精简形，字段顺序由 canonicalTag 统一，再识别也不算改动。 */
+  legacy.extra.stImageAtelier.tags[0] = {
+    tagId: 't', prompt: 'A', ordinal: 0, count: 1, latestResultId: 'r',
+    resultRefs: [{ resultId: 'r', path: 'user/images/st-image-atelier/r.png', createdAt: '' }],
+    autoAttempted: true, autoSuppressed: false,
+  };
+  const lean = reconcileTagMetadata(legacy, [tag('A')], uuid);
+  assert.equal(lean.changed, false);
+  assert.equal(lean.metadata.tags[0].tagId, 't');
+});

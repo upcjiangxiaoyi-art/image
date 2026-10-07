@@ -14,38 +14,46 @@ MESSAGE_RECEIVED (live)
   -> magic bytes + 30 MB 大小校验
   -> POST /api/images/upload
   -> 图片进入当前 ST 用户图片目录
-  -> 卡片只把 attempt 状态与 resultId 写回 message.extra
   -> 画廊元数据写入当前用户文件 st-image-atelier-gallery.json
+  -> 生成记录（attempt）写入当前用户文件 st-image-atelier-attempts.json
+  -> 出图后把图片引用（resultId、路径、时间）写回 message.extra，整份聊天只保存这一次
 ```
 
 `CHAT_CHANGED`、启动 hydration、消息重渲染只解析和恢复，不产生上游请求。
 
 ## 默认存储
 
-- `message.extra.stImageAtelier`
+- `message.extra.stImageAtelier`（只放轻量引用，见 `src/ui/state/tag-storage.js`）
   - `messageUuid`
-  - 稳定 `tagId`
-  - attempt 状态
-  - resultId 引用（不复制完整画廊元数据）
+  - 每个标签：稳定 `tagId`、`prompt`（只存一份）、`ordinal` / `ratio` / `quality` / `count`、`latestResultId`
+  - `resultRefs`：每张图只记 `resultId`、服务器上的路径、时间；每张卡最多 10 张（收藏的不计入删除）
   - 自动生成与删除抑制标记
+  - 一张卡除提示词外不到 2 KB；旧版的 `attempts` / `results` / `resultIds` 只在旧数据里还有时带着，读状态或「瘦身当前聊天」时搬走
+- SillyTavern 当前用户文件 `st-image-atelier-attempts.json`（`src/ui/api/attempt-store.js`）
+  - 生成记录按 `attemptId` 存、按 `tagId` 关联；存之前精简（不存画师串整段、拼好的提示词，和标签一样的基础提示词也不存）
+  - 每张卡最多 20 条、整份最多 2000 条，超过删最早结束的；写入合并，发上游请求前先落盘，进度更新只改内存
 - `extension_settings.stImageAtelier`
   - 当前生图引擎、普通设置和 GPT API 预设
   - NovelAI 非敏感参数与画师串预设
 - SillyTavern 当前用户文件 `st-image-atelier-gallery.json`
-  - 独立画廊索引；提示词只保留 `prompt` / `negativePrompt` 各一份
+  - 独立画廊索引；提示词只保留 `prompt` / `negativePrompt` 各一份；另记画质、尺寸、开始时间，生成记录清掉后卡片信息照样显示
   - 删除时直接移除记录，不保留墓碑
 - SillyTavern `accountStorage`
   - 彼此隔离的 GPT API Key 与 NovelAI Persistent API Token
 - SillyTavern 用户图片目录
   - `st-image-atelier/<resultId>.<ext>`
 
-图片 Base64 不写入聊天或扩展设置。
+图片 Base64、原始 API 响应、提示词的复制品都不写入聊天或扩展设置。保存聊天前 `src/ui/state/tag-footprint.js` 会检查，单楼 `tags` 超过 20 KB 就 `console.warn` 并列出各字段大小。
+
+## 聊天瘦身
+
+1.7.0 之前每次生成都把整份记录写进楼层的 `extra`。设置页的「瘦身当前聊天」（`direct-client.js` 的 `slimChat`）遍历所有楼层和 `swipe_info[].extra` 里的副本：先把旧版生成记录搬进独立文件、整份图片记录补回画廊（都写进文件之后才动聊天），画廊索引里没有的引用按路径核对文件（在的补回画廊、不在的去掉），标签改写成精简形，超过每张卡上限的旧图硬删，最后只保存一次聊天；`dryRun` 只算账。重复执行没有副作用。读状态时（`resolveTags`）也会把旧版的 `attempts` 搬进独立文件，写进文件之后再从聊天里删，但不单独保存聊天。
 
 ## 防重复
 
 - 手动生成每次创建新 UUID。
 - 自动生成固定使用 `auto:<tagId>`。
-- 发起上游请求前，先把 attempt 写入聊天并等待 `saveChatConditional()` 完成。
+- 发起上游请求前，先把 attempt 写进独立文件（`attempt-store.js`）并等它落盘；自动生图再在聊天里记一笔 `autoAttempted`。
 - 防双击：卡片上最近开始的那次还在画时，普通的「生成 / 重新生成」不再发请求；已有 attemptId 会直接返回原记录。
 - 同一张卡可以同时画好几张：生成中点「再画一张」（`alongside`，可换 API 预设）时，正在画的那次留在后台接着画。结果按 attemptId 各自写入、合并进这张卡的历史；后台那张晚到时，如果之后开始的那次已经出图，不改 `latestResultId`，只进历史。增强模式在事务里就地合并标签，不再用开始时那份旧拷贝整个写回。
 - 卡片状态只往前走：异步读回来的状态（识别消息、生图结束后刷新）用 `store.applyResolvedTag`，同一个 attemptId 已经结束的不会被旧读数打回进行中；直连的 `resolveTags` 等聊天保存完再取快照。

@@ -21,6 +21,7 @@ import {
   createSillyTavernGalleryMetadataStore,
   normalizeGalleryRecord,
 } from './gallery-metadata-store.js';
+import { createSillyTavernAttemptStore } from './attempt-store.js';
 import {
   createArtistPresetExport,
   parseArtistPresetImport,
@@ -28,6 +29,21 @@ import {
 import { normalizeRetentionSettings, selectCleanupCandidates } from '../gallery/retention.js';
 import { normalizeThemeMode } from '../theme/theme.js';
 import { locateTag } from '../state/tag-identity.js';
+import {
+  MAX_RESULTS_PER_TAG,
+  canonicalTag,
+  displayableResultIds,
+  hasLegacyFields,
+  hydrateAttempt,
+  leanTag,
+  normalizeLatestResultId,
+  rebuildInPlace,
+  selectResultEvictions,
+  slimAttempt,
+  tagResultIds,
+  writeTagResults,
+} from '../state/tag-storage.js';
+import { chatTagsFootprint, describeFootprint, warnIfHeavy } from '../state/tag-footprint.js';
 
 const LEGACY_API_KEY_STORAGE = 'stImageAtelier.directApiKey.v1';
 const API_KEY_STORAGE_PREFIX = 'stImageAtelier.directApiKey.v2:';
@@ -205,20 +221,64 @@ function publicPreset(preset, apiKey) {
   };
 }
 
+function createdAtOf(record) {
+  return String(record?.createdAt || '');
+}
+
 export function createDirectApiClient({
   compat,
   extensionSettings,
   saveSettingsDebounced,
   keyStorage = globalThis.localStorage,
   galleryStore,
+  attemptStore: attemptStoreOption,
+  verifyFile,
 }) {
   const { namespace, legacyGallery } = ensureNamespace(extensionSettings);
   const metadataStore = galleryStore || createSillyTavernGalleryMetadataStore(compat);
+  const attemptStore = attemptStoreOption || createSillyTavernAttemptStore(compat);
   const controllers = new Map();
+  /* 画廊记录的内存索引：按 resultId 直接取，按 tagId 找属于这张卡的图。 */
   const resultIndex = new Map();
+  const resultsByTag = new Map();
   const memoryKeys = new Map();
+  const legacyMigrations = new Map();
   let cleanupPromise = null;
-  let galleryReadyPromise = null;
+  let readyPromise = null;
+
+  function rememberResult(record) {
+    const previous = resultIndex.get(record.resultId);
+    if (previous && previous.tagId !== record.tagId) resultsByTag.get(previous.tagId)?.delete(record.resultId);
+    resultIndex.set(record.resultId, record);
+    if (!resultsByTag.has(record.tagId)) resultsByTag.set(record.tagId, new Set());
+    resultsByTag.get(record.tagId).add(record.resultId);
+  }
+
+  function forgetResult(resultId) {
+    const record = resultIndex.get(resultId);
+    if (!record) return;
+    resultIndex.delete(resultId);
+    const owned = resultsByTag.get(record.tagId);
+    owned?.delete(resultId);
+    if (owned && !owned.size) resultsByTag.delete(record.tagId);
+  }
+
+  function resetResults() {
+    resultIndex.clear();
+    resultsByTag.clear();
+  }
+
+  function lookup(resultId) {
+    return resultIndex.get(resultId) || null;
+  }
+
+  /* 画廊里属于这个标签的图，按出图先后。 */
+  function ownedResults(tagId) {
+    return [...(resultsByTag.get(tagId) || [])]
+      .map(resultId => resultIndex.get(resultId))
+      .filter(Boolean)
+      .sort((left, right) => createdAtOf(left).localeCompare(createdAtOf(right)));
+  }
 
   function presetById(presetId = namespace.activePresetId) {
     return namespace.presets.find(item => item.id === presetId) || null;
@@ -298,14 +358,16 @@ export function createDirectApiClient({
     };
   }
 
-  async function ensureGalleryReady() {
-    if (galleryReadyPromise) return galleryReadyPromise;
-    galleryReadyPromise = (async () => {
+  /* 画廊元数据和生成记录都在当前 ST 用户文件里，第一次用之前读进来。 */
+  async function ensureReady() {
+    if (readyPromise) return readyPromise;
+    readyPromise = (async () => {
       await metadataStore.initialize({
         legacyItems: legacyGallery,
       });
-      resultIndex.clear();
-      for (const result of metadataStore.values()) resultIndex.set(result.resultId, result);
+      await attemptStore.initialize();
+      resetResults();
+      for (const result of metadataStore.values()) rememberResult(result);
       for (const key of Object.keys(namespace)) {
         if (!NAMESPACE_KEYS.has(key)) delete namespace[key];
       }
@@ -314,16 +376,26 @@ export function createDirectApiClient({
       return metadataStore;
     })();
     try {
-      return await galleryReadyPromise;
+      return await readyPromise;
     } catch (error) {
-      galleryReadyPromise = null;
+      readyPromise = null;
       throw error;
     }
   }
 
   async function savePreferences() {
-    await ensureGalleryReady();
+    await ensureReady();
     await Promise.resolve(saveSettingsDebounced?.());
+  }
+
+  /* 保存聊天之前检查一遍：这几楼的标签数据超过 20 KB 就在控制台警告并列出各字段大小（防复发）。 */
+  async function saveChat(messages = []) {
+    const chat = compat.chat();
+    for (const message of new Set(messages)) {
+      const messageId = chat.indexOf(message);
+      if (messageId >= 0) warnIfHeavy(message, messageId);
+    }
+    await compat.save();
   }
 
   function findTag(tagId) {
@@ -335,7 +407,7 @@ export function createDirectApiClient({
     return null;
   }
 
-  /* 写生成记录时找标签：卡片还在就写当前这一版；画到一半被滑走就写回那一版的存档，
+  /* 出图后写图片引用时找标签：卡片还在就写当前这一版；画到一半被滑走就写回那一版的存档，
      滑回去就能看到；消息已经不在了（重新生成、删除、改动或切走了聊天）就写进原来那份
      对象，图照常存进画廊，回到原来的聊天时由 resolveTags 按画廊接回卡片。 */
   function locateForWrite(tagId, fallback) {
@@ -352,39 +424,49 @@ export function createDirectApiClient({
   function stateOf(tagId) {
     const found = findTag(tagId);
     if (!found) return { tagId, tag: null, attempts: [], results: [] };
-    const resultIds = [...new Set(found.tag.resultIds || [])]
-      .filter(resultId => resultIndex.has(resultId));
-    const results = resultIds.map(resultId => resultIndex.get(resultId));
-    const latestResultId = resultIds.includes(found.tag.latestResultId)
-      ? found.tag.latestResultId
-      : resultIds.at(-1) || null;
-    const tag = {
-      ...found.tag,
-      resultIds,
-      latestResultId,
-      autoAttempted: Boolean(found.tag.autoAttempted
-        || found.tag.attempts?.some(attempt => attempt.attemptId === `auto:${tagId}`)),
-    };
-    Object.assign(found.tag, tag);
+    const { tag } = found;
+    const available = displayableResultIds(tag, lookup);
+    const attempts = attemptStore.forTag(tagId).map(item => hydrateAttempt(item, tag.prompt));
+    const autoAttempted = Boolean(tag.autoAttempted
+      || attempts.some(attempt => attempt.attemptId === `auto:${tagId}`));
+    if (autoAttempted && tag.autoAttempted !== true) tag.autoAttempted = true;
+    /* 旧版留在聊天里的 attempts / results 不往卡片送，卡片要的在独立存储和画廊里。 */
+    const { attempts: _legacyAttempts, results: _legacyResults, ...rest } = tag;
     return {
       tagId,
-      tag: clone(tag),
-      attempts: clone(found.tag.attempts || []),
-      results: clone(results),
+      tag: clone({
+        ...rest,
+        resultIds: available,
+        latestResultId: normalizeLatestResultId(tag, lookup),
+        autoAttempted,
+      }),
+      attempts,
+      results: clone(available.map(resultId => resultIndex.get(resultId))),
     };
   }
 
-  async function persistAttempt(fallbackFound, attempt) {
-    const found = locateForWrite(attempt.tagId, fallbackFound);
-    if (!found) throw new DirectError('TAG_NOT_FOUND', '找不到对应的生图标签', 404);
-    found.tag.attempts ??= [];
-    const index = found.tag.attempts.findIndex(item => item.attemptId === attempt.attemptId);
-    if (index >= 0) found.tag.attempts[index] = clone(attempt);
-    else found.tag.attempts.unshift(clone(attempt));
-    found.tag.attempts = found.tag.attempts.slice(0, 50);
-    if (attempt.requestMode === 'auto') found.tag.autoAttempted = true;
-    await compat.save();
-    return found;
+  /* 旧版把生成记录整份复制在聊天里。读状态时先把它们搬进独立存储（精简后），真正写进文件之后
+     再从聊天里删掉；搬运中途再读到同一个标签不重复搬，也不提前删。删掉后不单独保存聊天，
+     酒馆下次保存时自然带上（「瘦身当前聊天」会立刻保存）。 */
+  function migrateLegacyAttempts(tagId) {
+    if (legacyMigrations.has(tagId)) return legacyMigrations.get(tagId);
+    const found = findTag(tagId);
+    const legacy = Array.isArray(found?.tag?.attempts) ? found.tag.attempts : [];
+    const fresh = legacy
+      .filter(item => item?.attemptId && !attemptStore.has(item.attemptId))
+      .map(item => slimAttempt({ ...item, tagId }, found.tag.prompt));
+    const pending = (fresh.length ? attemptStore.putMany(fresh) : Promise.resolve())
+      .then(() => {
+        const current = findTag(tagId)?.tag;
+        if (current && Array.isArray(current.attempts)) {
+          delete current.attempts;
+          rebuildInPlace(current, canonicalTag(current));
+        }
+      })
+      .catch(error => console.warn('[画笺] 搬运旧版生成记录失败，下次再试', error))
+      .finally(() => legacyMigrations.delete(tagId));
+    legacyMigrations.set(tagId, pending);
+    return pending;
   }
 
   async function requestSt(path, body) {
@@ -457,6 +539,8 @@ export function createDirectApiClient({
       ch_name: 'st-image-atelier',
       filename: resultId,
     });
+    /* 画廊记录是这张图的唯一一份完整元数据：卡片下方的预设、画质、尺寸、用时都从这里拿，
+       生成记录被清掉以后照样能显示。 */
     return {
       resultId,
       attemptId: attempt.attemptId,
@@ -475,6 +559,9 @@ export function createDirectApiClient({
       artistNegativePromptSnapshot: attempt.artistNegativePromptSnapshot || '',
       generationSeed: attempt.generationSeed ?? null,
       apiModel: attempt.model,
+      qualitySnapshot: typeof attempt.qualitySnapshot === 'string' ? attempt.qualitySnapshot : null,
+      requestedSize: String(attempt.parameters?.size || ''),
+      startedAt: attempt.createdAt,
       localRelativePath: uploaded.path,
       mimeType: type.mimeType,
       byteSize: bytes.byteLength,
@@ -497,76 +584,133 @@ export function createDirectApiClient({
     }
   }
 
+  /* 硬删除：文件、画廊记录、内存索引一起去掉。返回真的删掉的 resultId。 */
+  async function evictResults(refs) {
+    const removed = [];
+    for (const ref of refs) {
+      const record = resultIndex.get(ref.resultId);
+      if (record) {
+        try {
+          await removeFile(record);
+        } catch (error) {
+          console.warn('[画笺] 删除超出上限的旧图失败', ref.resultId, error);
+          continue;
+        }
+      }
+      removed.push(ref.resultId);
+    }
+    const recorded = removed.filter(resultId => resultIndex.has(resultId));
+    if (recorded.length) {
+      await metadataStore.removeMany(recorded)
+        .catch(error => console.warn('[画笺] 删除超出上限的旧图记录失败', error));
+    }
+    for (const resultId of removed) forgetResult(resultId);
+    return removed;
+  }
+
+  /* 每张卡最多留 MAX_RESULTS_PER_TAG 张：超了就删最早的（收藏的不删，刚画好的不删）。 */
+  async function enforceResultCap(tag, protect = new Set()) {
+    const victims = selectResultEvictions(tag.resultRefs || [], lookup, { protect });
+    if (!victims.length) return [];
+    const removed = await evictResults(victims);
+    if (!removed.length) return [];
+    const dropped = new Set(removed);
+    writeTagResults(tag, tagResultIds(tag).filter(resultId => !dropped.has(resultId)), lookup);
+    if (dropped.has(tag.latestResultId) || !tag.latestResultId) {
+      tag.latestResultId = normalizeLatestResultId(tag, lookup);
+    }
+    console.info(
+      `[画笺] 这张卡的历史超过 ${MAX_RESULTS_PER_TAG} 张，已删除最早的 ${removed.length} 张（收藏的不删）`,
+      tag.tagId,
+    );
+    return removed;
+  }
+
   async function resolveTags(tagIds) {
-    await ensureGalleryReady();
+    await ensureReady();
     let changed = false;
+    const touched = new Set();
     for (const tagId of tagIds) {
       const found = findTag(tagId);
-      if (found) {
-        for (const attempt of found.tag.attempts || []) {
-          if (!ACTIVE_STATUSES.has(attempt.status) || controllers.has(attempt.attemptId)) continue;
-          /* 记录停在「生成中」、这个页面上又没有在跑：多半是画到一半被滑走、切走聊天或刷新了
-             页面。图已经存进画廊的，接回卡片上；画廊里没有才算中断。 */
-          const recovered = resultsOfAttempt(attempt.attemptId);
-          if (recovered.length) {
-            attempt.status = 'succeeded';
-            attempt.statusMessage = null;
-            attempt.resultIds = recovered.map(result => result.resultId);
-            attempt.completedAt = recovered.at(-1).createdAt || now();
-            found.tag.resultIds = [...new Set([...(found.tag.resultIds || []), ...attempt.resultIds])];
-            if (found.tag.attempts[0] === attempt) found.tag.latestResultId = attempt.resultIds.at(-1);
-          } else {
-            attempt.status = 'interrupted';
-            attempt.errorCode = 'ATTEMPT_INTERRUPTED';
-            attempt.errorMessage = '生成被中断，请手动重试';
-            attempt.completedAt = now();
-          }
-          changed = true;
+      if (!found) continue;
+      const { tag } = found;
+      touched.add(found.message);
+      if (Array.isArray(tag.attempts)) void migrateLegacyAttempts(tagId);
+      for (const attempt of attemptStore.forTag(tagId)) {
+        if (!ACTIVE_STATUSES.has(attempt.status) || controllers.has(attempt.attemptId)) continue;
+        /* 记录停在「生成中」、这个页面上又没有在跑：多半是画到一半被滑走、切走聊天或刷新了
+           页面。图已经存进画廊的，接回卡片上；画廊里没有才算中断。 */
+        const recovered = resultsOfAttempt(attempt.attemptId);
+        if (recovered.length) {
+          attempt.status = 'succeeded';
+          attempt.statusMessage = null;
+          attempt.resultIds = recovered.map(result => result.resultId);
+          attempt.completedAt = recovered.at(-1).createdAt || now();
+        } else {
+          attempt.status = 'interrupted';
+          attempt.errorCode = 'ATTEMPT_INTERRUPTED';
+          attempt.errorMessage = '生成被中断，请手动重试';
+          attempt.completedAt = now();
         }
-        if (Object.hasOwn(found.tag, 'results')) {
-          /* 旧版把整份记录复制在聊天里。删之前先把"聊天里可用、索引里没有"的补回索引，
-             否则 resultIds 一过滤这张图就从卡片上消失了（文件其实还在）。 */
-          const orphans = (Array.isArray(found.tag.results) ? found.tag.results : [])
-            .filter(result => result?.resultId
-              && result.status === 'available'
-              && result.localRelativePath
-              && !resultIndex.has(result.resultId));
-          if (orphans.length) {
-            const restored = await metadataStore.putMany(orphans.map(result => ({ ...result, tagId })));
-            for (const result of restored) resultIndex.set(result.resultId, result);
-          }
-          delete found.tag.results;
-          changed = true;
+        attemptStore.put(attempt).catch(error => console.warn('[画笺] 保存生成记录失败', error));
+      }
+      if (Object.hasOwn(tag, 'results')) {
+        /* 旧版把整份记录复制在聊天里。删之前先把"聊天里可用、索引里没有"的补回索引，
+           否则这张图就从卡片上消失了（文件其实还在）。 */
+        const orphans = (Array.isArray(tag.results) ? tag.results : [])
+          .filter(result => result?.resultId
+            && result.status === 'available'
+            && result.localRelativePath
+            && !resultIndex.has(result.resultId));
+        if (orphans.length) {
+          const restored = await metadataStore.putMany(orphans.map(result => ({ ...result, tagId })));
+          for (const result of restored) rememberResult(result);
         }
-        const availableIds = [...new Set(found.tag.resultIds || [])]
-          .filter(resultId => resultIndex.has(resultId));
-        if (JSON.stringify(availableIds) !== JSON.stringify(found.tag.resultIds || [])) changed = true;
-        found.tag.resultIds = availableIds;
-        /* 只在真的变了时才算改动：还没出图的卡片 latestResultId 本来就是 null，
-           不能每读一次就整份聊天保存一次。 */
-        const latestResultId = availableIds.includes(found.tag.latestResultId)
-          ? found.tag.latestResultId
-          : availableIds.at(-1) || null;
-        if (latestResultId !== found.tag.latestResultId) {
-          found.tag.latestResultId = latestResultId;
+        delete tag.results;
+        changed = true;
+      }
+      /* 旧版只记 id：没有画廊记录的去掉（和以前一样）。精简形的引用带着路径，画廊记录不在也留着
+         （卡片上不显示），瘦身时按路径核对。 */
+      if (Array.isArray(tag.resultIds)) {
+        const kept = [...new Set(tag.resultIds)].filter(resultId => resultIndex.has(resultId));
+        if (JSON.stringify(kept) !== JSON.stringify(tag.resultIds)) {
+          tag.resultIds = kept;
           changed = true;
         }
       }
+      /* 画廊里属于这张卡的图，引用里都要有：画到一半切走聊天、再回来时聊天文件里还没记上。 */
+      const ids = tagResultIds(tag);
+      const known = new Set(ids);
+      const missing = ownedResults(tagId)
+        .filter(result => !known.has(result.resultId))
+        .map(result => result.resultId);
+      if (missing.length) {
+        writeTagResults(tag, [...ids, ...missing], lookup);
+        changed = true;
+      }
+      /* 只在真的变了时才算改动：还没出图的卡片 latestResultId 本来就是 null，
+         不能每读一次就整份聊天保存一次。 */
+      const latestResultId = normalizeLatestResultId(tag, lookup);
+      if (latestResultId !== tag.latestResultId) {
+        tag.latestResultId = latestResultId;
+        changed = true;
+      }
     }
-    if (changed) await compat.save();
+    if (changed) await saveChat([...touched]);
     /* 等保存完再取状态：手机上酒馆保存聊天要排队，可能等好几秒，这期间图可能已经画好、
        卡片也刷新过了。先取的快照这时候送回去，会把卡片打回「正在保存到酒馆」并一直转圈。 */
     return tagIds.map(stateOf);
   }
 
   async function generate(input) {
-    await ensureGalleryReady();
+    await ensureReady();
     /* 只给眼前这一版的卡片出图。排着队的旧标签（这一层已经重新生成、正在生成新的滑动版本、
        改动或删除过）在扣费前就停下。 */
     let found = locateTag(compat.chat(), input.tagId, { isStreaming: compat.isStreaming });
     if (found?.placement !== 'active') throw new DirectError('TAG_NOT_FOUND', '找不到对应的生图标签', 404);
-    const existing = found.tag.attempts?.find(item => item.attemptId === input.attemptId);
-    if (existing) return clone(existing);
+    const tagPrompt = found.tag.prompt;
+    const existing = attemptStore.get(input.attemptId);
+    if (existing) return clone(hydrateAttempt(existing, tagPrompt));
     const provider = input.provider || namespace.settings.generationProvider || 'openai';
     const preset = provider === 'novelai'
       ? null
@@ -624,11 +768,20 @@ export function createDirectApiClient({
         parameters: attempt.parameters,
       }).quality || '');
     }
+    /* 生成记录只进独立存储，聊天里不留；精简后再存（画师串整段、拼好的提示词不存）。
+       persist=false 只改内存：进度更新不必每步落盘。 */
+    const persist = options => attemptStore.put(slimAttempt(attempt, tagPrompt), options);
 
     const controller = new AbortController();
     controllers.set(attempt.attemptId, controller);
     try {
-      found = await persistAttempt(found, attempt);
+      /* 发上游请求前先把记录写进独立文件（防重复）。自动生图再在聊天里记一笔 autoAttempted：
+         独立存储的记录满了被清掉，也不会再自动画一次。 */
+      await persist();
+      if (input.requestMode === 'auto' && found.tag.autoAttempted !== true) {
+        found.tag.autoAttempted = true;
+        await saveChat([found.message]);
+      }
     } catch (error) {
       controllers.delete(attempt.attemptId);
       throw new DirectError('LOCAL_SAVE_FAILED', `无法在扣费前保存防重复记录：${error.message}`);
@@ -663,7 +816,7 @@ export function createDirectApiClient({
           onCompatibilityRetry: async retry => {
             attempt.compatibilityRetry = retry;
             attempt.statusMessage = retry.message;
-            found = await persistAttempt(found, attempt);
+            await persist({ persist: false });
             input.onProgress?.(clone(attempt));
           },
         });
@@ -671,44 +824,47 @@ export function createDirectApiClient({
 
       attempt.status = 'downloading';
       attempt.statusMessage = null;
-      found = await persistAttempt(found, attempt);
+      await persist({ persist: false });
       for (const source of sources) {
         if (controller.signal.aborted) throw controller.signal.reason || new Error('cancelled');
         saved.push(await saveSource(source, input, attempt, controller.signal));
       }
 
       attempt.status = 'saving';
-      found = await persistAttempt(found, attempt);
+      await persist({ persist: false });
       const normalizedSaved = await metadataStore.putMany(saved);
       saved.splice(0, saved.length, ...normalizedSaved);
+      for (const result of saved) rememberResult(result);
       found = locateForWrite(input.tagId, found);
-      delete found.tag.results;
-      found.tag.resultIds = [...new Set([
-        ...(found.tag.resultIds || []).filter(resultId => resultIndex.has(resultId)),
-        ...saved.map(result => result.resultId),
-      ])];
       /* 后台那张（之后又 roll 过）画好时，新的那次已经出图，就不抢卡片上显示的那张，只进历史。 */
-      const attempts = found.tag.attempts || [];
-      const position = attempts.findIndex(item => item.attemptId === attempt.attemptId);
-      const newerSucceeded = attempts.slice(0, Math.max(0, position)).some(item => item.status === 'succeeded');
+      const siblings = attemptStore.forTag(input.tagId);
+      const position = siblings.findIndex(item => item.attemptId === attempt.attemptId);
+      const newerSucceeded = siblings.slice(0, Math.max(0, position)).some(item => item.status === 'succeeded');
+      writeTagResults(found.tag, [...tagResultIds(found.tag), ...saved.map(result => result.resultId)], lookup);
       if (!newerSucceeded || !found.tag.latestResultId) {
         found.tag.latestResultId = saved.at(-1)?.resultId || found.tag.latestResultId || null;
       }
-      for (const result of saved) resultIndex.set(result.resultId, result);
+      await enforceResultCap(found.tag, new Set(saved.map(result => result.resultId)));
       attempt.status = 'succeeded';
       attempt.resultIds = saved.map(result => result.resultId);
       attempt.completedAt = now();
-      found = await persistAttempt(found, attempt);
+      /* 先改内存再保存聊天：保存触发的重绘读到的是「已完成」。聊天只在出图后保存这一次。 */
+      await persist({ persist: false });
+      await saveChat([found.message]);
+      await persist().catch(error => console.warn('[画笺] 保存生成记录失败（图片已经存好）', error));
       return clone(attempt);
     } catch (error) {
       await Promise.allSettled(saved.map(removeFile));
       await metadataStore.removeMany(saved.map(result => result.resultId)).catch(() => {});
-      for (const result of saved) resultIndex.delete(result.resultId);
+      for (const result of saved) forgetResult(result.resultId);
       if (found?.tag) {
         const discarded = new Set(saved.map(result => result.resultId));
-        found.tag.resultIds = (found.tag.resultIds || []).filter(resultId => !discarded.has(resultId));
-        if (discarded.has(found.tag.latestResultId)) {
-          found.tag.latestResultId = found.tag.resultIds.at(-1) || null;
+        const ids = tagResultIds(found.tag);
+        if (ids.some(resultId => discarded.has(resultId))) {
+          writeTagResults(found.tag, ids.filter(resultId => !discarded.has(resultId)), lookup);
+          if (discarded.has(found.tag.latestResultId)) {
+            found.tag.latestResultId = normalizeLatestResultId(found.tag, lookup);
+          }
         }
       }
       const cancelled = controller.signal.aborted;
@@ -719,7 +875,7 @@ export function createDirectApiClient({
         attempt.errorMessage += `；已尝试移除 ${attempt.compatibilityRetry.adjustedParameters.join('、')} 后重试一次`;
       }
       attempt.completedAt = now();
-      await persistAttempt(found, attempt).catch(() => {});
+      await persist().catch(() => {});
       if (cancelled) return clone(attempt);
       throw error;
     } finally {
@@ -729,27 +885,23 @@ export function createDirectApiClient({
 
   async function cancel(attemptId) {
     controllers.get(attemptId)?.abort(new Error('cancelled'));
-    for (const message of compat.chat()) {
-      for (const tag of message?.extra?.stImageAtelier?.tags || []) {
-        const attempt = tag.attempts?.find(item => item.attemptId === attemptId);
-        if (!attempt || TERMINAL_STATUSES.has(attempt.status)) continue;
-        attempt.status = 'cancelled';
-        attempt.errorMessage = '已取消';
-        attempt.completedAt = now();
-        await compat.save();
-        return clone(attempt);
-      }
-    }
-    return null;
+    await ensureReady();
+    const attempt = attemptStore.get(attemptId);
+    if (!attempt || TERMINAL_STATUSES.has(attempt.status)) return null;
+    attempt.status = 'cancelled';
+    attempt.errorMessage = '已取消';
+    attempt.completedAt = now();
+    await attemptStore.put(attempt);
+    return clone(hydrateAttempt(attempt, findTag(attempt.tagId)?.tag?.prompt));
   }
 
   async function gallery({ cursor, limit = 30 } = {}) {
-    await ensureGalleryReady();
+    await ensureReady();
     const start = Math.max(0, Number.parseInt(cursor || '0', 10) || 0);
     const items = metadataStore.values()
       .sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)));
     const page = items.slice(start, start + limit);
-    page.forEach(result => resultIndex.set(result.resultId, result));
+    page.forEach(result => rememberResult(result));
     return {
       items: clone(page),
       nextCursor: start + limit < items.length ? String(start + limit) : null,
@@ -757,47 +909,46 @@ export function createDirectApiClient({
   }
 
   async function galleryMetadata() {
-    await ensureGalleryReady();
+    await ensureReady();
     const items = metadataStore.values()
       .sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)));
     items.forEach(result => {
       Object.assign(result, normalizeGalleryResult(result));
-      resultIndex.set(result.resultId, result);
+      rememberResult(result);
     });
     return { items: clone(items), total: items.length };
   }
 
   async function setFavorite(resultId, favorite) {
-    await ensureGalleryReady();
+    await ensureReady();
     const result = resultIndex.get(resultId);
     if (!result || result.status !== 'available') {
       throw new DirectError('VALIDATION_FAILED', '找不到图片');
     }
     const updated = await metadataStore.update(resultId, { favorite: favorite === true });
-    resultIndex.set(resultId, updated);
+    rememberResult(updated);
     return clone(updated);
   }
 
   async function deleteResult(resultId) {
-    await ensureGalleryReady();
+    await ensureReady();
     const result = resultIndex.get(resultId);
     if (!result) throw new DirectError('VALIDATION_FAILED', '找不到图片');
     await removeFile(result);
     await metadataStore.remove(resultId);
-    resultIndex.delete(resultId);
+    forgetResult(resultId);
     const found = findTag(result.tagId);
     if (found) {
-      delete found.tag.results;
-      found.tag.resultIds = (found.tag.resultIds || []).filter(id => id !== resultId);
-      found.tag.latestResultId = found.tag.resultIds.at(-1) || null;
+      writeTagResults(found.tag, tagResultIds(found.tag).filter(id => id !== resultId), lookup);
+      found.tag.latestResultId = normalizeLatestResultId(found.tag, lookup);
       found.tag.autoSuppressed = true;
-      await compat.save();
+      await saveChat([found.message]);
     }
     return { resultId, status: 'deleted' };
   }
 
   async function performGalleryCleanup() {
-    await ensureGalleryReady();
+    await ensureReady();
     const selection = selectCleanupCandidates(metadataStore.values(), namespace.settings);
     if (!selection.settings.galleryCleanupByAge && !selection.settings.galleryCleanupByCount) {
       return {
@@ -826,21 +977,19 @@ export function createDirectApiClient({
     }
 
     await metadataStore.removeMany(deletedIds);
-    for (const resultId of deletedIds) resultIndex.delete(resultId);
+    for (const resultId of deletedIds) forgetResult(resultId);
 
-    let chatChanged = false;
+    const touched = new Set();
     const deleted = new Set(deletedIds);
     for (const tagId of affectedTags) {
       const found = findTag(tagId);
       if (!found) continue;
-      delete found.tag.results;
-      found.tag.resultIds = (found.tag.resultIds || [])
-        .filter(resultId => !deleted.has(resultId));
-      found.tag.latestResultId = found.tag.resultIds.at(-1) || null;
+      writeTagResults(found.tag, tagResultIds(found.tag).filter(resultId => !deleted.has(resultId)), lookup);
+      found.tag.latestResultId = normalizeLatestResultId(found.tag, lookup);
       found.tag.autoSuppressed = true;
-      chatChanged = true;
+      touched.add(found.message);
     }
-    if (chatChanged) await compat.save();
+    if (touched.size) await saveChat([...touched]);
 
     return {
       enabled: true,
@@ -867,6 +1016,171 @@ export function createDirectApiClient({
     return normalizePath(result?.localRelativePath);
   }
 
+  /* 瘦身时核对画廊里没有记录的引用：文件还在就把记录补回画廊，不在就把引用去掉。 */
+  async function fileExists(path) {
+    if (typeof verifyFile === 'function') return Boolean(await verifyFile(path));
+    const url = normalizePath(path);
+    if (!url) return false;
+    let response = await fetch(url, { method: 'HEAD', credentials: 'same-origin', cache: 'no-store' });
+    if (response.status === 405 || response.status === 501) {
+      response = await fetch(url, { method: 'GET', credentials: 'same-origin', cache: 'no-store' });
+    }
+    return response.ok;
+  }
+
+  /* 「瘦身当前聊天」：遍历所有楼层（含滑动存档 swipe_info[].extra 里的副本），把旧版留在聊天里的
+     生成记录搬进独立存储、整份图片记录补回画廊，标签改写成精简形（只留图片引用），超过每张卡
+     上限的旧图硬删，最后只保存一次聊天。重复执行没有副作用。dryRun 只算账、不动任何数据。 */
+  async function slimChat({ dryRun = false } = {}) {
+    await ensureReady();
+    const chat = compat.chat();
+    const before = chatTagsFootprint(chat);
+    const containers = [];
+    for (const [messageId, message] of chat.entries()) {
+      const active = message?.extra?.stImageAtelier;
+      if (Array.isArray(active?.tags)) containers.push({ message, messageId, metadata: active, placement: 'active' });
+      const swipes = Array.isArray(message?.swipe_info) ? message.swipe_info : [];
+      for (const [swipeId, swipe] of swipes.entries()) {
+        const metadata = swipe?.extra?.stImageAtelier;
+        if (Array.isArray(metadata?.tags)) containers.push({ message, messageId, metadata, placement: 'swipe', swipeId });
+      }
+    }
+
+    const attemptsToMove = new Map();
+    const orphans = new Map();
+    const dangling = new Map();
+    let tagCount = 0;
+    let legacyTagCount = 0;
+    for (const container of containers) {
+      for (const tag of container.metadata.tags) {
+        if (!tag?.tagId) continue;
+        tagCount += 1;
+        if (hasLegacyFields(tag)) legacyTagCount += 1;
+        for (const item of Array.isArray(tag.attempts) ? tag.attempts : []) {
+          if (!item?.attemptId || attemptStore.has(item.attemptId) || attemptsToMove.has(item.attemptId)) continue;
+          attemptsToMove.set(item.attemptId, slimAttempt({ ...item, tagId: tag.tagId }, tag.prompt));
+        }
+        for (const record of Array.isArray(tag.results) ? tag.results : []) {
+          if (!record?.resultId || record.status !== 'available' || !record.localRelativePath) continue;
+          if (resultIndex.has(record.resultId) || orphans.has(record.resultId)) continue;
+          orphans.set(record.resultId, { ...record, tagId: tag.tagId });
+        }
+        for (const ref of Array.isArray(tag.resultRefs) ? tag.resultRefs : []) {
+          if (!ref?.resultId || !ref.path || resultIndex.has(ref.resultId)) continue;
+          if (orphans.has(ref.resultId) || dangling.has(ref.resultId)) continue;
+          dangling.set(ref.resultId, { ...ref, tagId: tag.tagId, prompt: tag.prompt });
+        }
+      }
+    }
+
+    if (dryRun) {
+      const seen = new Set();
+      let wouldDelete = 0;
+      for (const container of containers) {
+        for (const tag of container.metadata.tags) {
+          if (!tag?.tagId || seen.has(tag.tagId)) continue;
+          seen.add(tag.tagId);
+          const lean = leanTag(tag, resultId => lookup(resultId) || orphans.get(resultId) || null);
+          wouldDelete += selectResultEvictions(lean.resultRefs, lookup).length;
+        }
+      }
+      return {
+        dryRun: true,
+        before,
+        after: before,
+        messages: chat.length,
+        tags: tagCount,
+        legacyTags: legacyTagCount,
+        movedAttempts: attemptsToMove.size,
+        restoredResults: orphans.size,
+        danglingRefs: dangling.size,
+        deletedImages: wouldDelete,
+        droppedRefs: 0,
+        changed: false,
+      };
+    }
+
+    console.info(`[画笺] 瘦身前：生图标签数据共 ${before.bytes} 字节，${describeFootprint(before)}`);
+    /* 先把要留的搬走、写进文件，再动聊天：中途失败也不会丢数据。 */
+    if (orphans.size) {
+      const restored = await metadataStore.putMany([...orphans.values()]);
+      for (const result of restored) rememberResult(result);
+    }
+    if (attemptsToMove.size) await attemptStore.putMany([...attemptsToMove.values()]);
+    const dropDangling = new Set();
+    const recovered = [];
+    for (const [resultId, ref] of dangling) {
+      let exists = false;
+      try {
+        exists = await fileExists(ref.path);
+      } catch {
+        exists = false;
+      }
+      if (!exists) {
+        dropDangling.add(resultId);
+        continue;
+      }
+      recovered.push({
+        resultId,
+        tagId: ref.tagId,
+        prompt: String(ref.prompt || ''),
+        negativePrompt: '',
+        provider: 'openai',
+        localRelativePath: String(ref.path),
+        status: 'available',
+        storageMode: 'direct',
+        createdAt: String(ref.createdAt || now()),
+        favorite: false,
+        recovered: true,
+        schemaVersion: SCHEMA_VERSION,
+      });
+    }
+    if (recovered.length) {
+      const restored = await metadataStore.putMany(recovered);
+      for (const result of restored) rememberResult(result);
+    }
+
+    const leanByTagId = new Map();
+    let deletedImages = 0;
+    let changed = false;
+    for (const container of containers) {
+      for (const tag of container.metadata.tags) {
+        if (!tag?.tagId) continue;
+        let lean = leanByTagId.get(tag.tagId);
+        if (!lean) {
+          lean = leanTag(tag, lookup, { dropDangling });
+          const victims = selectResultEvictions(lean.resultRefs, lookup);
+          if (victims.length) {
+            const removed = new Set(await evictResults(victims));
+            deletedImages += removed.size;
+            lean = leanTag({ ...lean, resultRefs: lean.resultRefs.filter(ref => !removed.has(ref.resultId)) }, lookup);
+          }
+          leanByTagId.set(tag.tagId, lean);
+        }
+        const previous = JSON.stringify(tag);
+        rebuildInPlace(tag, clone(lean));
+        if (JSON.stringify(tag) !== previous) changed = true;
+      }
+    }
+    if (changed) await saveChat([...new Set(containers.map(container => container.message))]);
+    const after = chatTagsFootprint(chat);
+    console.info(`[画笺] 瘦身后：生图标签数据共 ${after.bytes} 字节，${describeFootprint(after)}`);
+    return {
+      dryRun: false,
+      before,
+      after,
+      messages: chat.length,
+      tags: tagCount,
+      legacyTags: legacyTagCount,
+      movedAttempts: attemptsToMove.size,
+      restoredResults: orphans.size + recovered.length,
+      danglingRefs: dangling.size,
+      deletedImages,
+      droppedRefs: dropDangling.size,
+      changed,
+    };
+  }
+
   return {
     mode: () => namespace.settings.executionMode || 'direct',
     health: async () => ({
@@ -876,7 +1190,7 @@ export function createDirectApiClient({
       storage: 'sillytavern-images',
     }),
     getSettings: async () => {
-      await ensureGalleryReady();
+      await ensureReady();
       return clone(namespace.settings);
     },
     updateSettings: async patch => {
@@ -1117,13 +1431,10 @@ export function createDirectApiClient({
     resolveTags,
     generate,
     attempt: async attemptId => {
-      for (const message of compat.chat()) {
-        for (const tag of message?.extra?.stImageAtelier?.tags || []) {
-          const attempt = tag.attempts?.find(item => item.attemptId === attemptId);
-          if (attempt) return clone(attempt);
-        }
-      }
-      throw new DirectError('VALIDATION_FAILED', '找不到生成记录');
+      await ensureReady();
+      const attempt = attemptStore.get(attemptId);
+      if (!attempt) throw new DirectError('VALIDATION_FAILED', '找不到生成记录');
+      return clone(hydrateAttempt(attempt, findTag(attempt.tagId)?.tag?.prompt));
     },
     cancel,
     gallery,
@@ -1134,5 +1445,11 @@ export function createDirectApiClient({
     fileUrl,
     downloadUrl: fileUrl,
     hasResult: resultId => resultIndex.has(resultId),
+    slimChat,
+    /* 一键删除标签后，它的生成记录也一起清掉（硬删除）。 */
+    forgetTag: async tagId => {
+      await ensureReady();
+      await attemptStore.removeForTag(tagId);
+    },
   };
 }
