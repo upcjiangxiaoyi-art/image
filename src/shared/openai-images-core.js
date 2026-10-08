@@ -214,11 +214,12 @@ export function createOpenAiImagesCore({
     else externalSignal?.addEventListener('abort', abort, { once: true });
     try {
       const response = await fetchImpl(url, { ...options, signal: controller.signal, redirect: 'error' });
-      const text = await response.text();
-      if (!response.ok) throw mapStatus(response.status, text.slice(0, 1000));
+      if (!response.ok) throw mapStatus(response.status, (await response.text()).slice(0, 1000));
+      /* 成功的响应直接按 JSON 读：b64_json 时正文就是整张图，别先把它当字符串留在手里再 parse 出第二份。 */
       try {
-        return JSON.parse(text);
-      } catch {
+        return await response.json();
+      } catch (error) {
+        if (controller.signal.aborted) throw error;
         throw fail('UPSTREAM_RESPONSE_INVALID', '上游返回的不是 JSON');
       }
     } catch (error) {

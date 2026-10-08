@@ -21,6 +21,13 @@ MESSAGE_RECEIVED (live)
 
 `CHAT_CHANGED`、启动 hydration、消息重渲染只解析和恢复，不产生上游请求。
 
+## 保存与写入的节奏（1.7.1）
+
+- 聊天：`compat.saveSoon()` 并进酒馆的 `saveChatDebounced`（没有就自己拖 1 秒）。识别到新标签、出图后写引用、读状态的改动都走它；`MESSAGE_RECEIVED` 时标签 ID 已经同步写进内存里的 `message.extra`，酒馆紧跟着的保存会带上。只有「瘦身当前聊天」用 `compat.save()` 当场写完。酒馆的 `saveChatConditional` 自带互斥。
+- 文件：画廊元数据（`GALLERY_FLUSH_DELAY_MS` 1.5 秒）和生成记录（`ATTEMPT_FLUSH_DELAY_MS` 2 秒）延后合并写，写时直接序列化内存文档；发上游请求前的防重复记录用 `immediate` 当拍落盘。写失败内存不回退，下一次写一起带上；要等写完就 `flush()`。
+- 重绘：`store` 的通知带 `change.tagId`，渲染器只重画那一张卡；`change.all`（设置、健康状态）才全部重画。画完一楼的事件走 `scheduleMessage` 防抖，与 DOM 监听合成一次。
+- 图片：上游 base64 原样上传（只解开头几十个字节认格式、按长度算大小），`fetchJson` 成功时直接 `response.json()`，上传完释放引用。自动清理在出图后 3 秒再查，两条规则都关着时不读画廊。
+
 ## 默认存储
 
 - `message.extra.stImageAtelier`（只放轻量引用，见 `src/ui/state/tag-storage.js`）

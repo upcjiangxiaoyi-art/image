@@ -4,6 +4,8 @@ import { DirectError, bytesToBase64 } from './openai-direct.js';
 export const GALLERY_METADATA_FILE = 'st-image-atelier-gallery.json';
 export const GALLERY_METADATA_URL = `/user/files/${GALLERY_METADATA_FILE}`;
 const DOCUMENT_SCHEMA_VERSION = 1;
+/* 出图返回那一瞬间酒馆自己要存聊天、要重画，画廊文件晚 1.5 秒再写，几张图连着出也只写一次。 */
+export const GALLERY_FLUSH_DELAY_MS = 1500;
 
 function clone(value) {
   return typeof structuredClone === 'function'
@@ -70,21 +72,48 @@ function normalizeDocument(value) {
   return document;
 }
 
-export function createGalleryMetadataStore({ readDocument, writeDocument }) {
+/* 改动先落在内存里，文件延后合并写：flushDelayMs 内的几次改动只写一次盘，写的时候直接序列化内存里的
+   文档，不再整份深拷贝。写失败内存照旧是最新的，下一次写一起带上；要等写完就 flush()。 */
+export function createGalleryMetadataStore({ readDocument, writeDocument, flushDelayMs = 0 }) {
   let document = null;
   let initializePromise = null;
   let writeChain = Promise.resolve();
+  let pending = null;
 
-  async function transaction(mutator) {
-    const operation = writeChain.then(async () => {
-      const next = clone(document);
-      await mutator(next);
-      next.updatedAt = new Date().toISOString();
-      await writeDocument(next);
-      document = next;
+  function fire(entry) {
+    if (pending === entry) pending = null;
+    const write = writeChain.then(() => {
+      document.updatedAt = new Date().toISOString();
+      return writeDocument(document);
     });
-    writeChain = operation.catch(() => {});
-    return operation;
+    write.then(entry.resolve, entry.reject);
+    writeChain = write.catch(() => {});
+  }
+
+  function scheduleFlush({ immediate = false } = {}) {
+    if (pending) {
+      const entry = pending;
+      if (immediate) {
+        clearTimeout(entry.timer);
+        fire(entry);
+      }
+      return entry.promise;
+    }
+    const entry = {};
+    entry.promise = new Promise((resolve, reject) => {
+      entry.resolve = resolve;
+      entry.reject = reject;
+    });
+    pending = entry;
+    entry.timer = setTimeout(() => fire(entry), immediate ? 0 : flushDelayMs);
+    return entry.promise;
+  }
+
+  function touch(options) {
+    document.updatedAt = new Date().toISOString();
+    const write = scheduleFlush(options);
+    write.catch(error => console.warn('[画笺] 写入画廊元数据失败，下次写入时再试', error));
+    return write;
   }
 
   async function initialize({ legacyItems = [] } = {}) {
@@ -104,7 +133,7 @@ export function createGalleryMetadataStore({ readDocument, writeDocument }) {
         }
       }
       if (foreignFormat || before !== JSON.stringify(document.results) || (legacyItems || []).length) {
-        await transaction(() => {});
+        await touch({ immediate: true });
       }
       return api;
     })();
@@ -127,6 +156,11 @@ export function createGalleryMetadataStore({ readDocument, writeDocument }) {
       ready();
       return Object.values(document.results).map(clone);
     },
+    /* 只读的原件（不拷贝）：自动清理这种只看不改的用它，几千条记录不用每次都深拷贝一遍。 */
+    records() {
+      ready();
+      return Object.values(document.results);
+    },
     get(resultId) {
       ready();
       const value = document.results[resultId];
@@ -138,40 +172,44 @@ export function createGalleryMetadataStore({ readDocument, writeDocument }) {
     },
     async putMany(items) {
       ready();
-      await transaction(next => {
-        for (const item of items || []) {
-          if (!item?.resultId || item.status !== 'available') continue;
-          next.results[item.resultId] = normalizeGalleryRecord(item);
-        }
-      });
+      let changed = false;
+      for (const item of items || []) {
+        if (!item?.resultId || item.status !== 'available') continue;
+        document.results[item.resultId] = normalizeGalleryRecord(item);
+        changed = true;
+      }
+      if (changed) touch();
       return (items || []).map(item => api.get(item.resultId)).filter(Boolean);
     },
     async update(resultId, patch) {
       ready();
       const current = document.results[resultId];
       if (!current) return null;
-      await transaction(next => {
-        next.results[resultId] = normalizeGalleryRecord({ ...current, ...patch, resultId });
-      });
+      document.results[resultId] = normalizeGalleryRecord({ ...current, ...patch, resultId });
+      touch();
       return api.get(resultId);
     },
     async removeMany(resultIds) {
       ready();
       const existingIds = (resultIds || []).filter(resultId => document.results[resultId]);
       if (!existingIds.length) return;
-      await transaction(next => {
-        for (const resultId of existingIds) delete next.results[resultId];
-      });
+      for (const resultId of existingIds) delete document.results[resultId];
+      touch();
     },
     remove(resultId) {
       return api.removeMany([resultId]);
+    },
+    flush() {
+      return pending ? pending.promise : writeChain;
     },
   };
   return api;
 }
 
-export function createSillyTavernGalleryMetadataStore(compat, fetchImpl = globalThis.fetch) {
+export function createSillyTavernGalleryMetadataStore(compat, fetchImpl = globalThis.fetch, options = {}) {
   return createGalleryMetadataStore({
+    flushDelayMs: GALLERY_FLUSH_DELAY_MS,
+    ...options,
     async readDocument() {
       const response = await fetchImpl(`${GALLERY_METADATA_URL}?t=${Date.now()}`, {
         method: 'GET',
@@ -211,12 +249,19 @@ export function createSillyTavernGalleryMetadataStore(compat, fetchImpl = global
   });
 }
 
-export function createMemoryGalleryMetadataStore(initialDocument = null) {
+export function createMemoryGalleryMetadataStore(initialDocument = null, options = {}) {
   let document = initialDocument ? clone(initialDocument) : emptyDocument();
+  let writes = 0;
   const store = createGalleryMetadataStore({
+    flushDelayMs: 0,
+    ...options,
     readDocument: async () => clone(document),
-    writeDocument: async value => { document = clone(value); },
+    writeDocument: async value => {
+      writes += 1;
+      document = clone(value);
+    },
   });
   Object.defineProperty(store, 'document', { get: () => clone(document) });
+  Object.defineProperty(store, 'writes', { get: () => writes });
   return store;
 }

@@ -737,6 +737,7 @@ test('画廊元数据迁移后新增记录不改写 extension_settings', async t
   });
   const settingsAfter = JSON.stringify(extensionSettings);
   assert.equal(settingsAfter, settingsBefore);
+  await galleryStore.flush();
   assert.equal(Object.keys(galleryStore.document.results).length, 51);
 });
 
@@ -829,6 +830,7 @@ test('聊天里可用但索引里没有的旧记录，清理前补回画廊索�
   assert.equal(state.results.length, 1);
   assert.equal(state.results[0].prompt, 'orphan prompt');
   assert.equal(client.fileUrl('orphan-1'), '/user/images/st-image-atelier/orphan-1.png');
+  await galleryStore.flush();
   assert.equal(Object.keys(galleryStore.document.results).length, 1, '补回了索引文件');
   assert.equal(chatSaves, 1);
 });
@@ -855,6 +857,7 @@ function tagMetadata(tagId, messageUuid, prompt = 'base64') {
 /* 生图请求卡在半路，等测试把聊天改成「重 roll 之后」的样子再放行。 */
 async function gatedClient(t, chat, {
   save = async () => {},
+  saveSoon,
   attemptStore = createMemoryAttemptStore(),
   galleryStore = createMemoryGalleryMetadataStore(),
   verifyFile,
@@ -862,6 +865,7 @@ async function gatedClient(t, chat, {
   const originalFetch = globalThis.fetch;
   const requests = [];
   const deletedPaths = [];
+  const uploads = [];
   let release;
   const gate = new Promise(resolve => { release = resolve; });
   let markStarted;
@@ -869,6 +873,7 @@ async function gatedClient(t, chat, {
   globalThis.fetch = async (url, options = {}) => {
     if (url === '/api/images/upload') {
       const body = JSON.parse(options.body);
+      uploads.push(body);
       return response(200, { path: `user/images/st-image-atelier/${body.filename}.${body.format}` });
     }
     if (url === '/api/images/delete') {
@@ -889,6 +894,7 @@ async function gatedClient(t, chat, {
     compat: {
       chat: () => chat,
       save,
+      ...(saveSoon ? { saveSoon } : {}),
       headers: () => ({ 'Content-Type': 'application/json', 'X-CSRF-Token': 'test' }),
     },
     extensionSettings: {},
@@ -907,7 +913,7 @@ async function gatedClient(t, chat, {
     apiKey: 'sk-test',
     selectedModel: 'gpt-image-1',
   });
-  return { client, requests, release, started, deletedPaths, attemptStore, galleryStore };
+  return { client, requests, release, started, deletedPaths, uploads, attemptStore, galleryStore };
 }
 
 function leanMetadata(tagId, messageUuid, prompt = 'base64') {
@@ -1557,4 +1563,85 @@ test('「瘦身当前聊天」：遍历所有楼层和滑动存档，搬走生�
   assert.equal(saves, 1, '没改动就不保存');
   assert.equal(JSON.stringify(chat), snapshot);
   assert.equal(again.before.bytes, again.after.bytes);
+});
+
+/* 1.7.1 白屏：出图返回、正文写完那一瞬间，酒馆自己要存聊天、要重画，插件再当场整份存一次、写两份文件，
+   手机上就白屏。插件的保存并进酒馆的防抖（同一秒只写一次盘），文件写入延后合并，发请求前的防重复记录照样当拍落盘。 */
+test('出图后和读状态的改动都走延后合并的保存，不再当场整份存聊天；瘦身仍当场存', async t => {
+  const tagId = crypto.randomUUID();
+  const messageUuid = crypto.randomUUID();
+  const legacy = {
+    is_user: false,
+    mes: '<draw>legacy</draw>',
+    extra: { stImageAtelier: { messageUuid: crypto.randomUUID(), tags: [{ tagId: 'legacy', prompt: 'legacy', results: [], resultIds: [], attempts: [] }] } },
+  };
+  const message = { is_user: false, mes: '<draw>base64</draw>', extra: { stImageAtelier: leanMetadata(tagId, messageUuid) } };
+  let immediate = 0;
+  let soon = 0;
+  const { client, release } = await gatedClient(t, [message, legacy], {
+    save: async () => { immediate += 1; },
+    saveSoon: async () => { soon += 1; },
+  });
+  release();
+  await client.generate(generationInput(tagId, messageUuid));
+  assert.equal(soon, 1, '出图后的那次保存走防抖');
+  assert.equal(immediate, 0, '不当场整份存聊天');
+  await client.resolveTags(['legacy']);
+  assert.equal(soon, 2, '清掉旧版 results 字段的保存也走防抖');
+  assert.equal(immediate, 0);
+  await client.slimChat();
+  assert.equal(immediate, 1, '瘦身当场存，状态行说「已保存」就是真的');
+});
+
+test('发上游请求前防重复记录当拍落盘；画完的终态记录和画廊记录延后合并写，不耽误卡片更新', async t => {
+  const tagId = crypto.randomUUID();
+  const messageUuid = crypto.randomUUID();
+  const message = { is_user: false, mes: '<draw>base64</draw>', extra: { stImageAtelier: leanMetadata(tagId, messageUuid) } };
+  const attemptStore = createMemoryAttemptStore(null, { flushDelayMs: 60 });
+  const galleryStore = createMemoryGalleryMetadataStore(null, { flushDelayMs: 60 });
+  const { client, release, started } = await gatedClient(t, [message], { attemptStore, galleryStore });
+  const pending = client.generate(generationInput(tagId, messageUuid));
+  await started;
+  assert.equal(attemptStore.writes, 1, '上游请求发出之前，记录已经写进文件（不等 2 秒）');
+  assert.equal(attemptStore.get(generationInputId(pending)).status, 'generating');
+  release();
+  const attempt = await pending;
+  assert.equal(attempt.status, 'succeeded');
+  assert.equal(attemptStore.writes, 1, '终态记录不当场写');
+  assert.equal(galleryStore.writes, 0, '画廊记录也不当场写');
+  const [state] = await client.resolveTags([tagId]);
+  assert.equal(state.results.length, 1, '内存里已经有记录，卡片照常显示');
+  assert.equal(state.attempts[0].status, 'succeeded');
+  await new Promise(resolve => setTimeout(resolve, 120));
+  assert.equal(attemptStore.writes, 2, '延后合并后写了一次');
+  assert.equal(galleryStore.writes, 1);
+  assert.equal(Object.keys(galleryStore.document.results).length, 1);
+  assert.equal(attemptStore.document.attempts[attempt.attemptId].status, 'succeeded');
+});
+
+function generationInputId(pending) {
+  return pending.__attemptId || lastAttemptId;
+}
+let lastAttemptId = '';
+const originalGenerationInput = generationInput;
+// eslint-disable-next-line no-func-assign
+generationInput = (tagId, messageUuid) => {
+  const input = originalGenerationInput(tagId, messageUuid);
+  lastAttemptId = input.attemptId;
+  return input;
+};
+
+test('上游返回的 base64 原样上传，不再整张解码再重新编码', async t => {
+  const tagId = crypto.randomUUID();
+  const messageUuid = crypto.randomUUID();
+  const message = { is_user: false, mes: '<draw>base64</draw>', extra: { stImageAtelier: leanMetadata(tagId, messageUuid) } };
+  const { client, release, uploads } = await gatedClient(t, [message]);
+  release();
+  const attempt = await client.generate(generationInput(tagId, messageUuid));
+  assert.equal(attempt.status, 'succeeded');
+  assert.equal(uploads.length, 1);
+  assert.equal(uploads[0].image, PNG_BASE64, '上传的就是上游给的那串');
+  assert.equal(uploads[0].format, 'png', '只解开头几十个字节就认出格式');
+  const [state] = await client.resolveTags([tagId]);
+  assert.equal(state.results[0].byteSize, Buffer.from(PNG_BASE64, 'base64').length, '大小按 base64 长度算，和真解出来一样');
 });

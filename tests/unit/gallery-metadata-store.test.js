@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   GALLERY_METADATA_FILE,
+  createMemoryGalleryMetadataStore,
   createSillyTavernGalleryMetadataStore,
 } from '../../src/ui/api/gallery-metadata-store.js';
 
@@ -70,4 +71,34 @@ test('读入 fork 1.6.2 格式的索引文件：items 数组与 promptSnapshot �
   assert.equal(store.get('b').provider, 'novelai');
   assert.ok(writes.length >= 1, '格式转换后应改写成本实现的格式');
   assert.deepEqual(Object.keys(writes.at(-1).results).sort(), ['a', 'b']);
+});
+
+test('改动先落内存、文件延后合并写；写失败内存照旧是最新的，下一次写一起带上', async () => {
+  const store = createMemoryGalleryMetadataStore(null, { flushDelayMs: 50 });
+  await store.initialize();
+  await store.putMany([{ resultId: 'a', status: 'available', prompt: 'a' }]);
+  await store.putMany([{ resultId: 'b', status: 'available', prompt: 'b' }]);
+  assert.equal(store.has('b'), true, '内存里立刻能读到');
+  assert.equal(store.writes, 0, '还没到点');
+  await store.flush();
+  assert.equal(store.writes, 1, '两次改动合成一次写');
+  assert.deepEqual(Object.keys(store.document.results).sort(), ['a', 'b']);
+  assert.equal(store.records().length, 2, 'records() 给原件，不拷贝');
+
+  let failOnce = true;
+  let written = null;
+  const flaky = (await import('../../src/ui/api/gallery-metadata-store.js')).createGalleryMetadataStore({
+    readDocument: async () => ({ schemaVersion: 1, results: {} }),
+    writeDocument: async document => {
+      if (failOnce) { failOnce = false; throw new Error('upload failed'); }
+      written = JSON.parse(JSON.stringify(document));
+    },
+  });
+  await flaky.initialize();
+  await flaky.putMany([{ resultId: 'x', status: 'available', prompt: 'x' }]);
+  await assert.rejects(flaky.flush(), /upload failed/);
+  assert.equal(flaky.has('x'), true, '写失败内存不回退');
+  await flaky.putMany([{ resultId: 'y', status: 'available', prompt: 'y' }]);
+  await flaky.flush();
+  assert.deepEqual(Object.keys(written.results).sort(), ['x', 'y'], '上一次没写成的随这一次一起写进去');
 });

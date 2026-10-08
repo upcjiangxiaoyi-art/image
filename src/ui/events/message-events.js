@@ -39,7 +39,9 @@ export function createMessageEvents({ compat, api, store, renderer, autoQueue, o
       /* 写入前检查：这一楼的标签数据超过 20 KB 就在控制台警告并列出各字段大小。 */
       warnIfHeavy(message, messageId);
       try {
-        await compat.save();
+        /* 延后合并保存：正文写完那一瞬间酒馆自己紧跟着就会整份保存（新标签的 ID 已经写进内存里的
+           message.extra，会一起带上），这里再当场存一次就是同一秒两份几十 MB 的序列化。 */
+        await (typeof compat.saveSoon === 'function' ? compat.saveSoon() : compat.save());
       } catch (error) {
         console.error('[画笺] 无法保存标签元数据', error);
         onError(error, '保存生图标签数据失败');
@@ -163,8 +165,10 @@ export function createMessageEvents({ compat, api, store, renderer, autoQueue, o
     compat.on(['MESSAGE_RECEIVED'], (messageId, generationType) =>
       processMessage(messageId, { live: true, generationType })
         .catch(reportFailure('识别生图标签失败')));
+    /* 画完一楼的事件紧跟在 MESSAGE_RECEIVED 后面，同一楼刚处理过；走防抖和 DOM 监听合成一次，
+       别在流式结束那一瞬间连做三遍。 */
     compat.on(['CHARACTER_MESSAGE_RENDERED', 'MESSAGE_RENDERED'], messageId =>
-      processMessage(messageId, { live: false }).catch(reportFailure('识别生图标签失败')));
+      scheduleMessage(messageId, { live: false }));
     /* 改写事件会赶在酒馆用 mes 重建这一层 DOM 之前到达。直接 processMessage 等于对着
        旧 DOM 干活：卡片还在、提示词还没回来，mount 判定无事可做直接退出；等重建真的发生，
        事件已经消耗掉了。改走 scheduleMessage，等 DOM_SETTLE_MS 落定后再处理，
@@ -178,7 +182,10 @@ export function createMessageEvents({ compat, api, store, renderer, autoQueue, o
       });
     });
     observeChat();
-    if (!pollTimer) pollTimer = setInterval(scanChangedSources, SOURCE_SCAN_INTERVAL_MS);
+    if (!pollTimer) {
+      pollTimer = setInterval(scanChangedSources, SOURCE_SCAN_INTERVAL_MS);
+      pollTimer.unref?.();
+    }
   }
 
   return { processMessage, hydrate, bind };

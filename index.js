@@ -5,6 +5,7 @@ import {
   saveChatConditional,
   saveSettingsDebounced,
 } from '../../../../script.js';
+import * as tavern from '../../../../script.js';
 import { extension_settings, getContext } from '../../../extensions.js';
 import { accountStorage } from '../../../util/AccountStorage.js';
 import { createStCompat } from './src/ui/compat/st-api.js';
@@ -27,6 +28,8 @@ const compat = createStCompat({
   eventSource,
   eventTypes: event_types,
   saveChatConditional,
+  /* 酒馆的防抖保存（改楼、滑动走的就是它）：插件的保存并进同一个防抖，同一秒只写一次盘。老酒馆没有就退回自己防抖。 */
+  saveChatDebounced: typeof tavern.saveChatDebounced === 'function' ? tavern.saveChatDebounced : undefined,
   getRequestHeaders,
 });
 const api = createApiClient({
@@ -53,17 +56,24 @@ const { reportProblem, reportError } = createProblemReporter({
   },
 });
 let reportedServiceError = null;
-store.subscribe(state => {
-  document.documentElement.classList.toggle('stia-disabled', !state.settings.enabled);
-  applyThemeMode(state.settings.themeMode);
-  /* 连不上服务端插件、读不到聊天里的生图数据等，只在出现新的错误时弹一次。 */
-  if (state.serviceError && state.serviceError !== reportedServiceError) {
-    reportedServiceError = state.serviceError;
-    reportError(state.serviceError, '画笺服务出错');
+store.subscribe((state, change) => {
+  try {
+    if (change?.tagId) return;
+    document.documentElement.classList.toggle('stia-disabled', !state.settings.enabled);
+    applyThemeMode(state.settings.themeMode);
+    /* 连不上服务端插件、读不到聊天里的生图数据等，只在出现新的错误时弹一次。 */
+    if (state.serviceError && state.serviceError !== reportedServiceError) {
+      reportedServiceError = state.serviceError;
+      reportError(state.serviceError, '画笺服务出错');
+    }
+  } catch (error) {
+    console.warn('[画笺] 更新页面状态失败', error);
   }
 });
 applyThemeMode(store.state.settings.themeMode);
 const GALLERY_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
+/* 出图后的自动清理检查往后挪几秒：那一瞬间酒馆要存聊天、要画图，别再挤一件事进去。 */
+const GALLERY_CLEANUP_AFTER_RESULT_MS = 3000;
 
 async function runGalleryCleanup() {
   try {
@@ -79,7 +89,7 @@ const controller = createGenerationController({
   store,
   compat,
   onProblem: reportProblem,
-  onSucceeded: () => void runGalleryCleanup(),
+  onSucceeded: () => { setTimeout(() => void runGalleryCleanup(), GALLERY_CLEANUP_AFTER_RESULT_MS); },
   onError: reportError,
 });
 const { generate } = controller;

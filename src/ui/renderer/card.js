@@ -593,7 +593,7 @@ export function createCard({
       const actions = document.createElement('div');
       actions.className = 'stia-actions stia-actions--fill';
       actions.append(button('重试', 'stia-button--danger-soft', () => {
-        onGenerate(tag, 'manual');
+        void Promise.resolve(onGenerate(tag, 'manual')).catch(() => {});
       }, '↻'));
       if (canUseBackup) {
         actions.append(button('换备用线路', '', () => {
@@ -632,7 +632,8 @@ export function createCard({
     const actions = document.createElement('div');
     actions.className = 'stia-actions stia-actions--fill';
     actions.append(button(attempt ? '重新生成' : '生成图片', 'stia-button--primary', () => {
-      onGenerate(tag, 'manual');
+      /* 失败由报错弹窗和卡片状态说明，这里接住 reject，不留未处理的异常。 */
+      void Promise.resolve(onGenerate(tag, 'manual')).catch(() => {});
     }, '▧'));
     if (onRemove && !running.length) actions.append(removeButton());
     if (canAdjust && attempt) actions.append(button('调整后重绘', '', () => onAdjustRegenerate(tag, {

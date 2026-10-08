@@ -100,23 +100,35 @@ export function createAttemptStore({
     }
   }
 
-  /* 把现在内存里的整份文档排进写队列；同一拍里的多次调用共用一次写。返回的 promise 在写完后 resolve。 */
-  function scheduleFlush() {
-    if (pending) return pending.promise;
+  /* 把现在内存里的整份文档排进写队列：flushDelayMs 内的多次调用合成一次写（出图返回那一瞬间别和酒馆存聊天、
+     画廊写文件挤在一起）；immediate 是发上游请求前的防重复记录，等不得，当拍就写。返回的 promise 在写完后
+     resolve。写的时候直接序列化内存里的文档，不再整份深拷贝一遍。 */
+  function fire(entry) {
+    if (pending === entry) pending = null;
+    const write = writeChain.then(() => {
+      document.updatedAt = new Date().toISOString();
+      return writeDocument(document);
+    });
+    write.then(entry.resolve, entry.reject);
+    writeChain = write.catch(() => {});
+  }
+
+  function scheduleFlush({ immediate = false } = {}) {
+    if (pending) {
+      const entry = pending;
+      if (immediate) {
+        clearTimeout(entry.timer);
+        fire(entry);
+      }
+      return entry.promise;
+    }
     const entry = {};
     entry.promise = new Promise((resolve, reject) => {
       entry.resolve = resolve;
       entry.reject = reject;
     });
     pending = entry;
-    setTimeout(() => {
-      if (pending === entry) pending = null;
-      const snapshot = clone(document);
-      snapshot.updatedAt = new Date().toISOString();
-      const write = writeChain.then(() => writeDocument(snapshot));
-      write.then(entry.resolve, entry.reject);
-      writeChain = write.catch(() => {});
-    }, flushDelayMs);
+    entry.timer = setTimeout(() => fire(entry), immediate ? 0 : flushDelayMs);
     return entry.promise;
   }
 
@@ -183,20 +195,20 @@ export function createAttemptStore({
       ready();
       return Object.keys(document.attempts).length;
     },
-    /* persist=false：只改内存（进度更新），等下一次真正的写入顺带带上。 */
-    put(attempt, { persist = true } = {}) {
+    /* persist=false：只改内存（进度更新），等下一次真正的写入顺带带上。immediate：当拍就写。 */
+    put(attempt, { persist = true, immediate = false } = {}) {
       ready();
       putLocal(attempt);
       prune([attempt.tagId]);
-      return persist ? scheduleFlush() : Promise.resolve();
+      return persist ? scheduleFlush({ immediate }) : Promise.resolve();
     },
-    putMany(attempts, { persist = true } = {}) {
+    putMany(attempts, { persist = true, immediate = false } = {}) {
       ready();
       const list = (attempts || []).filter(item => item?.attemptId && item?.tagId);
       for (const item of list) putLocal(item);
       prune(list.map(item => item.tagId));
       if (!list.length) return Promise.resolve();
-      return persist ? scheduleFlush() : Promise.resolve();
+      return persist ? scheduleFlush({ immediate }) : Promise.resolve();
     },
     remove(attemptId) {
       ready();
@@ -215,8 +227,12 @@ export function createAttemptStore({
   return api;
 }
 
+/* 终态记录（画完、失败）不急：2 秒内的几次写合成一次，也错开出图返回那一瞬间；发请求前的那次用 immediate。 */
+export const ATTEMPT_FLUSH_DELAY_MS = 2000;
+
 export function createSillyTavernAttemptStore(compat, fetchImpl = globalThis.fetch, options = {}) {
   return createAttemptStore({
+    flushDelayMs: ATTEMPT_FLUSH_DELAY_MS,
     ...options,
     async readDocument() {
       const response = await fetchImpl(`${ATTEMPT_STORE_URL}?t=${Date.now()}`, {

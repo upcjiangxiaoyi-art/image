@@ -584,7 +584,14 @@ export function createMessageRenderer(dependencies) {
     return true;
   }
 
-  store.subscribe(() => {
+  /* 哪张卡的状态变了就只重画哪张：出图返回那一瞬间整页几百张卡都算一遍签名，手机上白白卡一下。
+     设置、健康状态这些全局的变了才全部重画。 */
+  store.subscribe((state, change) => {
+    if (change?.tagId) {
+      const card = cards.get(change.tagId);
+      if (card?.root.isConnected) card.render();
+      return;
+    }
     for (const card of cards.values()) {
       if (card.root.isConnected) card.render();
     }

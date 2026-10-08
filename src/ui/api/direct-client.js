@@ -388,14 +388,18 @@ export function createDirectApiClient({
     await Promise.resolve(saveSettingsDebounced?.());
   }
 
-  /* 保存聊天之前检查一遍：这几楼的标签数据超过 20 KB 就在控制台警告并列出各字段大小（防复发）。 */
-  async function saveChat(messages = []) {
+  /* 保存聊天之前检查一遍：这几楼的标签数据超过 20 KB 就在控制台警告并列出各字段大小（防复发）。
+     默认延后、合并保存（酒馆的 saveChatDebounced：同一秒里不管谁要存都只写一次盘，也错开出图返回那一瞬间）；
+     出图、读状态的改动都不急——页面真在这一秒里没了，resolveTags 也能按画廊把图接回卡片。
+     只有「瘦身当前聊天」要当场写完（immediate）。 */
+  async function saveChat(messages = [], { immediate = false } = {}) {
     const chat = compat.chat();
     for (const message of new Set(messages)) {
       const messageId = chat.indexOf(message);
       if (messageId >= 0) warnIfHeavy(message, messageId);
     }
-    await compat.save();
+    if (!immediate && typeof compat.saveSoon === 'function') return compat.saveSoon();
+    return compat.save();
   }
 
   function findTag(tagId) {
@@ -525,20 +529,46 @@ export function createDirectApiClient({
     }
   }
 
+  /* 上游给的 base64 原样上传，不再整张解成字节再重新编码：以前一张几 MB 的图在内存里同时有响应原文、
+     解出来的字节、重编码的 base64、上传请求体四份。现在只解开头几十个字节认格式、按长度算大小。 */
+  function inspectBase64Image(value) {
+    const clean = String(value || '').replace(/^data:[^;,]+;base64,/i, '').replace(/\s+/g, '');
+    if (!clean || !/^[A-Za-z0-9+/]+={0,2}$/.test(clean)) {
+      throw new DirectError('UPSTREAM_RESPONSE_INVALID', 'Base64 解码失败');
+    }
+    const padding = clean.endsWith('==') ? 2 : clean.endsWith('=') ? 1 : 0;
+    let head;
+    try {
+      head = base64ToBytes(clean.slice(0, 64));
+    } catch (error) {
+      throw new DirectError('UPSTREAM_RESPONSE_INVALID', error?.message || 'Base64 解码失败');
+    }
+    return { image: clean, byteLength: Math.floor((clean.length * 3) / 4) - padding, type: detectImageType(head) };
+  }
+
   async function saveSource(source, input, attempt, signal) {
-    const bytes = await bytesFromSource(source, signal);
-    if (bytes.byteLength > namespace.settings.maxImageBytes) {
+    let payload;
+    if (source.sourceType === 'base64') {
+      payload = inspectBase64Image(source.value);
+    } else {
+      const bytes = await bytesFromSource(source, signal);
+      payload = { image: '', bytes, byteLength: bytes.byteLength, type: detectImageType(bytes) };
+    }
+    if (payload.byteLength > namespace.settings.maxImageBytes) {
       throw new DirectError('IMAGE_DOWNLOAD_FAILED', '图片超过 30 MB');
     }
-    const type = detectImageType(bytes);
+    const { type, byteLength } = payload;
     if (!type) throw new DirectError('UPSTREAM_RESPONSE_INVALID', '仅支持 PNG、JPEG、WebP');
     const resultId = uuid();
     const uploaded = await requestSt('/api/images/upload', {
-      image: bytesToBase64(bytes),
+      image: payload.image || bytesToBase64(payload.bytes),
       format: type.extension,
       ch_name: 'st-image-atelier',
       filename: resultId,
     });
+    /* 传完就把图片数据的引用放掉，换成路径。 */
+    payload = null;
+    source.value = null;
     /* 画廊记录是这张图的唯一一份完整元数据：卡片下方的预设、画质、尺寸、用时都从这里拿，
        生成记录被清掉以后照样能显示。 */
     return {
@@ -564,7 +594,7 @@ export function createDirectApiClient({
       startedAt: attempt.createdAt,
       localRelativePath: uploaded.path,
       mimeType: type.mimeType,
-      byteSize: bytes.byteLength,
+      byteSize: byteLength,
       sourceType: source.sourceType,
       status: 'available',
       storageMode: 'direct',
@@ -775,9 +805,9 @@ export function createDirectApiClient({
     const controller = new AbortController();
     controllers.set(attempt.attemptId, controller);
     try {
-      /* 发上游请求前先把记录写进独立文件（防重复）。自动生图再在聊天里记一笔 autoAttempted：
-         独立存储的记录满了被清掉，也不会再自动画一次。 */
-      await persist();
+      /* 发上游请求前先把记录写进独立文件（防重复，这一次当拍就写）。自动生图再在聊天里记一笔
+         autoAttempted：独立存储的记录满了被清掉，也不会再自动画一次。 */
+      await persist({ immediate: true });
       if (input.requestMode === 'auto' && found.tag.autoAttempted !== true) {
         found.tag.autoAttempted = true;
         await saveChat([found.message]);
@@ -848,10 +878,11 @@ export function createDirectApiClient({
       attempt.status = 'succeeded';
       attempt.resultIds = saved.map(result => result.resultId);
       attempt.completedAt = now();
-      /* 先改内存再保存聊天：保存触发的重绘读到的是「已完成」。聊天只在出图后保存这一次。 */
+      /* 先改内存再保存聊天：保存触发的重绘读到的是「已完成」。聊天只在出图后保存这一次（延后合并）；
+         终态记录也延后合并写，不等它：图已经存好、引用已经在内存里的聊天里。 */
       await persist({ persist: false });
       await saveChat([found.message]);
-      await persist().catch(error => console.warn('[画笺] 保存生成记录失败（图片已经存好）', error));
+      persist().catch(error => console.warn('[画笺] 保存生成记录失败（图片已经存好）', error));
       return clone(attempt);
     } catch (error) {
       await Promise.allSettled(saved.map(removeFile));
@@ -875,7 +906,7 @@ export function createDirectApiClient({
         attempt.errorMessage += `；已尝试移除 ${attempt.compatibilityRetry.adjustedParameters.join('、')} 后重试一次`;
       }
       attempt.completedAt = now();
-      await persist().catch(() => {});
+      persist().catch(() => {});
       if (cancelled) return clone(attempt);
       throw error;
     } finally {
@@ -891,7 +922,7 @@ export function createDirectApiClient({
     attempt.status = 'cancelled';
     attempt.errorMessage = '已取消';
     attempt.completedAt = now();
-    await attemptStore.put(attempt);
+    attemptStore.put(attempt).catch(error => console.warn('[画笺] 保存取消记录失败', error));
     return clone(hydrateAttempt(attempt, findTag(attempt.tagId)?.tag?.prompt));
   }
 
@@ -948,20 +979,22 @@ export function createDirectApiClient({
   }
 
   async function performGalleryCleanup() {
-    await ensureReady();
-    const selection = selectCleanupCandidates(metadataStore.values(), namespace.settings);
-    if (!selection.settings.galleryCleanupByAge && !selection.settings.galleryCleanupByCount) {
+    /* 两条规则都关着（默认）就什么都不做：不读画廊、不把几千条记录深拷贝一遍。出图后、每小时都会来一次。 */
+    const rules = normalizeRetentionSettings(namespace.settings);
+    if (!rules.galleryCleanupByAge && !rules.galleryCleanupByCount) {
       return {
         enabled: false,
         candidateCount: 0,
         deletedCount: 0,
         failedCount: 0,
-        keptCount: selection.availableCount,
+        keptCount: resultIndex.size,
         byAgeCount: 0,
         byCountCount: 0,
         deletedIds: [],
       };
     }
+    await ensureReady();
+    const selection = selectCleanupCandidates(metadataStore.records(), namespace.settings);
 
     const deletedIds = [];
     const affectedTags = new Set();
@@ -1101,12 +1134,13 @@ export function createDirectApiClient({
     }
 
     console.info(`[画笺] 瘦身前：生图标签数据共 ${before.bytes} 字节，${describeFootprint(before)}`);
-    /* 先把要留的搬走、写进文件，再动聊天：中途失败也不会丢数据。 */
+    /* 先把要留的搬走、等写进文件，再动聊天：中途失败也不会丢数据。 */
     if (orphans.size) {
       const restored = await metadataStore.putMany([...orphans.values()]);
       for (const result of restored) rememberResult(result);
     }
-    if (attemptsToMove.size) await attemptStore.putMany([...attemptsToMove.values()]);
+    if (attemptsToMove.size) await attemptStore.putMany([...attemptsToMove.values()], { immediate: true });
+    await metadataStore.flush();
     const dropDangling = new Set();
     const recovered = [];
     for (const [resultId, ref] of dangling) {
@@ -1138,6 +1172,7 @@ export function createDirectApiClient({
     if (recovered.length) {
       const restored = await metadataStore.putMany(recovered);
       for (const result of restored) rememberResult(result);
+      await metadataStore.flush();
     }
 
     const leanByTagId = new Map();
@@ -1162,7 +1197,9 @@ export function createDirectApiClient({
         if (JSON.stringify(tag) !== previous) changed = true;
       }
     }
-    if (changed) await saveChat([...new Set(containers.map(container => container.message))]);
+    /* 这一次当场写完：状态行说「聊天已保存」就是真的保存了。 */
+    await metadataStore.flush();
+    if (changed) await saveChat([...new Set(containers.map(container => container.message))], { immediate: true });
     const after = chatTagsFootprint(chat);
     console.info(`[画笺] 瘦身后：生图标签数据共 ${after.bytes} 字节，${describeFootprint(after)}`);
     return {

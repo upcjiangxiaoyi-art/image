@@ -33,8 +33,10 @@ export function createStore() {
     serviceError: null,
   };
 
-  function emit() {
-    for (const listener of listeners) listener(state);
+  /* 通知时带上变了什么：只有一张卡的状态变了（change.tagId）就只重画那一张；设置、健康状态这些
+     全局的变了（change.all）才全部重画。 */
+  function emit(change = { all: true }) {
+    for (const listener of listeners) listener(state, change);
   }
 
   return {
@@ -45,23 +47,23 @@ export function createStore() {
     },
     set(patch) {
       Object.assign(state, patch);
-      emit();
+      emit({ all: true });
     },
     setTag(tagId, value) {
       state.tagStates.set(tagId, value);
-      emit();
+      emit({ tagId });
     },
     /* 异步读回来的状态（识别消息、生图结束后刷新）用这个：过期的不覆盖，免得卡片被打回
        「正在保存到酒馆」一直转圈。返回是否用上了。 */
     applyResolvedTag(tagId, value) {
       if (isStaleTagState(state.tagStates.get(tagId), value)) return false;
       state.tagStates.set(tagId, value);
-      emit();
+      emit({ tagId });
       return true;
     },
     removeTag(tagId) {
       if (!state.tagStates.delete(tagId)) return;
-      emit();
+      emit({ tagId });
     },
   };
 }

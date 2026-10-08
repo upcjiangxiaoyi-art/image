@@ -122,3 +122,18 @@ test('写失败时 put 拒绝，下一次写入照常进行；初始化失败可
   await store.put(attempt('b', 't'));
   assert.deepEqual(Object.keys(document.attempts).sort(), ['a', 'b'], '上一次没写成的记录随下一次一起写进去');
 });
+
+test('延后合并写：几次 put 合成一次；immediate 把排着的一起当拍写掉', async () => {
+  const store = createMemoryAttemptStore(null, { flushDelayMs: 80 });
+  await store.initialize();
+  const slow = store.put(attempt('a', 't'));
+  store.put(attempt('b', 't'), { persist: true }).catch(() => {});
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(store.writes, 0, '80 毫秒内先不写');
+  await store.put(attempt('c', 't'), { immediate: true });
+  assert.equal(store.writes, 1, '发请求前的那次当拍写，排着的一起带上');
+  assert.deepEqual(Object.keys(store.document.attempts).sort(), ['a', 'b', 'c']);
+  await slow;
+  await new Promise(resolve => setTimeout(resolve, 100));
+  assert.equal(store.writes, 1, '原来排的那次已经并进去了，不再多写');
+});

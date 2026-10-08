@@ -43,3 +43,39 @@ test('isStreaming 只认酒馆正在流式输出的那一层，写完、被停�
   processor = { messageId: 2, isFinished: false, isStopped: true };
   assert.equal(compat.isStreaming(2), false, '被停止或出错');
 });
+
+test('saveSoon：有酒馆的 saveChatDebounced 就并进它；没有就自己拖一拍再 save，期间再叫也只存一次', async () => {
+  let debounced = 0;
+  const withTavern = createStCompat({
+    getContext: () => ({ chat: [] }),
+    saveChatConditional: async () => { throw new Error('不该当场存'); },
+    saveChatDebounced: () => { debounced += 1; },
+  });
+  await withTavern.saveSoon();
+  await withTavern.saveSoon();
+  assert.equal(debounced, 2, '每次都交给酒馆的防抖，由它合并');
+
+  let saves = 0;
+  const timers = [];
+  const fallback = createStCompat({
+    getContext: () => ({ chat: [] }),
+    saveChatConditional: async () => { saves += 1; },
+    setTimer: (callback, delay) => { timers.push({ callback, delay }); return timers.length; },
+  });
+  await fallback.saveSoon();
+  await fallback.saveSoon();
+  assert.equal(saves, 0, '还没到点');
+  assert.equal(timers.length, 1, '一拍里叫两次只排一个定时器');
+  assert.equal(timers[0].delay, 1000);
+  timers[0].callback();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(saves, 1, '到点存一次');
+  await fallback.saveSoon();
+  assert.equal(timers.length, 2, '存完再叫才排下一个');
+
+  let viaContext = 0;
+  const fromContext = createStCompat({ getContext: () => ({ chat: [], saveChatDebounced: () => { viaContext += 1; } }) });
+  await fromContext.saveSoon();
+  assert.equal(viaContext, 1, '没从 script.js 拿到时，getContext() 里的也认');
+  await assert.doesNotReject(fallback.save, '当场保存照旧可用');
+});
