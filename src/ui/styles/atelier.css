@@ -1186,6 +1186,39 @@
   font-size: 10px;
 }
 
+/* 画廊卡片上的渠道 / 画质小标：GPT 预设用主题色，NovelAI 画师串用绿色，画质用暖色，一眼分得开。 */
+.stia-gallery-card__badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+}
+
+.stia-gallery-card__badge {
+  display: inline-block;
+  max-width: 100%;
+  padding: 1px 7px;
+  overflow: hidden;
+  color: var(--stia-accent-text);
+  background: var(--stia-accent-muted);
+  border-radius: 999px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1.6;
+}
+
+.stia-gallery-card__badge.is-novelai {
+  color: var(--stia-success);
+  background: var(--stia-success-muted);
+}
+
+.stia-gallery-card__badge.is-quality {
+  color: var(--stia-warning);
+  background: var(--stia-warning-muted);
+}
+
 .stia-empty {
   color: var(--stia-muted);
   text-align: center;

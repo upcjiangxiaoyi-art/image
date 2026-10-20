@@ -34,6 +34,7 @@ export function gallerySearchText(value) {
     item.artistPresetNameSnapshot,
     item.artistPromptSnapshot,
     item.artistNegativePromptSnapshot,
+    item.qualitySnapshot,
   ].filter(Boolean).join('\n').toLocaleLowerCase();
 }
 

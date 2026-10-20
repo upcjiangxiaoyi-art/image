@@ -1,4 +1,5 @@
 import { makeImageSaveable, openImageViewer } from '../../media/image-viewer.js';
+import { imageInfo } from '../../renderer/card.js';
 import { filterGalleryItems, galleryFilterOptions, normalizeGalleryItem } from './gallery-query.js';
 
 const PAGE_SIZE = 30;
@@ -47,6 +48,21 @@ function replaceOptions(control, options) {
 
 function isMobileBrowser() {
   return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '');
+}
+
+/* 这张图是哪条渠道画的：GPT 显示 API 预设名，NovelAI 显示画师串；没记的只标引擎。
+   和卡片下方的信息同一套规则（imageInfo），画廊里没有生成记录，只看图片记录。 */
+export function galleryBadges(result) {
+  const info = imageInfo(result, null);
+  const novelai = result?.provider === 'novelai';
+  const engine = novelai ? 'NAI' : 'GPT';
+  const badges = [{
+    kind: novelai ? 'novelai' : 'openai',
+    text: info.preset ? `${engine} · ${info.preset}` : engine,
+  }];
+  /* 画质只有 GPT 有；1.7.0 之前的记录没记，就不标。 */
+  if (!novelai && info.quality) badges.push({ kind: 'quality', text: info.quality });
+  return { info, badges };
 }
 
 export function createGalleryPage(api, { onError = () => {} } = {}) {
@@ -176,12 +192,19 @@ export function createGalleryPage(api, { onError = () => {} } = {}) {
   }
 
   function detail(result) {
+    const { info, badges } = galleryBadges(result);
     openImageViewer({
       src: api.fileUrl(result.resultId),
       alt: promptOf(result).slice(0, 120),
       filename: result.resultId,
       prompt: promptOf(result),
-      meta: `${result.apiModel || '未知模型'} · ${formatDate(result.createdAt)} · ${Math.round((result.byteSize || 0) / 1024)} KB`,
+      meta: [
+        result.apiModel || '未知模型',
+        ...badges.map(badge => (badge.kind === 'quality' ? `画质 ${badge.text}` : badge.text)),
+        info.size && info.size !== '默认尺寸' ? info.size : '',
+        formatDate(result.createdAt),
+        `${Math.round((result.byteSize || 0) / 1024)} KB`,
+      ].filter(Boolean).join(' · '),
       onDelete: () => removeResult(result),
     });
   }
@@ -250,6 +273,16 @@ export function createGalleryPage(api, { onError = () => {} } = {}) {
     caption.type = 'button';
     caption.className = 'stia-gallery-card__caption';
     caption.setAttribute('aria-label', '查看这张原图');
+    /* 一眼看出是哪条渠道画的、什么画质：预设 / 画师串一枚，GPT 的画质再一枚。 */
+    const badges = document.createElement('div');
+    badges.className = 'stia-gallery-card__badges';
+    for (const badge of galleryBadges(result).badges) {
+      const chip = document.createElement('span');
+      chip.className = `stia-gallery-card__badge is-${badge.kind}`;
+      chip.textContent = badge.text;
+      chip.title = badge.kind === 'quality' ? `画质 ${badge.text}` : badge.text;
+      badges.append(chip);
+    }
     const model = document.createElement('strong');
     model.textContent = result.apiModel || '未知模型';
     const prompt = document.createElement('span');
@@ -257,7 +290,7 @@ export function createGalleryPage(api, { onError = () => {} } = {}) {
     const time = document.createElement('time');
     time.dateTime = result.createdAt;
     time.textContent = formatDate(result.createdAt);
-    caption.append(model, prompt, time);
+    caption.append(badges, model, prompt, time);
     caption.addEventListener('click', () => {
       if (!batchMode) return detail(result);
       toggleSelection(result.resultId);

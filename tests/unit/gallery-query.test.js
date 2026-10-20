@@ -6,7 +6,7 @@ import {
   galleryFilterOptions,
   normalizeGalleryItem,
 } from '../../src/ui/pages/gallery/gallery-query.js';
-import { createGalleryPage } from '../../src/ui/pages/gallery/gallery.js';
+import { createGalleryPage, galleryBadges } from '../../src/ui/pages/gallery/gallery.js';
 
 const NOW = Date.parse('2026-09-07T12:00:00.000Z');
 
@@ -146,4 +146,62 @@ test('批量收藏、取消收藏和删除只作用于当前筛选后选中的�
   await settle();
   assert.deepEqual(deleteCalls, ['cat-1', 'cat-2']);
   assert.equal(deleteCalls.includes('dog'), false);
+});
+
+test('画廊卡片标出渠道和画质：GPT 显示预设名和画质，NovelAI 显示画师串，老记录没记画质就不标', async t => {
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'https://tavern.example/' });
+  const previous = { document: globalThis.document, window: globalThis.window, navigator: globalThis.navigator };
+  globalThis.document = dom.window.document;
+  globalThis.window = dom.window;
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: dom.window.navigator });
+  t.after(() => {
+    globalThis.document = previous.document;
+    globalThis.window = previous.window;
+    Object.defineProperty(globalThis, 'navigator', { configurable: true, value: previous.navigator });
+    dom.window.close();
+  });
+
+  const values = [
+    item({ resultId: 'gpt-new', presetNameSnapshot: '稳定组', qualitySnapshot: 'max', requestedSize: '1024x1536', createdAt: '2026-09-07T09:00:00.000Z' }),
+    item({ resultId: 'gpt-default', presetNameSnapshot: '主站 API', qualitySnapshot: '', createdAt: '2026-09-07T08:30:00.000Z' }),
+    item({ resultId: 'gpt-dropped', presetNameSnapshot: '主站 API', qualitySnapshot: 'xhigh', compatibilityRetry: { adjustedParameters: ['quality'] }, createdAt: '2026-09-07T08:15:00.000Z' }),
+    item({ resultId: 'gpt-old', presetNameSnapshot: '主站 API', createdAt: '2026-09-07T08:00:00.000Z' }),
+    item({ resultId: 'gpt-bare', presetNameSnapshot: '', presetId: '', createdAt: '2026-09-07T07:30:00.000Z' }),
+    item({
+      resultId: 'nai', provider: 'novelai', presetId: 'novelai', apiModel: 'nai-diffusion-4-5-full',
+      artistPresetId: 'soft', artistPresetNameSnapshot: '柔光画师串', createdAt: '2026-09-07T07:00:00.000Z',
+    }),
+  ];
+  const api = {
+    cleanupGallery: async () => ({}),
+    galleryMetadata: async () => ({ items: structuredClone(values), total: values.length }),
+    fileUrl: id => `/images/${id}.png`,
+    downloadUrl: id => `/download/${id}`,
+    setFavorite: async () => ({}),
+    deleteResult: async () => {},
+  };
+  const page = createGalleryPage(api);
+  document.body.append(page.root);
+  await page.load();
+  const badgesOf = id => [...page.root.querySelectorAll(`[data-result-id="${id}"] .stia-gallery-card__badge`)]
+    .map(element => element.textContent);
+  assert.deepEqual(badgesOf('gpt-new'), ['GPT · 稳定组', 'max']);
+  assert.deepEqual(badgesOf('gpt-default'), ['GPT · 主站 API', '默认'], '没发 quality 的标「默认」');
+  assert.deepEqual(badgesOf('gpt-dropped'), ['GPT · 主站 API', '默认（xhigh 被拒）'], '智能重试去掉过画质的照卡片的说法');
+  assert.deepEqual(badgesOf('gpt-old'), ['GPT · 主站 API'], '1.7.0 之前的记录没记画质，不标');
+  assert.deepEqual(badgesOf('gpt-bare'), ['GPT'], '连预设名都没记的只标引擎');
+  assert.deepEqual(badgesOf('nai'), ['NAI · 柔光画师串'], 'NovelAI 标画师串，没有画质');
+  assert.ok(page.root.querySelector('[data-result-id="nai"] .stia-gallery-card__badge').classList.contains('is-novelai'));
+  assert.ok(page.root.querySelector('[data-result-id="gpt-new"] .stia-gallery-card__badge.is-quality'));
+  assert.equal(page.root.querySelector('[data-result-id="gpt-new"] .stia-gallery-card__badges').nextElementSibling.tagName, 'STRONG', '小标在模型名上面');
+
+  const search = page.root.querySelector('input[type="search"]');
+  search.value = 'max';
+  search.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+  await new Promise(resolve => setTimeout(resolve, 150));
+  assert.deepEqual([...page.root.querySelectorAll('.stia-gallery-card')].map(card => card.dataset.resultId), ['gpt-new'], '搜索也认画质');
+
+  const { info, badges } = galleryBadges(values[0]);
+  assert.equal(info.size, '1024×1536', '原图查看层的信息行顺带带上尺寸');
+  assert.deepEqual(badges.map(badge => badge.kind), ['openai', 'quality']);
 });
