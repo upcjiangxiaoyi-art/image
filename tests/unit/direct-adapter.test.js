@@ -381,5 +381,5 @@ test('认不出来的返回把收到的字段和内容写进报错，密钥脱�
   const masked = codeOf(() => parseImageResponse({ data: [], key: 'sk-abcdefghijklmnop' })).details;
   assert.doesNotMatch(masked, /sk-abcdefghijklmnop/);
   assert.match(masked, /已隐藏密钥/);
-  assert.ok(codeOf(() => parseImageResponse({ blob: 'x'.repeat(5000) })).details.length < 400, '最多 300 字');
+  assert.ok(codeOf(() => parseImageResponse({ blob: 'x'.repeat(5000) })).details.length < 700, '最多 600 字');
 });

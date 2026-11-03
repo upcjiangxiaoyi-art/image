@@ -849,6 +849,12 @@ export function createDirectApiClient({
             await persist({ persist: false });
             input.onProgress?.(clone(attempt));
           },
+          /* 中转把生图做成异步任务：卡片上说一声，正在每隔几秒问它画完没有。 */
+          onAsyncJob: async job => {
+            attempt.statusMessage = `中转站在后台排队画（异步任务${job.id ? ` ${String(job.id).slice(0, 16)}` : ''}），每隔几秒问一次画完没有…`;
+            await persist({ persist: false });
+            input.onProgress?.(clone(attempt));
+          },
         });
       }
 

@@ -107,7 +107,7 @@ export function imagesInText(text) {
   return found;
 }
 
-const IMAGE_ARRAY_KEYS = ['data', 'images', 'result', 'results', 'output', 'outputs', 'response'];
+const IMAGE_ARRAY_KEYS = ['data', 'images', 'assets', 'result', 'results', 'output', 'outputs', 'response'];
 
 /* 在返回里找图片列表：data / images / result / output / response 下面的数组或单张；顶层直接就是一张；
    聊天格式的 choices[0].message.images 或正文里的图。 */
@@ -148,7 +148,7 @@ function snippetOf(value) {
   } catch {
     text = String(value);
   }
-  return sanitizeUpstreamText(text).slice(0, 300) || '（空）';
+  return sanitizeUpstreamText(text).slice(0, 600) || '（空）';
 }
 
 /* 认不出来的时候把收到的东西说清楚：顶层有哪些字段、内容的前 300 字（密钥脱敏），站子回了什么一眼就知道。 */
@@ -160,7 +160,7 @@ export function describePayload(payload) {
   }
   const keys = Object.keys(payload);
   if (!keys.length) return '一个空对象 {}';
-  return `顶层字段 ${keys.slice(0, 12).join('、')}${keys.length > 12 ? '…' : ''}，内容 ${snippetOf(payload)}`;
+  return `顶层字段 ${keys.slice(0, 40).join('、')}${keys.length > 40 ? '…' : ''}，内容 ${snippetOf(payload)}`;
 }
 
 /* 有些中转站拦截时照样回 HTTP 200，只在正文里写 error / message，没有图片。 */
@@ -188,6 +188,7 @@ export function createOpenAiImagesCore({
   networkError,
   httpStatus = (_code, status) => status,
   fetchImpl = (url, options) => fetch(url, options),
+  asyncPollIntervalMs = 2500,
 }) {
   const fail = (code, details = '', status = 400, retryable = false, publicMessage = '') =>
     new ErrorClass(code, details, status, retryable, publicMessage);
@@ -324,6 +325,112 @@ export function createOpenAiImagesCore({
     }
   }
 
+  /* 有的中转把生图接口做成异步任务：第一次只回一条任务记录（assets 为空、execution_mode: async、auto_poll
+     之类），要拿着任务 id 过一会儿再去问，画完了才在 assets / data 里给图。轮询地址优先用它给的 poll_url /
+     status_url，没有就按「生图地址/任务 id」猜；每隔几秒问一次，最多等到预设的超时。 */
+  const JOB_ID_KEYS = ['id', 'task_id', 'taskId', 'job_id', 'jobId', 'request_id', 'requestId', 'batch_id', 'uuid'];
+  const POLL_URL_KEYS = ['poll_url', 'pollUrl', 'status_url', 'statusUrl', 'polling_url', 'result_url', 'resultUrl'];
+  const PENDING_STATUS = /pending|queued|processing|running|in_progress|submitted|starting|waiting|created/;
+  const FAILED_STATUS = /fail|error|cancel|expired|reject|abort/;
+
+  function asyncJobOf(payload, endpoint) {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+    const id = JOB_ID_KEYS.map(key => payload[key])
+      .find(value => (typeof value === 'string' && value.trim()) || (typeof value === 'number' && Number.isFinite(value)));
+    const explicit = POLL_URL_KEYS.map(key => payload[key]).find(value => typeof value === 'string' && value.trim());
+    const status = String(payload.status || payload.state || '').toLowerCase();
+    const looksAsync = payload.execution_mode === 'async' || payload.async === true || payload.auto_poll === true
+      || PENDING_STATUS.test(status) || Boolean(explicit);
+    if (!looksAsync || (!explicit && id === undefined)) return null;
+    let pollUrl = explicit ? explicit.trim() : '';
+    if (pollUrl && !/^https?:\/\//i.test(pollUrl)) {
+      try {
+        pollUrl = new URL(pollUrl, endpoint).toString();
+      } catch {
+        pollUrl = '';
+      }
+    }
+    if (!pollUrl) pollUrl = `${String(endpoint).replace(/\/+$/, '')}/${encodeURIComponent(String(id))}`;
+    return { id: id === undefined ? '' : String(id), pollUrl, status };
+  }
+
+  function asyncJobFailure(payload) {
+    if (!payload || typeof payload !== 'object') return '';
+    const reason = payloadErrorOf(payload);
+    if (reason) return reason;
+    const code = typeof payload.error_code === 'string' ? payload.error_code.trim() : '';
+    if (code) return sanitizeUpstreamText(`${code} ${payload.error_stage || ''}`);
+    const status = String(payload.status || payload.state || '').toLowerCase();
+    return FAILED_STATUS.test(status) ? `任务状态 ${status}` : '';
+  }
+
+  function sleep(ms, signal) {
+    return new Promise((resolve, reject) => {
+      const abort = () => {
+        clearTimeout(timer);
+        reject(signal.reason || new Error('cancelled'));
+      };
+      const timer = setTimeout(() => {
+        signal?.removeEventListener('abort', abort);
+        resolve();
+      }, ms);
+      if (signal?.aborted) abort();
+      else signal?.addEventListener('abort', abort, { once: true });
+    });
+  }
+
+  function jobFailed(reason) {
+    return fail(
+      'UPSTREAM_RESPONSE_INVALID',
+      reason,
+      502,
+      false,
+      `上游的异步任务失败：${reason}${MODERATION_PATTERN.test(reason) ? MODERATION_HINT : ''}`,
+    );
+  }
+
+  async function settleAsyncJob(payload, { endpoint, apiKey, timeoutMs, signal, onAsyncJob }) {
+    if (findImageItems(payload)?.length) return payload;
+    const job = asyncJobOf(payload, endpoint);
+    if (!job) return payload;
+    const failure = asyncJobFailure(payload);
+    if (failure) throw jobFailed(failure);
+    await onAsyncJob?.({ id: job.id, pollUrl: job.pollUrl, status: job.status });
+    const deadline = Date.now() + Math.max(asyncPollIntervalMs * 2, Number(timeoutMs) || 180_000);
+    let interval = asyncPollIntervalMs;
+    let latest = payload;
+    while (Date.now() < deadline) {
+      await sleep(Math.min(interval, Math.max(0, deadline - Date.now())), signal);
+      if (Date.now() >= deadline) break;
+      interval = Math.min(interval * 1.5, asyncPollIntervalMs * 4);
+      let status;
+      try {
+        status = await fetchJson(
+          job.pollUrl,
+          { method: 'GET', headers: authorization(apiKey), signal },
+          Math.max(1000, Math.min(60_000, deadline - Date.now())),
+        );
+      } catch (error) {
+        if (error instanceof ErrorClass && error.code === 'UPSTREAM_HTTP_ERROR') {
+          throw fail(
+            'UPSTREAM_RESPONSE_INVALID',
+            `轮询 ${job.pollUrl} 失败：${error.details || error.message}`,
+            502,
+            false,
+            `上游先回了异步任务记录（${describePayload(payload)}），但轮询任务状态失败：${error.message}。`
+              + '请让中转站改成同步返回，或提供轮询地址',
+          );
+        }
+        throw error;
+      }
+      latest = status;
+      if (findImageItems(status)?.length) return status;
+      const failed = asyncJobFailure(status);
+      if (failed) throw jobFailed(failed);
+    }
+    throw fail('UPSTREAM_TIMEOUT', `等上游的异步任务超时；最后一次状态：${describePayload(latest)}`, 504, true);
+  }
+
   function detectCompatibilityRetry(error, body = {}) {
     if (!(error instanceof ErrorClass)
       || error.code !== 'UPSTREAM_HTTP_ERROR'
@@ -374,6 +481,7 @@ export function createOpenAiImagesCore({
     settings = {},
     signal,
     onCompatibilityRetry,
+    onAsyncJob,
   }) {
     if (!preset.baseUrl) throw fail('PRESET_NOT_CONFIGURED');
     if (!apiKey) throw fail('API_KEY_MISSING');
@@ -408,6 +516,7 @@ export function createOpenAiImagesCore({
         throw retryError;
       }
     }
+    payload = await settleAsyncJob(payload, { endpoint, apiKey, timeoutMs: preset.timeoutMs, signal, onAsyncJob });
     return parseImageResponse(payload);
   }
 
@@ -434,6 +543,8 @@ export function createOpenAiImagesCore({
     detectCompatibilityRetry,
     rejectsResponseFormat,
     buildRequestBody,
+    asyncJobOf,
+    settleAsyncJob,
     generateImages,
     listModels,
   };
