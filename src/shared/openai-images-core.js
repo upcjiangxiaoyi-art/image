@@ -58,15 +58,109 @@ export function extractUpstreamError(bodyText) {
   return sanitizeUpstreamText(value) || '上游没有返回错误详情';
 }
 
-function findDataArray(payload) {
-  if (Array.isArray(payload)) return payload;
-  if (!payload || typeof payload !== 'object') return null;
-  if (Array.isArray(payload.data)) return payload.data;
-  for (const key of ['result', 'output', 'response']) {
-    const found = findDataArray(payload[key]);
-    if (found) return found;
+/* 一张图可以长什么样：一个字符串（链接、data URL、裸 base64），或者对象里的 b64_json / url / image / base64 /
+   image_url（OpenRouter 式 { image_url: { url } }）。中转站五花八门，能认的都认。 */
+function sourceOfString(value) {
+  const text = String(value ?? '').trim();
+  if (!text) return null;
+  if (/^data:image\/[a-z0-9.+-]+;base64,/i.test(text)) return { sourceType: 'base64', value: text };
+  if (/^https?:\/\//i.test(text)) return { sourceType: 'url', value: text };
+  if (text.length >= 64 && /^[A-Za-z0-9+/]+={0,2}$/.test(text.replace(/\s+/g, ''))) {
+    return { sourceType: 'base64', value: text };
   }
   return null;
+}
+
+const IMAGE_ITEM_KEYS = ['url', 'image', 'base64', 'b64', 'image_base64', 'imageUrl', 'image_url'];
+
+function imageItemOf(item) {
+  if (typeof item === 'string') return sourceOfString(item);
+  if (!item || typeof item !== 'object' || Array.isArray(item)) return null;
+  if (typeof item.b64_json === 'string' && item.b64_json) return { sourceType: 'base64', value: item.b64_json };
+  for (const key of IMAGE_ITEM_KEYS) {
+    const value = item[key];
+    if (typeof value === 'string' && value) {
+      const found = sourceOfString(value);
+      if (found) return found;
+      if (key === 'url') return { sourceType: 'url', value };
+    } else if (value && typeof value === 'object' && typeof value.url === 'string' && value.url) {
+      return sourceOfString(value.url) || { sourceType: 'url', value: value.url };
+    }
+  }
+  return null;
+}
+
+/* 走聊天接口的中转把图塞在 message.content 里：Markdown 图、data URL、裸的图片链接。 */
+const MARKDOWN_IMAGE = /!\[[^\]]*\]\(\s*([^)\s]+)\s*\)/g;
+const DATA_IMAGE_URL = /data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/gi;
+const BARE_IMAGE_URL = /https?:\/\/[^\s)'"<>]+?\.(?:png|jpe?g|webp)(?:\?[^\s)'"<>]*)?/gi;
+
+export function imagesInText(text) {
+  const found = [];
+  const push = value => {
+    if (value && !found.includes(value)) found.push(value);
+  };
+  const source = String(text || '');
+  for (const match of source.matchAll(MARKDOWN_IMAGE)) push(match[1]);
+  for (const match of source.matchAll(DATA_IMAGE_URL)) push(match[0]);
+  for (const match of source.matchAll(BARE_IMAGE_URL)) push(match[0]);
+  return found;
+}
+
+const IMAGE_ARRAY_KEYS = ['data', 'images', 'result', 'results', 'output', 'outputs', 'response'];
+
+/* 在返回里找图片列表：data / images / result / output / response 下面的数组或单张；顶层直接就是一张；
+   聊天格式的 choices[0].message.images 或正文里的图。 */
+function findImageItems(payload, depth = 0) {
+  if (Array.isArray(payload)) return payload;
+  if (!payload || typeof payload !== 'object' || depth > 3) return null;
+  for (const key of IMAGE_ARRAY_KEYS) {
+    const value = payload[key];
+    if (Array.isArray(value)) return value;
+    if (typeof value === 'string') {
+      if (sourceOfString(value)) return [value];
+      continue;
+    }
+    if (value && typeof value === 'object') {
+      if (imageItemOf(value)) return [value];
+      const nested = findImageItems(value, depth + 1);
+      if (nested) return nested;
+    }
+  }
+  if (imageItemOf(payload)) return [payload];
+  const choice = Array.isArray(payload.choices) ? payload.choices[0] : null;
+  if (choice && typeof choice === 'object') {
+    const message = choice.message && typeof choice.message === 'object' ? choice.message : null;
+    if (Array.isArray(message?.images) && message.images.length) return message.images;
+    const content = typeof message?.content === 'string'
+      ? message.content
+      : (typeof choice.text === 'string' ? choice.text : '');
+    const found = imagesInText(content);
+    if (found.length) return found;
+  }
+  return null;
+}
+
+function snippetOf(value) {
+  let text;
+  try {
+    text = JSON.stringify(value);
+  } catch {
+    text = String(value);
+  }
+  return sanitizeUpstreamText(text).slice(0, 300) || '（空）';
+}
+
+/* 认不出来的时候把收到的东西说清楚：顶层有哪些字段、内容的前 300 字（密钥脱敏），站子回了什么一眼就知道。 */
+export function describePayload(payload) {
+  if (payload === null || payload === undefined || payload === '') return '空响应';
+  if (Array.isArray(payload)) return `一个 ${payload.length} 项的数组，内容 ${snippetOf(payload)}`;
+  if (typeof payload !== 'object') {
+    return `一个${typeof payload === 'string' ? '字符串' : typeof payload}，内容 ${snippetOf(payload)}`;
+  }
+  const keys = Object.keys(payload);
+  if (!keys.length) return '一个空对象 {}';
+  return `顶层字段 ${keys.slice(0, 12).join('、')}${keys.length > 12 ? '…' : ''}，内容 ${snippetOf(payload)}`;
 }
 
 /* 有些中转站拦截时照样回 HTTP 200，只在正文里写 error / message，没有图片。 */
@@ -128,7 +222,7 @@ export function createOpenAiImagesCore({
   }
 
   function parseImageResponse(payload) {
-    const items = findDataArray(payload);
+    const items = findImageItems(payload);
     if (!items?.length) {
       const reason = payloadErrorOf(payload);
       if (reason) {
@@ -140,19 +234,15 @@ export function createOpenAiImagesCore({
           `上游没有返回图片：${reason}${MODERATION_PATTERN.test(reason) ? MODERATION_HINT : ''}`,
         );
       }
-      throw fail('UPSTREAM_RESPONSE_INVALID', '响应中没有图片数组');
+      throw fail('UPSTREAM_RESPONSE_INVALID', `响应中没有图片数组；收到的是${describePayload(payload)}`);
     }
     const results = items.map((item, generationIndex) => {
-      if (!item || typeof item !== 'object') return null;
-      if (typeof item.b64_json === 'string' && item.b64_json) {
-        return { sourceType: 'base64', value: item.b64_json, generationIndex };
-      }
-      if (typeof item.url === 'string' && item.url) {
-        return { sourceType: 'url', value: item.url, generationIndex };
-      }
-      return null;
+      const found = imageItemOf(item);
+      return found ? { ...found, generationIndex } : null;
     }).filter(Boolean);
-    if (!results.length) throw fail('UPSTREAM_RESPONSE_INVALID', '响应中没有 url 或 b64_json');
+    if (!results.length) {
+      throw fail('UPSTREAM_RESPONSE_INVALID', `响应中没有 url 或 b64_json；数组元素长这样：${snippetOf(items.slice(0, 2))}`);
+    }
     return results;
   }
 

@@ -901,7 +901,10 @@ export function createDirectApiClient({
       const cancelled = controller.signal.aborted;
       attempt.status = cancelled ? 'cancelled' : 'failed';
       attempt.errorCode = cancelled ? null : (error.code || 'UPSTREAM_HTTP_ERROR');
-      attempt.errorMessage = cancelled ? '已取消' : (error.message || '生成失败');
+      /* 报错的细节（上游回了什么、哪个字段不对）也记进卡片，不只在弹窗里闪一下；说法里已经带着的不重复。 */
+      const detail = String(error.details || '').trim();
+      const withDetail = detail && !String(error.message || '').includes(detail) ? `：${detail.slice(0, 300)}` : '';
+      attempt.errorMessage = cancelled ? '已取消' : `${error.message || '生成失败'}${withDetail}`;
       if (!cancelled && attempt.compatibilityRetry) {
         attempt.errorMessage += `；已尝试移除 ${attempt.compatibilityRetry.adjustedParameters.join('、')} 后重试一次`;
       }

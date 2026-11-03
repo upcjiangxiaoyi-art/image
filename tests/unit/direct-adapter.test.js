@@ -336,3 +336,50 @@ test('取消发生在回退前时不发送第二次请求；多图仍按一个�
   assert.equal(calls, 2);
   assert.equal(results.length, 2);
 });
+
+/* 1.7.3：中转站回 200 但形状五花八门。能认的都认；认不出来就把收到的字段和内容写进报错。 */
+test('认更多返回形状：images 字段、data 单张、顶层单张、纯链接数组、data URL、聊天格式的 Markdown 图和 message.images', () => {
+  const long = 'A'.repeat(80);
+  const url = (value, generationIndex = 0) => ({ sourceType: 'url', value, generationIndex });
+  assert.deepEqual(parseImageResponse({ images: [{ url: 'https://x/a.png' }] }), [url('https://x/a.png')]);
+  assert.deepEqual(parseImageResponse({ data: { b64_json: long } }), [{ sourceType: 'base64', value: long, generationIndex: 0 }], 'data 是单个对象');
+  assert.deepEqual(parseImageResponse({ url: 'https://x/a.png' }), [url('https://x/a.png')], '顶层就是一张');
+  assert.deepEqual(parseImageResponse({ image: long }), [{ sourceType: 'base64', value: long, generationIndex: 0 }], '顶层 image 放裸 base64');
+  assert.deepEqual(parseImageResponse({ output: ['https://x/a.png', 'https://x/b.png'] }), [url('https://x/a.png'), url('https://x/b.png', 1)], '纯链接数组');
+  assert.deepEqual(parseImageResponse({ output: 'https://x/a.png' }), [url('https://x/a.png')], 'output 直接是链接');
+  assert.deepEqual(
+    parseImageResponse({ data: [{ url: `data:image/png;base64,${long}` }] }),
+    [{ sourceType: 'base64', value: `data:image/png;base64,${long}`, generationIndex: 0 }],
+    'url 里塞 data URL 当内嵌图处理，不去下载',
+  );
+  assert.deepEqual(
+    parseImageResponse({ choices: [{ message: { content: `画好了：![图](https://x/a.png)\n另一张 https://x/b.jpg?sig=1 。` } }] }),
+    [url('https://x/a.png'), url('https://x/b.jpg?sig=1', 1)],
+    '聊天格式：正文里的 Markdown 图和裸链接，去重',
+  );
+  assert.deepEqual(
+    parseImageResponse({ choices: [{ message: { content: '', images: [{ image_url: { url: 'https://x/c.webp' } }] } }] }),
+    [url('https://x/c.webp')],
+    'OpenRouter 式 message.images',
+  );
+  assert.deepEqual(parseImageResponse({ data: [{ url: 'relative/a.png' }] }), [url('relative/a.png')], 'url 字段照旧照单全收');
+});
+
+test('认不出来的返回把收到的字段和内容写进报错，密钥脱敏，站子回了什么一眼就知道', () => {
+  const codeOf = fn => {
+    try { fn(); } catch (error) { return error; }
+    throw new Error('应该抛错');
+  };
+  const pending = codeOf(() => parseImageResponse({ task_id: 'abc', status: 'pending', created: 1 }));
+  assert.equal(pending.code, 'UPSTREAM_RESPONSE_INVALID');
+  assert.match(pending.details, /顶层字段 task_id、status、created/);
+  assert.match(pending.details, /"task_id":"abc"/);
+  assert.match(codeOf(() => parseImageResponse({ data: [{ text: 'none' }] })).details, /数组元素长这样：.*"text":"none"/);
+  assert.match(codeOf(() => parseImageResponse({ data: [] })).details, /顶层字段 data/);
+  assert.match(codeOf(() => parseImageResponse(null)).details, /空响应/);
+  assert.match(codeOf(() => parseImageResponse('oops')).details, /字符串，内容 "oops"/);
+  const masked = codeOf(() => parseImageResponse({ data: [], key: 'sk-abcdefghijklmnop' })).details;
+  assert.doesNotMatch(masked, /sk-abcdefghijklmnop/);
+  assert.match(masked, /已隐藏密钥/);
+  assert.ok(codeOf(() => parseImageResponse({ blob: 'x'.repeat(5000) })).details.length < 400, '最多 300 字');
+});
