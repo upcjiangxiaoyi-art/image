@@ -1,5 +1,5 @@
 /* 唯一的前端版本号；用 npm run version:set 统一修改，测试会检查各处一致。 */
-export const VERSION = '1.7.4';
+export const VERSION = '1.7.5';
 export const MODULE_NAME = 'stImageAtelier';
 export const DISPLAY_NAME = '画笺';
 export const API_ROOT = '/api/plugins/st-image-atelier';
@@ -59,7 +59,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   galleryCleanupByCount: false,
   galleryMaxCount: 200,
   allowHttp: false,
-  maxImageBytes: 30 * 1024 * 1024,
+  /* 4K 的 PNG 常常二三十 MB，30 MB 的上限不够；没改过的老上限会自动换成 64 MB。 */
+  maxImageBytes: 64 * 1024 * 1024,
   downloadTimeoutMs: 60_000,
 });
 

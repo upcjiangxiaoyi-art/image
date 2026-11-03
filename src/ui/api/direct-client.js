@@ -146,8 +146,12 @@ function uniqueImportedName(name, presets) {
   return `${name}（导入 ${suffix}）`;
 }
 
+/* 1.7.5 之前的默认上限是 30 MB，4K 图装不下；只把没改过的老默认值换成新的，自己设的别的值不动。 */
+const LEGACY_MAX_IMAGE_BYTES = 30 * 1024 * 1024;
+
 function normalizeSettings(value = {}) {
   const merged = { ...clone(DEFAULT_SETTINGS), ...value };
+  if (Number(merged.maxImageBytes) === LEGACY_MAX_IMAGE_BYTES) merged.maxImageBytes = DEFAULT_SETTINGS.maxImageBytes;
   return {
     ...merged,
     generationProvider: merged.generationProvider === 'novelai' ? 'novelai' : 'openai',
@@ -509,7 +513,7 @@ export function createDirectApiClient({
       }
       const length = Number(response.headers.get('content-length') || 0);
       if (length > namespace.settings.maxImageBytes) {
-        throw new DirectError('IMAGE_DOWNLOAD_FAILED', '图片超过 30 MB');
+        throw new DirectError('IMAGE_DOWNLOAD_FAILED', `图片超过 ${Math.round(namespace.settings.maxImageBytes / 1024 / 1024)} MB`);
       }
       return new Uint8Array(await response.arrayBuffer());
     } catch (error) {
@@ -555,7 +559,7 @@ export function createDirectApiClient({
       payload = { image: '', bytes, byteLength: bytes.byteLength, type: detectImageType(bytes) };
     }
     if (payload.byteLength > namespace.settings.maxImageBytes) {
-      throw new DirectError('IMAGE_DOWNLOAD_FAILED', '图片超过 30 MB');
+      throw new DirectError('IMAGE_DOWNLOAD_FAILED', `图片超过 ${Math.round(namespace.settings.maxImageBytes / 1024 / 1024)} MB`);
     }
     const { type, byteLength } = payload;
     if (!type) throw new DirectError('UPSTREAM_RESPONSE_INVALID', '仅支持 PNG、JPEG、WebP');

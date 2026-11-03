@@ -11,6 +11,10 @@ test('常用尺寸选项包含 512x768，且使用接口兼容格式', () => {
   assert.ok(values.includes('1024x576'));
   assert.ok(values.includes('2400x3200'), '超大竖图');
   assert.ok(values.includes('3200x2400'), '超大横图配对');
+  for (const size of ['2048x2048', '4096x4096', '1440x2560', '2160x3840', '3072x4096', '2560x1440', '3840x2160', '4096x3072']) {
+    assert.ok(values.includes(size), `1.7.5 加的 2K / 4K 尺寸 ${size}`);
+  }
+  assert.equal(new Set(values).size, values.length, '尺寸不重复');
   assert.ok(values.length >= 20);
   for (const value of values.filter(item => item !== 'auto')) {
     assert.match(value, /^\d+x\d+$/);

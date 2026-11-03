@@ -53,7 +53,7 @@ function defaultSettings() {
     galleryCleanupByCount: false,
     galleryMaxCount: 200,
     allowHttp: false,
-    maxImageBytes: 30 * 1024 * 1024,
+    maxImageBytes: 64 * 1024 * 1024,
     downloadTimeoutMs: 60_000,
     schemaVersion: 1,
   };

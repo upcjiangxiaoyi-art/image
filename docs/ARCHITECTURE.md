@@ -11,7 +11,7 @@ MESSAGE_RECEIVED (live)
   -> 按设置选择 GPT/OpenAI-compatible 或 NovelAI
   -> GPT：URL 下载 / Base64 解码
   -> NAI：组装画师串与 V4/V5 prompt 结构，解开 ZIP 图片包
-  -> magic bytes + 30 MB 大小校验
+  -> magic bytes + 64 MB 大小校验（4K 的 PNG 装得下）
   -> POST /api/images/upload
   -> 图片进入当前 ST 用户图片目录
   -> 画廊元数据写入当前用户文件 st-image-atelier-gallery.json

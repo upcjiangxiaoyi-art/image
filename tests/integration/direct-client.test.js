@@ -1645,3 +1645,26 @@ test('上游返回的 base64 原样上传，不再整张解码再重新编码', 
   const [state] = await client.resolveTags([tagId]);
   assert.equal(state.results[0].byteSize, Buffer.from(PNG_BASE64, 'base64').length, '大小按 base64 长度算，和真解出来一样');
 });
+
+test('图片大小上限：没改过的老默认 30 MB 换成 64 MB，自己设的别的值不动；报错里写的是当前上限', async t => {
+  const extensionSettings = { stImageAtelier: { settings: { maxImageBytes: 30 * 1024 * 1024 } } };
+  const make = (settings = extensionSettings) => createDirectApiClient({
+    compat: { chat: () => [], save: async () => {}, headers: () => ({}) },
+    extensionSettings: settings,
+    saveSettingsDebounced: () => {},
+    galleryStore: createMemoryGalleryMetadataStore(),
+    attemptStore: createMemoryAttemptStore(),
+    keyStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+  });
+  assert.equal((await make().getSettings()).maxImageBytes, 64 * 1024 * 1024, '老默认值换成新的');
+  const custom = { stImageAtelier: { settings: { maxImageBytes: 8 * 1024 * 1024 } } };
+  assert.equal((await make(custom).getSettings()).maxImageBytes, 8 * 1024 * 1024, '自己设的不动');
+
+  const tagId = crypto.randomUUID();
+  const messageUuid = crypto.randomUUID();
+  const message = { is_user: false, mes: '<draw>base64</draw>', extra: { stImageAtelier: leanMetadata(tagId, messageUuid) } };
+  const { client, release } = await gatedClient(t, [message]);
+  await client.updateSettings({ maxImageBytes: 1 });   // 测试用的 PNG 只有几十字节，上限设成 1 字节才会超
+  release();
+  await assert.rejects(client.generate(generationInput(tagId, messageUuid)), error => /图片超过 0 MB/.test(error.details) || /图片超过 0 MB/.test(error.message));
+});

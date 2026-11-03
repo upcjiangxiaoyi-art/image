@@ -361,7 +361,7 @@ async function inflateRaw(bytes) {
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
-export async function unzipNovelAiImages(arrayBuffer, maxImageBytes = 30 * 1024 * 1024) {
+export async function unzipNovelAiImages(arrayBuffer, maxImageBytes = 64 * 1024 * 1024) {
   const bytes = arrayBuffer instanceof Uint8Array ? arrayBuffer : new Uint8Array(arrayBuffer);
   const eocd = findEndOfCentralDirectory(bytes);
   if (eocd < 0) throw new DirectError('UPSTREAM_RESPONSE_INVALID', 'NovelAI 返回的 ZIP 图片包无效');
@@ -534,7 +534,7 @@ export async function generateNovelAiImages({
     },
     body: JSON.stringify(built.body),
     signal,
-  }, config.timeoutMs || 180_000, settings.maxImageBytes || 30 * 1024 * 1024);
+  }, config.timeoutMs || 180_000, settings.maxImageBytes || 64 * 1024 * 1024);
   return {
     sources,
     resolvedPrompt: built.resolvedPrompt,
