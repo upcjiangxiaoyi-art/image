@@ -1043,7 +1043,7 @@ export function createToolPanel({ api, store, onError = () => {} }) {
   referenceHeading.textContent = '参考图（图生图，每个预设最多 4 张）';
   const referenceHint = document.createElement('small');
   referenceHint.className = 'stia-muted';
-  referenceHint.textContent = '传几张角色的脸和服装，这个预设出的图就跟着参考走；走 OpenAI 的 /v1/images/edits 接口，中转站要支持。只有免服务端直连的 GPT 有，NovelAI 和增强模式暂不支持。';
+  referenceHint.textContent = '传几张角色的脸和服装，这个预设出的图就跟着参考走；每张缩略图下面可以「换一张」或「删除」。走 OpenAI 的 /v1/images/edits 接口，中转站要支持。只有免服务端直连的 GPT 有，NovelAI 和增强模式暂不支持。';
   const referenceList = document.createElement('div');
   referenceList.className = 'stia-reference-list';
   const referenceInput = input('file');
@@ -1051,6 +1051,12 @@ export function createToolPanel({ api, store, onError = () => {} }) {
   referenceInput.multiple = true;
   referenceInput.hidden = true;
   const addReference = action('⊕  添加参考图', () => referenceInput.click());
+  /* 「换一张」：单选一张，原位替换这张参考图（顺序不变，满 4 张也能换）。记下换的是哪张、点的是哪个按钮。 */
+  const replaceInput = input('file');
+  replaceInput.accept = 'image/png,image/jpeg,image/webp';
+  replaceInput.hidden = true;
+  let replacingReferenceId = '';
+  let replacingControl = null;
   const useReferences = input('checkbox');
   const useReferencesField = field('每张图自动带上参考图', useReferences);
   useReferencesField.classList.add('stia-switch-field', 'stia-switch-field--row');
@@ -1065,7 +1071,7 @@ export function createToolPanel({ api, store, onError = () => {} }) {
   referenceFidelityField.querySelector('span')?.append(referenceFidelityDescription);
   const referenceActions = document.createElement('div');
   referenceActions.className = 'stia-actions stia-actions--fill';
-  referenceActions.append(addReference, referenceInput);
+  referenceActions.append(addReference, referenceInput, replaceInput);
 
   function referenceUrl(path) {
     const value = String(path || '');
@@ -1079,26 +1085,37 @@ export function createToolPanel({ api, store, onError = () => {} }) {
     referenceHeading.textContent = preset?.name
       ? `参考图（图生图，「${preset.name}」这个预设的，最多 4 张）`
       : '参考图（图生图，每个预设最多 4 张）';
-    for (const reference of items) {
+    items.forEach((reference, position) => {
       const item = document.createElement('figure');
       item.className = 'stia-reference-item';
       const image = document.createElement('img');
       image.src = referenceUrl(reference.path);
-      image.alt = reference.name || '参考图';
+      image.alt = reference.name || `参考图 ${position + 1}`;
+      image.title = reference.name || '';
       image.loading = 'lazy';
-      const remove = action('×', async () => run(remove, async () => {
+      /* 缩略图下面两个写着字的按钮，手机上手指点得到；之前只有角上一个 24px 的小「×」，iPhone 上找不到。 */
+      const replace = action('换一张', () => {
+        replacingReferenceId = reference.id;
+        replacingControl = replace;
+        replaceInput.click();
+      });
+      replace.className = 'stia-button stia-reference-item__button';
+      replace.setAttribute('aria-label', `换掉第 ${position + 1} 张参考图`);
+      const remove = action('删除', async () => run(remove, async () => {
         const next = await api.removeReference(activePresetId, reference.id);
         const index = presets.findIndex(entry => entry.id === next.id);
         if (index >= 0) presets[index] = next;
         renderReferences(next);
-        status.textContent = `已删除参考图${reference.name ? `「${reference.name}」` : ''}`;
+        status.textContent = `已删除参考图${reference.name ? `「${reference.name}」` : ''}，现在共 ${next.references.length} 张`;
       }));
-      remove.className = 'stia-button stia-reference-item__remove';
-      remove.setAttribute('aria-label', '删除这张参考图');
-      remove.title = reference.name || '删除这张参考图';
-      item.append(image, remove);
+      remove.className = 'stia-button stia-button--danger stia-reference-item__button';
+      remove.setAttribute('aria-label', `删除第 ${position + 1} 张参考图`);
+      const itemActions = document.createElement('div');
+      itemActions.className = 'stia-reference-item__actions';
+      itemActions.append(replace, remove);
+      item.append(image, itemActions);
       referenceList.append(item);
-    }
+    });
     if (!items.length) {
       const empty = document.createElement('p');
       empty.className = 'stia-reference-empty';
@@ -1130,6 +1147,23 @@ export function createToolPanel({ api, store, onError = () => {} }) {
       status.textContent = added
         ? `已添加 ${added} 张参考图，现在共 ${preset.references.length} 张`
         : '这个预设已经有 4 张参考图了，先删一张再加';
+    });
+  });
+  replaceInput.addEventListener('change', async () => {
+    const [file] = [...(replaceInput.files || [])];
+    replaceInput.value = '';
+    const referenceId = replacingReferenceId;
+    const control = replacingControl || addReference;
+    replacingReferenceId = '';
+    replacingControl = null;
+    if (!file || !referenceId || !activePresetId) return;
+    await run(control, async () => {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const preset = await api.replaceReference(activePresetId, referenceId, { bytes, filename: file.name });
+      const index = presets.findIndex(entry => entry.id === preset.id);
+      if (index >= 0) presets[index] = preset;
+      renderReferences(preset);
+      status.textContent = `已换成「${file.name}」，位置和顺序不变`;
     });
   });
   useReferences.addEventListener('change', async () => {

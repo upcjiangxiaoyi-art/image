@@ -1605,6 +1605,23 @@ export function createDirectApiClient({
       await removeFile({ localRelativePath: target.path }).catch(error => console.warn('[画笺] 删除参考图文件失败', error));
       return publicPreset(preset, getApiKey(preset.id));
     },
+    /* 换一张参考图：原位替换，顺序不变（顺序决定出图时谁排前面），满 4 张也能换，不用先删再加。
+       新图传好、设置写盘之后才删旧文件；新图格式不对时原图原样留着。 */
+    replaceReference: async (presetId, referenceId, file) => {
+      const preset = presetById(presetId || namespace.activePresetId);
+      if (!preset) throw new DirectError('VALIDATION_FAILED', '找不到所选 API 预设');
+      const index = preset.references.findIndex(item => item.id === referenceId);
+      if (index < 0) throw new DirectError('VALIDATION_FAILED', '找不到这张参考图', 400, false, '找不到这张参考图');
+      const previous = preset.references[index];
+      const uploaded = await uploadReferenceImage(file);
+      const next = [...preset.references];
+      next[index] = { id: uploaded.id, path: uploaded.path, name: uploaded.name, addedAt: now() };
+      preset.references = normalizeReferences(next);
+      preset.updatedAt = now();
+      await savePreferences({ immediate: true });
+      await removeFile({ localRelativePath: previous.path }).catch(error => console.warn('[画笺] 删除旧参考图文件失败', error));
+      return publicPreset(preset, getApiKey(preset.id));
+    },
     listModels: async presetId => {
       const preset = presetById(presetId || namespace.activePresetId);
       if (!preset) throw new DirectError('VALIDATION_FAILED', '找不到所选 API 预设');

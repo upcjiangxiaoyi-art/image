@@ -183,6 +183,12 @@ export function createApiClient({
       return direct.addReference(presetId, file);
     },
     removeReference: (presetId, referenceId) => direct.removeReference(presetId, referenceId),
+    replaceReference: (presetId, referenceId, file) => {
+      if (direct.mode() !== 'direct') {
+        throw new ApiError({ message: '参考图目前用于免服务端直连模式' }, 400);
+      }
+      return direct.replaceReference(presetId, referenceId, file);
+    },
     generate: input => {
       if (input.provider === 'novelai') return direct.generate(input);
       if (direct.mode() === 'server' && input.references?.length) {

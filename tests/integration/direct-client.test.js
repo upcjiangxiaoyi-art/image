@@ -1710,6 +1710,46 @@ test('参考图：给预设加最多 4 张，删掉时文件一起删；格式�
   await assert.rejects(client.removeReference(presetId, 'missing'), /找不到这张参考图/);
 });
 
+test('换一张参考图：原位替换顺序不变，满 4 张也能换；新图传好、写盘后才删旧文件；新图格式不对时原图不动', async t => {
+  const tagId = crypto.randomUUID();
+  const message = { is_user: false, mes: '<draw>base64</draw>', extra: { stImageAtelier: leanMetadata(tagId, crypto.randomUUID()) } };
+  const { client, deletedPaths, uploads } = await gatedClient(t, [message]);
+  const png = Buffer.from(PNG_BASE64, 'base64');
+  const presetId = (await client.getPresets()).activePresetId;
+  for (let index = 0; index < 4; index += 1) {
+    await client.addReference(presetId, { bytes: png, filename: `face-${index}.png` });
+  }
+  const before = (await client.getPresets()).items.find(item => item.id === presetId).references;
+  const uploadsBefore = uploads.length;
+  const deletesBefore = deletedPaths.length;
+
+  const replaced = await client.replaceReference(presetId, before[1].id, { bytes: png, filename: 'face-new.png' });
+  assert.equal(replaced.references.length, 4, '满 4 张也能换，数量不变');
+  assert.deepEqual(
+    replaced.references.map(item => item.id).filter((_, index) => index !== 1),
+    [before[0].id, before[2].id, before[3].id],
+    '别的三张原样不动',
+  );
+  assert.notEqual(replaced.references[1].id, before[1].id);
+  assert.equal(replaced.references[1].name, 'face-new.png', '新的那张顶在原来的位置');
+  assert.notEqual(replaced.references[1].path, before[1].path);
+  assert.equal(uploads.length, uploadsBefore + 1, '新图传上去');
+  assert.deepEqual(deletedPaths.slice(deletesBefore), [before[1].path], '只删旧文件这一份');
+
+  const persisted = (await client.getPresets()).items.find(item => item.id === presetId).references;
+  assert.deepEqual(persisted.map(item => item.path), replaced.references.map(item => item.path));
+
+  await assert.rejects(
+    client.replaceReference(presetId, replaced.references[0].id, { bytes: new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]), filename: 'bad.bin' }),
+    /PNG、JPEG、WebP/,
+  );
+  const untouched = (await client.getPresets()).items.find(item => item.id === presetId).references;
+  assert.deepEqual(untouched, persisted, '格式不对时原图原样留着');
+  assert.equal(uploads.length, uploadsBefore + 1, '没有多传');
+  assert.equal(deletedPaths.length, deletesBefore + 1, '没有多删');
+  await assert.rejects(client.replaceReference(presetId, 'missing', { bytes: png, filename: 'x.png' }), /找不到这张参考图/);
+});
+
 test('出图自动带上预设的参考图：走 edits 接口、表单里有图、记录和画廊记录上记着路径；关掉自动带上就走普通接口', async t => {
   const tagId = crypto.randomUUID();
   const messageUuid = crypto.randomUUID();
@@ -1804,10 +1844,12 @@ test('参考图增删当场写盘，不只靠防抖：手机 Safari 后台重载
   const before = immediate;
   const preset = await client.addReference(presetId, { bytes: Buffer.from(PNG_BASE64, 'base64'), filename: 'face.png' });
   assert.equal(immediate, before + 1, '加参考图当场写盘');
-  await client.removeReference(presetId, preset.references[0].id);
-  assert.equal(immediate, before + 2, '删参考图也当场写盘');
+  const replaced = await client.replaceReference(presetId, preset.references[0].id, { bytes: Buffer.from(PNG_BASE64, 'base64'), filename: 'face-2.png' });
+  assert.equal(immediate, before + 2, '换一张也当场写盘');
+  await client.removeReference(presetId, replaced.references[0].id);
+  assert.equal(immediate, before + 3, '删参考图也当场写盘');
   await client.updatePreset(presetId, { name: '改个名' });
-  assert.equal(immediate, before + 2, '普通改动照旧防抖');
+  assert.equal(immediate, before + 3, '普通改动照旧防抖');
   assert.ok(debounced >= 1);
 
   const reloaded = make();

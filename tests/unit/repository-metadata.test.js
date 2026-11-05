@@ -163,4 +163,8 @@ test('设置页有参考图入口，画质说明包含 2.6', async () => {
   assert.match(source, /input_fidelity: high/);
   assert.match(source, /gpt-image-2\.5 \/ 2\.6/);
   assert.match(source, /这个预设的，最多 4 张/, '参考图标题写明是哪个预设的');
+  assert.match(source, /api\.replaceReference\(/, '缩略图下面能原位换一张');
+  assert.match(source, /action\('换一张'/, '「换一张」是写着字的按钮，不是角上的小 ×');
+  assert.match(source, /action\('删除', async \(\) => run\(remove/, '「删除」也是写着字的按钮');
+  assert.doesNotMatch(source, /stia-reference-item__remove/, '不再用缩略图角上那个 24px 的 ×');
 });

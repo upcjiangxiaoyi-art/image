@@ -110,7 +110,7 @@ NovelAI 当前固定走直连模式；官方 `POST /ai/generate-image` 返回的
 
 ## 参考图（图生图）
 
-`direct-client.js` 的 `planReferences` 决定这次带哪几张：卡片上指定的（`input.references`，`{ resultId }` 或 `{ path, temporary }`）排前面，再带预设里的（`useReferences` 开着时），同一张不重复，最多 `MAX_PRESET_REFERENCES` 张；`loadReference` 从酒馆同源读回文件。带图时 `openai-images-core.js` 的 `generateImages` 改走 `editsPath`（multipart：一张 `image`、多张 `image[]`，字段由 `buildEditFields` 算，gpt-image 不发 `response_format`，`referenceFidelity: 'high'` 发 `input_fidelity`），智能重试按字段名重建表单。临时参考图用完由 `generate` 的 finally 删掉。Server Plugin 这条还没接。
+`direct-client.js` 的 `planReferences` 决定这次带哪几张：卡片上指定的（`input.references`，`{ resultId }` 或 `{ path, temporary }`）排前面，再带预设里的（`useReferences` 开着时），同一张不重复，最多 `MAX_PRESET_REFERENCES` 张；`loadReference` 从酒馆同源读回文件。带图时 `openai-images-core.js` 的 `generateImages` 改走 `editsPath`（multipart：一张 `image`、多张 `image[]`，字段由 `buildEditFields` 算，gpt-image 不发 `response_format`，`referenceFidelity: 'high'` 发 `input_fidelity`），智能重试按字段名重建表单。临时参考图用完由 `generate` 的 finally 删掉。预设上的参考图由 `addReference` / `replaceReference`（原位替换，顺序不变，满 4 张也能换；新图传好、设置写盘之后才删旧文件）/ `removeReference` 维护，三个都当场写盘。Server Plugin 这条还没接。
 
 ## 请求逻辑只有一份
 
