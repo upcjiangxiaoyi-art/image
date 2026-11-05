@@ -116,6 +116,11 @@ const actions = {
   },
   /* 等不及时「再画一张」（可换预设），正在画的那张留在后台接着画。 */
   reroll: (tag, attemptId, preset) => controller.reroll(tag, attemptId, preset),
+  /* 「参考重画」：拿卡片上这张图（或相册选的）当参考再画，人脸、服装跟着它。 */
+  referenceRegenerate: (tag, { references, preset } = {}) => generate(tag, 'manual', {
+    references,
+    ...(preset ? { preset } : {}),
+  }),
   /* 失败的卡片上「换备用线路」：用设置里的备用线路重画。 */
   fallback: tag => controller.generateWithBackup(tag),
   cancel: attemptId => controller.cancel(attemptId),

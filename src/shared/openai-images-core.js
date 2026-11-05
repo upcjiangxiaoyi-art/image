@@ -456,6 +456,33 @@ export function createOpenAiImagesCore({
       ?.adjustedParameters.includes('response_format'));
   }
 
+  /* 带参考图（图生图）走 /v1/images/edits：multipart 表单，图片文件加上和生图一样的那几个字段。
+     gpt-image 系列的 edits 不收 response_format（它只回 base64），dall-e-2 才收；
+     高保真（input_fidelity: high）按预设开关发。先算出字段对象（智能重试要按字段名删），再装进表单。 */
+  function buildEditFields({ preset, prompt, parameters = {} }) {
+    const fields = buildRequestBody({ preset, prompt, parameters });
+    if (/^gpt-image/i.test(String(preset.selectedModel || '')) || !fields.response_format) delete fields.response_format;
+    if (preset.referenceFidelity === 'high') fields.input_fidelity = 'high';
+    return fields;
+  }
+
+  function buildEditForm(fields, references = []) {
+    const form = new FormData();
+    references.forEach((reference, index) => {
+      const mimeType = reference.mimeType || reference.blob?.type || 'image/png';
+      const blob = reference.blob instanceof Blob
+        ? reference.blob
+        : new Blob([reference.bytes], { type: mimeType });
+      const name = reference.name || `reference-${index + 1}.${mimeType.split('/')[1] || 'png'}`;
+      form.append(references.length > 1 ? 'image[]' : 'image', blob, name);
+    });
+    for (const [key, value] of Object.entries(fields)) {
+      if (value === undefined || value === null) continue;
+      form.append(key, typeof value === 'object' ? JSON.stringify(value) : String(value));
+    }
+    return form;
+  }
+
   /* 标签 quality → 默认质量（选「不发送」则不发）→「额外请求参数 JSON」最后覆盖。
      默认请求 b64_json 内嵌返回：很多中转站会把图片转成图床 URL，浏览器再去拉那张图时
      常被 CORS 或跳转拦下（尤其手机）。内嵌返回跳过这一步。「额外请求参数 JSON」可覆盖。 */
@@ -482,6 +509,7 @@ export function createOpenAiImagesCore({
     signal,
     onCompatibilityRetry,
     onAsyncJob,
+    references = [],
   }) {
     if (!preset.baseUrl) throw fail('PRESET_NOT_CONFIGURED');
     if (!apiKey) throw fail('API_KEY_MISSING');
@@ -489,15 +517,24 @@ export function createOpenAiImagesCore({
     if (typeof prompt !== 'string' || !prompt.trim() || prompt.length > MAX_PROMPT_LENGTH) {
       throw fail('VALIDATION_FAILED', `提示词必须为 1-${MAX_PROMPT_LENGTH} 个字符`);
     }
-    const endpoint = normalizeEndpoint(preset.baseUrl, preset.generationPath);
+    const withReferences = Array.isArray(references) && references.length > 0;
+    const endpoint = normalizeEndpoint(
+      preset.baseUrl,
+      withReferences ? (preset.editsPath || '/v1/images/edits') : preset.generationPath,
+    );
     validateEndpoint(endpoint, settings.allowHttp);
-    const body = buildRequestBody({ preset, prompt: prompt.trim(), parameters });
-    const request = payloadBody => fetchJson(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...authorization(apiKey) },
-      body: JSON.stringify(payloadBody),
-      signal,
-    }, preset.timeoutMs);
+    const body = withReferences
+      ? buildEditFields({ preset, prompt: prompt.trim(), parameters })
+      : buildRequestBody({ preset, prompt: prompt.trim(), parameters });
+    /* multipart 不自己写 Content-Type，边界由浏览器填。 */
+    const request = payloadBody => fetchJson(endpoint, withReferences
+      ? { method: 'POST', headers: authorization(apiKey), body: buildEditForm(payloadBody, references), signal }
+      : {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authorization(apiKey) },
+        body: JSON.stringify(payloadBody),
+        signal,
+      }, preset.timeoutMs);
     let payload;
     try {
       payload = await request(body);
@@ -543,6 +580,8 @@ export function createOpenAiImagesCore({
     detectCompatibilityRetry,
     rejectsResponseFormat,
     buildRequestBody,
+    buildEditFields,
+    buildEditForm,
     asyncJobOf,
     settleAsyncJob,
     generateImages,

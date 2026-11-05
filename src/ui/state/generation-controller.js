@@ -141,6 +141,9 @@ export function createGenerationController({
         prompt,
         ...(Object.hasOwn(overrides, 'negativePromptOverride')
           ? { negativePromptOverride: overrides.negativePromptOverride } : {}),
+        /* 参考图：卡片上「参考重画」指定的那张（或相册选的），预设里的角色参考图由直连那边自己带。 */
+        ...(Array.isArray(overrides.references) && overrides.references.length
+          ? { references: overrides.references } : {}),
         chatId,
         messageUuid: tag.messageUuid,
         tagOrdinal: tag.ordinal,

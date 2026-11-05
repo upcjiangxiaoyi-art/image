@@ -130,6 +130,9 @@ export function imageInfo(result, producer) {
     else if (typeof qualitySnapshot === 'string') quality = qualitySnapshot || '默认';
     else quality = String(producer?.parameters?.quality || '');
   }
+  const references = Array.isArray(result?.references)
+    ? result.references.length
+    : (Array.isArray(producer?.references) ? producer.references.length : 0);
   return {
     presetLabel: novelai ? '画师串' : '预设',
     preset: novelai
@@ -138,6 +141,7 @@ export function imageInfo(result, producer) {
     model: result?.apiModel || producer?.model || '',
     quality,
     size: dropped.has('size') ? '默认尺寸' : displaySize(producer?.parameters?.size || result?.requestedSize || ''),
+    references,
   };
 }
 
@@ -150,6 +154,7 @@ function infoList(info) {
     [info.presetLabel, info.preset, 'is-start'],
     ['画质', qualityUnknown ? '未记录' : info.quality, 'is-end'],
     ['模型', info.model, 'is-wide'],
+    ['参考图', info.references ? `带了 ${info.references} 张` : '', 'is-wide'],
   ].filter(([, value]) => value);
   if (!items.length) return null;
   const list = document.createElement('dl');
@@ -200,6 +205,7 @@ export function createCard({
   onRemove,
   onReroll,
   onFallback,
+  onReferenceRegenerate,
   listPresets,
 }) {
   const root = document.createElement('section');
@@ -287,8 +293,9 @@ export function createCard({
   /* GPT 有好几个 API 预设时先选用哪个（换 key、换分组）：
      - 「再画一张」：只有一个或用 NovelAI 时确认一下就画，正在画的那张留在后台接着画；
      - 「重新生成」：画出这张图的「原渠道」排第一；只有一个预设、NovelAI 或增强模式时和以前一样点了就画。 */
-  function openChooser(mode, { attemptId = null, originalId = '' } = {}) {
-    chooser = { mode, attemptId, originalId, presets: null };
+  /* mode 'reference'：「参考重画」，先选用哪张图当参考（默认卡片上这张，可从相册另选），再选预设。 */
+  function openChooser(mode, { attemptId = null, originalId = '', reference = null } = {}) {
+    chooser = { mode, attemptId, originalId, presets: null, reference, uploading: false, error: '' };
     render();
     const wantsPresets = getSettings()?.generationProvider !== 'novelai' && typeof listPresets === 'function';
     Promise.resolve(wantsPresets ? listPresets() : [])
@@ -303,12 +310,88 @@ export function createCard({
           return;
         }
         const rank = item => {
-          if (mode === 'regenerate' && item.id === originalId) return 0;
+          if ((mode === 'regenerate' || mode === 'reference') && item.id === originalId) return 0;
           return item.active ? 1 : item.backup ? 2 : 3;
         };
-        chooser = { mode, attemptId, originalId, presets: [...list].sort((left, right) => rank(left) - rank(right)) };
+        chooser = { ...chooser, presets: [...list].sort((left, right) => rank(left) - rank(right)) };
         render();
       });
+  }
+
+  function startReferenceRegenerate(preset) {
+    const reference = chooser?.reference;
+    chooser = null;
+    render();
+    if (!reference) return;
+    void Promise.resolve(onReferenceRegenerate(tag, { references: [reference], preset })).catch(() => {});
+  }
+
+  /* 从相册另选一张当参考：先存进酒馆拿到路径，用完由直连那边删掉。 */
+  function pickReferenceFile() {
+    if (!chooser || typeof api?.uploadReferenceImage !== 'function') return;
+    const picker = document.createElement('input');
+    picker.type = 'file';
+    picker.accept = 'image/png,image/jpeg,image/webp';
+    picker.hidden = true;
+    picker.addEventListener('change', async () => {
+      const file = picker.files?.[0];
+      picker.remove?.();
+      if (!file || !chooser) return;
+      chooser = { ...chooser, uploading: true, error: '' };
+      render();
+      try {
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        const uploaded = await api.uploadReferenceImage({ bytes, filename: file.name });
+        if (!chooser) return;
+        chooser = { ...chooser, uploading: false, reference: { path: uploaded.path, temporary: true, name: file.name } };
+      } catch (error) {
+        if (!chooser) return;
+        chooser = { ...chooser, uploading: false, error: error?.message || '参考图上传失败' };
+      }
+      render();
+    });
+    document.body?.append?.(picker);
+    picker.click?.();
+  }
+
+  function referenceChooser() {
+    const box = document.createElement('div');
+    box.className = 'stia-card__reroll';
+    const note = document.createElement('p');
+    note.className = 'stia-muted';
+    const reference = chooser.reference;
+    note.textContent = reference?.temporary
+      ? `用相册里选的「${reference.name || '这张图'}」当参考重画，人脸、服装跟着它。`
+      : '用卡片上这张图当参考重画，人脸、服装跟着它。';
+    box.append(note);
+    const source = document.createElement('div');
+    source.className = 'stia-actions stia-actions--fill';
+    source.append(button(chooser.uploading ? '正在上传…' : '从相册另选一张', 'stia-button--ghost stia-card__reference-pick', pickReferenceFile, '⊕'));
+    box.append(source);
+    if (chooser.error) {
+      const error = document.createElement('p');
+      error.className = 'stia-status stia-error';
+      error.textContent = chooser.error;
+      box.append(error);
+    }
+    const actions = document.createElement('div');
+    actions.className = 'stia-actions stia-actions--fill';
+    const presets = chooser.presets;
+    if (presets === null) {
+      const loading = document.createElement('p');
+      loading.className = 'stia-muted';
+      loading.textContent = '正在读取 API 预设…';
+      box.append(loading);
+    } else if (presets.length > 1) {
+      for (const preset of presets) {
+        actions.append(button(presetLabel(preset), 'stia-card__reroll-preset', () => startReferenceRegenerate(preset)));
+      }
+    } else {
+      actions.append(button('确定参考重画', 'stia-button--primary', () => startReferenceRegenerate(presets[0]), '◫'));
+    }
+    actions.append(button('算了', 'stia-button--ghost stia-card__reroll-close', closeChooser));
+    box.append(actions);
+    return box;
   }
 
   function closeChooser() {
@@ -329,7 +412,7 @@ export function createCard({
   }
 
   function presetLabel(preset) {
-    const original = chooser.mode === 'regenerate' && preset.id === chooser.originalId;
+    const original = (chooser.mode === 'regenerate' || chooser.mode === 'reference') && preset.id === chooser.originalId;
     return `${preset.name}${original ? '（原渠道）' : ''}${preset.active && !original ? '（当前）' : ''}`
       + `${preset.backup ? '（备用）' : ''}${preset.hasApiKey === false ? '（没填 Key）' : ''}`;
   }
@@ -424,8 +507,14 @@ export function createCard({
       && attempt?.provider !== 'novelai'
       && attempt?.presetId !== settings.backupPresetId
       && fallbackAdvice({ attempt }).manual;
+    /* 参考重画只有免服务端直连的 GPT 有：拿这张图当参考走图生图接口。 */
+    const canReference = typeof onReferenceRegenerate === 'function'
+      && Boolean(shown)
+      && settings.executionMode !== 'server'
+      && settings.generationProvider !== 'novelai'
+      && (shown?.provider || attempt?.provider || 'openai') !== 'novelai';
     /* 卡片换了状态（开始画了、画完了），对应的选择就收起。 */
-    const chooserStale = chooser?.mode === 'regenerate'
+    const chooserStale = chooser?.mode === 'regenerate' || chooser?.mode === 'reference'
       ? (!shown || ACTIVE_STATUSES.has(attempt?.status))
       : chooser && (chooser.attemptId !== attempt?.attemptId || !ACTIVE_STATUSES.has(attempt?.status));
     if (chooserStale) chooser = null;
@@ -434,8 +523,9 @@ export function createCard({
       attempt?.model, attempt?.provider, attempt?.errorMessage, size,
       shown?.resultId, shown?.provider, src, available.map(result => result.resultId), shownIndex,
       Boolean(state.tag?.resultIds?.length), actualPrompt, actualNegativePrompt, canAdjust, ratioLabel,
-      running.map(item => item.attemptId), chooser && [chooser.mode, chooser.attemptId, chooser.presets], duration,
-      info, imageSize, canUseBackup,
+      running.map(item => item.attemptId),
+      chooser && [chooser.mode, chooser.attemptId, chooser.presets, chooser.reference?.path || chooser.reference?.resultId, chooser.uploading, chooser.error],
+      duration, info, imageSize, canUseBackup, canReference,
     ]);
     if (signature === lastSignature) {
       /* 卡片被摘下又放回（酒馆重建这一层）时计时可能停了，顺手续上。 */
@@ -558,6 +648,12 @@ export function createCard({
         button('查看 / 保存', 'stia-button--square', openOriginal, '⌕'),
         button('画廊', 'stia-button--square', () => onOpenGallery(tag.tagId), '▦'),
       );
+      if (canReference) {
+        actions.append(button('参考重画', '', () => openChooser('reference', {
+          originalId: shown.presetId || producer?.presetId || '',
+          reference: { resultId: shown.resultId },
+        }), '◫'));
+      }
       if (canAdjust) {
         actions.append(button('调整后重绘', '', () => onAdjustRegenerate(tag, {
           prompt: actualPrompt,
@@ -567,13 +663,15 @@ export function createCard({
           attempt,
         }), '✎'));
       }
+      /* 四个以上按钮在手机上挤成一行每个都要折行，改成两个一行。 */
+      if (actions.children.length >= 4) actions.classList.add('stia-actions--pairs');
       body.append(completion);
       const details = infoList(info);
       if (details) body.append(details);
-      const choosing = chooser?.mode === 'regenerate';
+      const choosing = chooser?.mode === 'regenerate' || chooser?.mode === 'reference';
       /* 选预设重新生成时先收起翻看：「原渠道」是按打开时看的那张标的。 */
       if (available.length > 1 && !choosing) body.append(pager(shownIndex, available.length));
-      body.append(choosing ? rerollChooser(attempt) : actions);
+      body.append(choosing ? (chooser.mode === 'reference' ? referenceChooser() : rerollChooser(attempt)) : actions);
       if (running.length) body.append(backgroundNote(running));
       body.append(promptDetails(actualPrompt));
       root.append(media, body);

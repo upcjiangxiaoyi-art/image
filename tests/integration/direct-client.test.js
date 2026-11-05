@@ -866,6 +866,8 @@ async function gatedClient(t, chat, {
   const requests = [];
   const deletedPaths = [];
   const uploads = [];
+  const edits = [];
+  const served = [];
   let release;
   const gate = new Promise(resolve => { release = resolve; });
   let markStarted;
@@ -874,7 +876,7 @@ async function gatedClient(t, chat, {
     if (url === '/api/images/upload') {
       const body = JSON.parse(options.body);
       uploads.push(body);
-      return response(200, { path: `user/images/st-image-atelier/${body.filename}.${body.format}` });
+      return response(200, { path: `user/images/${body.ch_name || 'st-image-atelier'}/${body.filename}.${body.format}` });
     }
     if (url === '/api/images/delete') {
       deletedPaths.push(JSON.parse(options.body).path);
@@ -885,6 +887,16 @@ async function gatedClient(t, chat, {
       markStarted();
       await gate;
       return response(200, { data: [{ b64_json: PNG_BASE64 }] });
+    }
+    if (String(url).endsWith('/v1/images/edits')) {
+      edits.push({ body: options.body, headers: options.headers || {} });
+      markStarted();
+      await gate;
+      return response(200, { data: [{ b64_json: PNG_BASE64 }] });
+    }
+    if (String(url).startsWith('/user/images/')) {
+      served.push(String(url));
+      return new Response(Buffer.from(PNG_BASE64, 'base64'), { status: 200, headers: { 'Content-Type': 'image/png' } });
     }
     throw new Error(`意外的请求：${url}`);
   };
@@ -913,7 +925,7 @@ async function gatedClient(t, chat, {
     apiKey: 'sk-test',
     selectedModel: 'gpt-image-1',
   });
-  return { client, requests, release, started, deletedPaths, uploads, attemptStore, galleryStore };
+  return { client, requests, release, started, deletedPaths, uploads, edits, served, attemptStore, galleryStore };
 }
 
 function leanMetadata(tagId, messageUuid, prompt = 'base64') {
@@ -1667,4 +1679,97 @@ test('图片大小上限：没改过的老默认 30 MB 换成 64 MB，自己设�
   await client.updateSettings({ maxImageBytes: 1 });   // 测试用的 PNG 只有几十字节，上限设成 1 字节才会超
   release();
   await assert.rejects(client.generate(generationInput(tagId, messageUuid)), error => /图片超过 0 MB/.test(error.details) || /图片超过 0 MB/.test(error.message));
+});
+
+/* 1.8.0 参考图（图生图）。 */
+test('参考图：给预设加最多 4 张，删掉时文件一起删；格式不对的拒收', async t => {
+  const tagId = crypto.randomUUID();
+  const message = { is_user: false, mes: '<draw>base64</draw>', extra: { stImageAtelier: leanMetadata(tagId, crypto.randomUUID()) } };
+  const { client, deletedPaths, uploads } = await gatedClient(t, [message]);
+  const png = Buffer.from(PNG_BASE64, 'base64');
+  const presetId = (await client.getPresets()).activePresetId;
+  for (let index = 0; index < 4; index += 1) {
+    await client.addReference(presetId, { bytes: png, filename: `face-${index}.png` });
+  }
+  await assert.rejects(client.addReference(presetId, { bytes: png, filename: 'one-more.png' }), /最多 4 张/);
+  const preset = (await client.getPresets()).items.find(item => item.id === presetId);
+  assert.equal(preset.references.length, 4);
+  assert.match(preset.references[0].path, /^user\/images\/st-image-atelier-refs\/ref-/);
+  assert.equal(preset.references[0].name, 'face-0.png');
+  assert.equal(uploads.filter(upload => upload.ch_name === 'st-image-atelier-refs').length, 4, '存在自己的目录，和生成结果分开');
+  assert.equal(preset.useReferences, true);
+  assert.equal(preset.referenceFidelity, '');
+
+  const removed = await client.removeReference(presetId, preset.references[0].id);
+  assert.equal(removed.references.length, 3);
+  assert.equal(deletedPaths.at(-1), preset.references[0].path, '文件一起删');
+  await assert.rejects(
+    client.addReference(presetId, { bytes: new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]), filename: 'bad.bin' }),
+    /PNG、JPEG、WebP/,
+  );
+  await assert.rejects(client.removeReference(presetId, 'missing'), /找不到这张参考图/);
+});
+
+test('出图自动带上预设的参考图：走 edits 接口、表单里有图、记录和画廊记录上记着路径；关掉自动带上就走普通接口', async t => {
+  const tagId = crypto.randomUUID();
+  const messageUuid = crypto.randomUUID();
+  const message = { is_user: false, mes: '<draw>base64</draw>', extra: { stImageAtelier: leanMetadata(tagId, messageUuid) } };
+  const { client, release, edits, served, requests } = await gatedClient(t, [message]);
+  release();
+  const png = Buffer.from(PNG_BASE64, 'base64');
+  const presetId = (await client.getPresets()).activePresetId;
+  await client.addReference(presetId, { bytes: png, filename: 'face.png' });
+  await client.addReference(presetId, { bytes: png, filename: 'outfit.png' });
+  const paths = (await client.getPresets()).items.find(item => item.id === presetId).references.map(item => item.path);
+
+  const attempt = await client.generate(generationInput(tagId, messageUuid));
+  assert.equal(attempt.status, 'succeeded');
+  assert.equal(edits.length, 1, '走图生图接口');
+  assert.equal(requests.length, 0, '没走普通生图接口');
+  assert.equal(edits[0].body.getAll('image[]').length, 2);
+  assert.equal(edits[0].body.get('prompt'), 'base64');
+  assert.deepEqual(served.map(url => url.replace(/^\//, '')), paths, '参考图按顺序从酒馆读回来');
+  assert.deepEqual(attempt.references, paths, '生成记录上记着参考图路径');
+  const [state] = await client.resolveTags([tagId]);
+  assert.deepEqual(state.results[0].references, paths, '画廊记录上也记着');
+  assert.equal(state.attempts[0].references.length, 2);
+
+  await client.updatePreset(presetId, { useReferences: false });
+  const plain = await client.generate(generationInput(tagId, messageUuid));
+  assert.equal(plain.status, 'succeeded');
+  assert.equal(requests.length, 1, '关掉自动带上就走普通接口');
+  assert.equal('references' in plain, false);
+  assert.equal(edits.length, 1);
+});
+
+test('「参考重画」：指定的那张排最前，再带预设里的，最多 4 张；相册里临时选的用完就删', async t => {
+  const tagId = crypto.randomUUID();
+  const messageUuid = crypto.randomUUID();
+  const message = { is_user: false, mes: '<draw>base64</draw>', extra: { stImageAtelier: leanMetadata(tagId, messageUuid) } };
+  const { client, release, edits, served, deletedPaths } = await gatedClient(t, [message]);
+  release();
+  const png = Buffer.from(PNG_BASE64, 'base64');
+  const presetId = (await client.getPresets()).activePresetId;
+  for (let index = 0; index < 4; index += 1) await client.addReference(presetId, { bytes: png, filename: `ref-${index}.png` });
+  const presetPaths = (await client.getPresets()).items.find(item => item.id === presetId).references.map(item => item.path);
+
+  const first = await client.generate(generationInput(tagId, messageUuid));
+  const [state] = await client.resolveTags([tagId]);
+  const shownPath = state.results[0].localRelativePath;
+  served.length = 0;
+  const again = await client.generate({ ...generationInput(tagId, messageUuid), references: [{ resultId: first.resultIds[0] }] });
+  assert.equal(again.status, 'succeeded');
+  assert.equal(edits.at(-1).body.getAll('image[]').length, 4, '最多 4 张');
+  assert.deepEqual(again.references, [shownPath, ...presetPaths.slice(0, 3)], '指定的那张排最前，预设的补满');
+  assert.equal(served[0].replace(/^\//, ''), shownPath);
+
+  const temp = await client.uploadReferenceImage({ bytes: png, filename: 'temp.png' });
+  assert.match(temp.path, /st-image-atelier-refs\/ref-/);
+  await client.updatePreset(presetId, { useReferences: false });
+  const withTemp = await client.generate({ ...generationInput(tagId, messageUuid), references: [{ path: temp.path, temporary: true }] });
+  assert.deepEqual(withTemp.references, [temp.path]);
+  assert.ok(edits.at(-1).body.get('image') instanceof Blob, '一张用 image');
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.ok(deletedPaths.includes(temp.path), '临时参考图用完就删');
+  assert.ok(presetPaths.every(path => !deletedPaths.includes(path)), '预设里的不动');
 });

@@ -3,6 +3,7 @@ import {
   DEFAULT_NOVELAI_CONFIG,
   DEFAULT_PRESET,
   DEFAULT_SETTINGS,
+  MAX_PRESET_REFERENCES,
   MODULE_NAME,
   SCHEMA_VERSION,
   VERSION,
@@ -82,6 +83,19 @@ function uuid() {
    1 小时，自己设的其他值不动。看原始数据里有没有 timeoutVersion，每个预设只迁一次。 */
 const LEGACY_TIMEOUTS = new Set([180_000, 600_000]);
 
+/* 参考图列表：只留路径这类小字段，最多 MAX_PRESET_REFERENCES 张。 */
+function normalizeReferences(value) {
+  return (Array.isArray(value) ? value : [])
+    .filter(item => item && typeof item.path === 'string' && item.path)
+    .slice(0, MAX_PRESET_REFERENCES)
+    .map(item => ({
+      id: String(item.id || uuid()),
+      path: String(item.path),
+      name: String(item.name || '').slice(0, 80),
+      addedAt: String(item.addedAt || ''),
+    }));
+}
+
 function normalizePreset(value = {}) {
   const migrateTimeout = !(Number(value.timeoutVersion) >= DEFAULT_PRESET.timeoutVersion);
   const preset = {
@@ -93,6 +107,10 @@ function normalizePreset(value = {}) {
       ...clone(DEFAULT_PRESET.ratioMap),
       ...(value.ratioMap || {}),
     },
+    editsPath: String(value.editsPath || DEFAULT_PRESET.editsPath),
+    references: normalizeReferences(value.references),
+    useReferences: value.useReferences !== false,
+    referenceFidelity: value.referenceFidelity === 'high' ? 'high' : '',
   };
   preset.id = String(preset.id || uuid());
   preset.name = String(preset.name || '未命名预设').trim() || '未命名预设';
@@ -596,6 +614,7 @@ export function createDirectApiClient({
       qualitySnapshot: typeof attempt.qualitySnapshot === 'string' ? attempt.qualitySnapshot : null,
       requestedSize: String(attempt.parameters?.size || ''),
       startedAt: attempt.createdAt,
+      references: Array.isArray(attempt.references) ? [...attempt.references] : [],
       localRelativePath: uploaded.path,
       mimeType: type.mimeType,
       byteSize: byteLength,
@@ -616,6 +635,91 @@ export function createDirectApiClient({
     } catch (error) {
       if (error.status !== 404) throw error;
     }
+  }
+
+  /* ---------- 参考图（图生图） ---------- */
+  const REFERENCE_FOLDER = 'st-image-atelier-refs';
+
+  function maxImageMegabytes() {
+    return Math.round(namespace.settings.maxImageBytes / 1024 / 1024);
+  }
+
+  /* 把一张参考图存进酒馆的图片目录（和生成结果分开放），只回路径。相册选的、设置里加的都走这里。 */
+  async function uploadReferenceImage({ bytes, filename = '' } = {}) {
+    const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || []);
+    if (!data.byteLength) throw new DirectError('VALIDATION_FAILED', '参考图是空的', 400, false, '参考图是空的');
+    if (data.byteLength > namespace.settings.maxImageBytes) {
+      throw new DirectError('VALIDATION_FAILED', `参考图超过 ${maxImageMegabytes()} MB`, 400, false, `参考图超过 ${maxImageMegabytes()} MB`);
+    }
+    const type = detectImageType(data);
+    if (!type) throw new DirectError('VALIDATION_FAILED', '参考图只支持 PNG、JPEG、WebP', 400, false, '参考图只支持 PNG、JPEG、WebP');
+    const id = uuid();
+    const uploaded = await requestSt('/api/images/upload', {
+      image: bytesToBase64(data),
+      format: type.extension,
+      ch_name: REFERENCE_FOLDER,
+      filename: `ref-${id}`,
+    });
+    return {
+      id,
+      path: uploaded.path,
+      name: String(filename || '').slice(0, 80),
+      mimeType: type.mimeType,
+      byteSize: data.byteLength,
+    };
+  }
+
+  /* 这次要带的参考图：明确指定的（卡片上「以这张为参考」、相册选的）排前面，再带预设里的角色参考图
+     （开着「自动带上」时），同一张不重复，最多 MAX_PRESET_REFERENCES 张。 */
+  function planReferences(input, preset) {
+    const explicit = [];
+    for (const item of Array.isArray(input.references) ? input.references : []) {
+      if (item?.resultId) {
+        const record = resultIndex.get(item.resultId);
+        if (record?.localRelativePath) explicit.push({ path: record.localRelativePath, source: 'result', resultId: item.resultId });
+      } else if (typeof item?.path === 'string' && item.path) {
+        explicit.push({ path: item.path, source: item.temporary ? 'temporary' : 'path' });
+      }
+    }
+    const fromPreset = preset?.useReferences !== false
+      ? (preset?.references || []).map(reference => ({ path: reference.path, source: 'preset' }))
+      : [];
+    const seen = new Set();
+    const planned = [];
+    for (const item of [...explicit, ...fromPreset]) {
+      if (!item.path || seen.has(item.path)) continue;
+      seen.add(item.path);
+      planned.push(item);
+      if (planned.length >= MAX_PRESET_REFERENCES) break;
+    }
+    return planned;
+  }
+
+  /* 从酒馆读回参考图的文件（同源，不受 CORS 限制），认一下格式。 */
+  async function loadReference(item, signal) {
+    let response;
+    try {
+      response = await fetch(normalizePath(item.path), { credentials: 'same-origin', signal });
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      throw new DirectError('VALIDATION_FAILED', `读取参考图失败：${item.path}`, 400, false, '读取参考图失败，这张图可能已经不在酒馆里了');
+    }
+    if (!response.ok) {
+      throw new DirectError('VALIDATION_FAILED', `读取参考图失败（HTTP ${response.status}）：${item.path}`, 400, false, `读取参考图失败（HTTP ${response.status}），这张图可能已经不在酒馆里了`);
+    }
+    const blob = await response.blob();
+    if (blob.size > namespace.settings.maxImageBytes) {
+      throw new DirectError('VALIDATION_FAILED', `参考图超过 ${maxImageMegabytes()} MB：${item.path}`, 400, false, `参考图超过 ${maxImageMegabytes()} MB`);
+    }
+    const head = new Uint8Array(await blob.slice(0, 16).arrayBuffer());
+    const type = detectImageType(head)
+      || (String(blob.type || '').startsWith('image/') ? { mimeType: blob.type, extension: blob.type.split('/')[1] } : null);
+    if (!type) throw new DirectError('VALIDATION_FAILED', `参考图不是 PNG / JPEG / WebP：${item.path}`, 400, false, '参考图不是 PNG / JPEG / WebP');
+    return {
+      blob: blob.type ? blob : new Blob([blob], { type: type.mimeType }),
+      mimeType: type.mimeType,
+      name: `reference.${type.extension}`,
+    };
   }
 
   /* 硬删除：文件、画廊记录、内存索引一起去掉。返回真的删掉的 resultId。 */
@@ -763,6 +867,8 @@ export function createDirectApiClient({
     const requestedSize = provider === 'novelai'
       ? (novelAi.ratioMap?.[input.parameters?.ratio] || novelAi.defaultSize)
       : (preset.ratioMap?.[input.parameters?.ratio] || preset.defaultSize);
+    /* 参考图只有 GPT 这边有：明确指定的加预设里的角色参考图。记在生成记录和画廊记录上的只是路径。 */
+    const references = provider === 'novelai' ? [] : planReferences(input, preset);
 
     const attempt = {
       attemptId: input.attemptId,
@@ -783,6 +889,7 @@ export function createDirectApiClient({
       artistPromptSnapshot: artistPreset?.prompt || '',
       artistNegativePromptSnapshot: artistPreset?.negativePrompt || '',
       parameters: { ...clone(input.parameters || {}), size: requestedSize },
+      ...(references.length ? { references: references.map(item => item.path) } : {}),
       status: 'generating',
       /* 自动换备用线路时卡片上那句「主线路……已换备用线路……」，画完就清掉。 */
       statusMessage: input.statusMessage ? String(input.statusMessage).slice(0, 200) : null,
@@ -840,6 +947,8 @@ export function createDirectApiClient({
         attempt.resolvedNegativePrompt = generated.resolvedNegativePrompt;
         attempt.generationSeed = generated.seed;
       } else {
+        /* 参考图从酒馆读回来，和提示词一起走图生图接口。 */
+        const loadedReferences = await Promise.all(references.map(item => loadReference(item, controller.signal)));
         sources = await generateImages({
           preset,
           apiKey,
@@ -847,6 +956,7 @@ export function createDirectApiClient({
           parameters: attempt.parameters,
           settings: namespace.settings,
           signal: controller.signal,
+          references: loadedReferences,
           onCompatibilityRetry: async retry => {
             attempt.compatibilityRetry = retry;
             attempt.statusMessage = retry.message;
@@ -924,6 +1034,10 @@ export function createDirectApiClient({
       throw error;
     } finally {
       controllers.delete(attempt.attemptId);
+      /* 相册里临时选的参考图用完就删，不在酒馆里越攒越多；预设里的和画廊里的不动。 */
+      for (const item of references.filter(reference => reference.source === 'temporary')) {
+        removeFile({ localRelativePath: item.path }).catch(error => console.warn('[画笺] 删除临时参考图失败', item.path, error));
+      }
     }
   }
 
@@ -1454,6 +1568,35 @@ export function createDirectApiClient({
       if (!preset) throw new DirectError('VALIDATION_FAILED', '找不到所选 API 预设');
       setApiKey(preset.id, '');
       return { cleared: true };
+    },
+    uploadReferenceImage,
+    /* 给预设加一张角色参考图：先存进酒馆，再把路径记在预设上。 */
+    addReference: async (presetId, file) => {
+      const preset = presetById(presetId || namespace.activePresetId);
+      if (!preset) throw new DirectError('VALIDATION_FAILED', '找不到所选 API 预设');
+      if (preset.references.length >= MAX_PRESET_REFERENCES) {
+        throw new DirectError('VALIDATION_FAILED', `每个预设最多 ${MAX_PRESET_REFERENCES} 张参考图`, 400, false, `每个预设最多 ${MAX_PRESET_REFERENCES} 张参考图，先删一张再加`);
+      }
+      const uploaded = await uploadReferenceImage(file);
+      preset.references = normalizeReferences([
+        ...preset.references,
+        { id: uploaded.id, path: uploaded.path, name: uploaded.name, addedAt: now() },
+      ]);
+      preset.updatedAt = now();
+      await savePreferences();
+      return publicPreset(preset, getApiKey(preset.id));
+    },
+    /* 删掉一张参考图：预设里去掉，文件也删（硬删除）。 */
+    removeReference: async (presetId, referenceId) => {
+      const preset = presetById(presetId || namespace.activePresetId);
+      if (!preset) throw new DirectError('VALIDATION_FAILED', '找不到所选 API 预设');
+      const target = preset.references.find(item => item.id === referenceId);
+      if (!target) throw new DirectError('VALIDATION_FAILED', '找不到这张参考图', 400, false, '找不到这张参考图');
+      preset.references = preset.references.filter(item => item.id !== referenceId);
+      preset.updatedAt = now();
+      await savePreferences();
+      await removeFile({ localRelativePath: target.path }).catch(error => console.warn('[画笺] 删除参考图文件失败', error));
+      return publicPreset(preset, getApiKey(preset.id));
     },
     listModels: async presetId => {
       const preset = presetById(presetId || namespace.activePresetId);

@@ -450,8 +450,9 @@ test('出图后卡片下方显示这张图的预设、画质、模型，尺寸�
   const result = { resultId: 'r1', attemptId: 'a1', status: 'available', prompt: 'a cat', provider: 'openai', presetNameSnapshot: '纯爱2.5', apiModel: 'gpt-image-2.5-sunburst' };
   const producer = { attemptId: 'a1', status: 'succeeded', provider: 'openai', model: 'gpt-image-2.5-sunburst', presetNameSnapshot: '纯爱2.5', qualitySnapshot: 'max', parameters: { size: '1024x1792' } };
   assert.deepEqual(imageInfo(result, producer), {
-    presetLabel: '预设', preset: '纯爱2.5', model: 'gpt-image-2.5-sunburst', quality: 'max', size: '1024×1792',
+    presetLabel: '预设', preset: '纯爱2.5', model: 'gpt-image-2.5-sunburst', quality: 'max', size: '1024×1792', references: 0,
   });
+  assert.equal(imageInfo({ ...result, references: ['a.png', 'b.png'] }, producer).references, 2, '图片记录上记着带了几张参考图');
   assert.equal(imageInfo(result, { ...producer, qualitySnapshot: '' }).quality, '默认', '没发 quality 时按上游默认');
   assert.equal(
     imageInfo(result, { ...producer, compatibilityRetry: { adjustedParameters: ['quality'] } }).quality,

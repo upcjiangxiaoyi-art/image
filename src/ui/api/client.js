@@ -172,9 +172,22 @@ export function createApiClient({
     listModels: presetId => selected().listModels(presetId),
     testPreset: presetId => selected().testPreset(presetId),
     resolveTags: tagIds => selected().resolveTags(tagIds),
-    generate: input => input.provider === 'novelai'
-      ? direct.generate(input)
-      : selected().generate(input),
+    /* 参考图（图生图）目前只有免服务端直连的 GPT 有。 */
+    uploadReferenceImage: file => direct.uploadReferenceImage(file),
+    addReference: (presetId, file) => {
+      if (direct.mode() !== 'direct') {
+        throw new ApiError({ message: '参考图目前用于免服务端直连模式' }, 400);
+      }
+      return direct.addReference(presetId, file);
+    },
+    removeReference: (presetId, referenceId) => direct.removeReference(presetId, referenceId),
+    generate: input => {
+      if (input.provider === 'novelai') return direct.generate(input);
+      if (direct.mode() === 'server' && input.references?.length) {
+        throw new ApiError({ message: '增强模式暂不支持参考图' }, 400);
+      }
+      return selected().generate(input);
+    },
     attempt: attemptId => selected().attempt(attemptId),
     cancel: attemptId => selected().cancel(attemptId),
     gallery: options => selected().gallery(options),

@@ -153,3 +153,13 @@ test('npm run version:set 一次改齐所有版本号', async t => {
     '版本号格式不对时拒绝执行',
   );
 });
+
+test('设置页有参考图入口，画质说明包含 2.6', async () => {
+  const source = await fs.readFile(path.join(root, 'src/ui/pages/settings/settings.js'), 'utf8');
+  assert.match(source, /参考图（图生图，每个预设最多 4 张）/);
+  assert.match(source, /api\.addReference\(/);
+  assert.match(source, /api\.removeReference\(/);
+  assert.match(source, /每张图自动带上参考图/);
+  assert.match(source, /input_fidelity: high/);
+  assert.match(source, /gpt-image-2\.5 \/ 2\.6/);
+});

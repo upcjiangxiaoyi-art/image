@@ -629,6 +629,7 @@ export function createToolPanel({ api, store, onError = () => {} }) {
     updateModelList(preset.cachedModels, preset.selectedModel);
     normalizePreview();
     setGenerationParametersDirty(false);
+    renderReferences(preset);
   }
 
   function updatePresetSelector(activeId = activePresetId) {
@@ -1007,7 +1008,7 @@ export function createToolPanel({ api, store, onError = () => {} }) {
   const defaultQualityField = field('默认质量', defaultQuality);
   const qualityDescription = document.createElement('small');
   qualityDescription.className = 'stia-muted';
-  qualityDescription.textContent = '标签上的 quality 属性优先于这里；选「不发送」则无论标签写了什么都不发该参数。xhigh / max 只有 gpt-image-2.5 系列支持。';
+  qualityDescription.textContent = '标签上的 quality 属性优先于这里；选「不发送」则无论标签写了什么都不发该参数。xhigh / max 只有 gpt-image-2.5 / 2.6 系列支持。';
   defaultQualityField.append(qualityDescription);
   generationGrid.append(
     defaultSizeField,
@@ -1035,7 +1036,127 @@ export function createToolPanel({ api, store, onError = () => {} }) {
   const autoDescription = document.createElement('small');
   autoDescription.textContent = '新消息完成后自动生成图片';
   autoField.querySelector('span')?.append(autoDescription);
-  generationSection.append(generationTitle, generationGrid, generationSaveHint, generationActions);
+
+  /* 参考图（图生图）：每个 API 预设最多 4 张角色参考图，走 /v1/images/edits，人脸、服装跟着参考走。 */
+  const referenceHeading = document.createElement('h4');
+  referenceHeading.className = 'stia-subheading';
+  referenceHeading.textContent = '参考图（图生图，每个预设最多 4 张）';
+  const referenceHint = document.createElement('small');
+  referenceHint.className = 'stia-muted';
+  referenceHint.textContent = '传几张角色的脸和服装，这个预设出的图就跟着参考走；走 OpenAI 的 /v1/images/edits 接口，中转站要支持。只有免服务端直连的 GPT 有，NovelAI 和增强模式暂不支持。';
+  const referenceList = document.createElement('div');
+  referenceList.className = 'stia-reference-list';
+  const referenceInput = input('file');
+  referenceInput.accept = 'image/png,image/jpeg,image/webp';
+  referenceInput.multiple = true;
+  referenceInput.hidden = true;
+  const addReference = action('⊕  添加参考图', () => referenceInput.click());
+  const useReferences = input('checkbox');
+  const useReferencesField = field('每张图自动带上参考图', useReferences);
+  useReferencesField.classList.add('stia-switch-field', 'stia-switch-field--row');
+  const useReferencesDescription = document.createElement('small');
+  useReferencesDescription.textContent = '开着时这个预设出的每张图都带上面的参考图；关掉只在卡片上点「参考重画」时才带。';
+  useReferencesField.querySelector('span')?.append(useReferencesDescription);
+  const referenceFidelity = input('checkbox');
+  const referenceFidelityField = field('高保真参考（input_fidelity: high）', referenceFidelity);
+  referenceFidelityField.classList.add('stia-switch-field', 'stia-switch-field--row');
+  const referenceFidelityDescription = document.createElement('small');
+  referenceFidelityDescription.textContent = '更贴近参考图的脸和细节，多花一点；只有 gpt-image 系列认，别的模型可能报参数不支持。';
+  referenceFidelityField.querySelector('span')?.append(referenceFidelityDescription);
+  const referenceActions = document.createElement('div');
+  referenceActions.className = 'stia-actions stia-actions--fill';
+  referenceActions.append(addReference, referenceInput);
+
+  function referenceUrl(path) {
+    const value = String(path || '');
+    return !value || value.startsWith('/') || /^(?:https?:|data:|blob:)/i.test(value) ? value : `/${value}`;
+  }
+
+  function renderReferences(preset) {
+    referenceList.replaceChildren();
+    const items = Array.isArray(preset?.references) ? preset.references : [];
+    for (const reference of items) {
+      const item = document.createElement('figure');
+      item.className = 'stia-reference-item';
+      const image = document.createElement('img');
+      image.src = referenceUrl(reference.path);
+      image.alt = reference.name || '参考图';
+      image.loading = 'lazy';
+      const remove = action('×', async () => run(remove, async () => {
+        const next = await api.removeReference(activePresetId, reference.id);
+        const index = presets.findIndex(entry => entry.id === next.id);
+        if (index >= 0) presets[index] = next;
+        renderReferences(next);
+        status.textContent = `已删除参考图${reference.name ? `「${reference.name}」` : ''}`;
+      }));
+      remove.className = 'stia-button stia-reference-item__remove';
+      remove.setAttribute('aria-label', '删除这张参考图');
+      remove.title = reference.name || '删除这张参考图';
+      item.append(image, remove);
+      referenceList.append(item);
+    }
+    if (!items.length) {
+      const empty = document.createElement('p');
+      empty.className = 'stia-reference-empty';
+      empty.textContent = '还没有参考图。';
+      referenceList.append(empty);
+    }
+    addReference.disabled = items.length >= 4;
+    addReference.textContent = items.length >= 4 ? '⊕  已满 4 张' : `⊕  添加参考图（${items.length} / 4）`;
+    useReferences.checked = preset?.useReferences !== false;
+    referenceFidelity.checked = preset?.referenceFidelity === 'high';
+  }
+
+  referenceInput.addEventListener('change', async () => {
+    const files = [...(referenceInput.files || [])];
+    referenceInput.value = '';
+    if (!files.length || !activePresetId) return;
+    await run(addReference, async () => {
+      let preset = presets.find(entry => entry.id === activePresetId);
+      let added = 0;
+      for (const file of files) {
+        if ((preset?.references?.length || 0) >= 4) break;
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        preset = await api.addReference(activePresetId, { bytes, filename: file.name });
+        added += 1;
+      }
+      const index = presets.findIndex(entry => entry.id === preset.id);
+      if (index >= 0) presets[index] = preset;
+      renderReferences(preset);
+      status.textContent = added
+        ? `已添加 ${added} 张参考图，现在共 ${preset.references.length} 张`
+        : '这个预设已经有 4 张参考图了，先删一张再加';
+    });
+  });
+  useReferences.addEventListener('change', async () => {
+    await run(useReferences, async () => {
+      const preset = await api.updatePreset(activePresetId, { useReferences: useReferences.checked });
+      const index = presets.findIndex(entry => entry.id === preset.id);
+      if (index >= 0) presets[index] = preset;
+      status.textContent = useReferences.checked ? '这个预设出的每张图都会带上参考图' : '只在卡片上点「参考重画」时才带参考图';
+    });
+  });
+  referenceFidelity.addEventListener('change', async () => {
+    await run(referenceFidelity, async () => {
+      const preset = await api.updatePreset(activePresetId, { referenceFidelity: referenceFidelity.checked ? 'high' : '' });
+      const index = presets.findIndex(entry => entry.id === preset.id);
+      if (index >= 0) presets[index] = preset;
+      status.textContent = referenceFidelity.checked ? '参考图改为高保真（input_fidelity: high）' : '参考图改回默认保真度';
+    });
+  });
+
+  generationSection.append(
+    generationTitle,
+    generationGrid,
+    generationSaveHint,
+    generationActions,
+    referenceHeading,
+    referenceHint,
+    referenceList,
+    referenceActions,
+    useReferencesField,
+    referenceFidelityField,
+  );
 
   const novelAiSection = document.createElement('section');
   novelAiSection.className = 'stia-section stia-section--novelai';

@@ -433,6 +433,7 @@ export function createMessageRenderer(dependencies) {
       onRemove: actions.remove,
       onReroll: actions.reroll,
       onFallback: actions.fallback,
+      onReferenceRegenerate: actions.referenceRegenerate,
       listPresets: async () => {
         const data = await api.getPresets();
         const backupId = store.state.settings?.backupPresetId;
