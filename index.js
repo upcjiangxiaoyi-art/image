@@ -36,6 +36,8 @@ const api = createApiClient({
   compat,
   extensionSettings: extension_settings,
   saveSettingsDebounced,
+  /* 参考图增删这类不能丢的改动当场写盘；老酒馆没有 saveSettings 就退回防抖。 */
+  saveSettingsNow: typeof tavern.saveSettings === 'function' ? tavern.saveSettings : undefined,
   keyStorage: accountStorage,
 });
 const store = createStore();

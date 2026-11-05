@@ -1773,3 +1773,44 @@ test('「参考重画」：指定的那张排最前，再带预设里的，最�
   assert.ok(deletedPaths.includes(temp.path), '临时参考图用完就删');
   assert.ok(presetPaths.every(path => !deletedPaths.includes(path)), '预设里的不动');
 });
+
+test('参考图增删当场写盘，不只靠防抖：手机 Safari 后台重载也不丢', async t => {
+  const tagId = crypto.randomUUID();
+  const message = { is_user: false, mes: '<draw>base64</draw>', extra: { stImageAtelier: leanMetadata(tagId, crypto.randomUUID()) } };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options = {}) => {
+    if (url === '/api/images/upload') {
+      const body = JSON.parse(options.body);
+      return response(200, { path: `user/images/${body.ch_name}/${body.filename}.${body.format}` });
+    }
+    if (url === '/api/images/delete') return response(200, {});
+    throw new Error(`意外的请求：${url}`);
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+  let debounced = 0;
+  let immediate = 0;
+  const extensionSettings = {};
+  const make = () => createDirectApiClient({
+    compat: { chat: () => [message], save: async () => {}, headers: () => ({}) },
+    extensionSettings,
+    saveSettingsDebounced: () => { debounced += 1; },
+    saveSettingsNow: async () => { immediate += 1; },
+    galleryStore: createMemoryGalleryMetadataStore(),
+    attemptStore: createMemoryAttemptStore(),
+    keyStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+  });
+  const client = make();
+  const presetId = (await client.getPresets()).activePresetId;
+  const before = immediate;
+  const preset = await client.addReference(presetId, { bytes: Buffer.from(PNG_BASE64, 'base64'), filename: 'face.png' });
+  assert.equal(immediate, before + 1, '加参考图当场写盘');
+  await client.removeReference(presetId, preset.references[0].id);
+  assert.equal(immediate, before + 2, '删参考图也当场写盘');
+  await client.updatePreset(presetId, { name: '改个名' });
+  assert.equal(immediate, before + 2, '普通改动照旧防抖');
+  assert.ok(debounced >= 1);
+
+  const reloaded = make();
+  const again = (await reloaded.getPresets()).items.find(item => item.id === presetId);
+  assert.deepEqual(again.references, [], '写进 extension_settings 的就是内存里那份');
+});

@@ -251,6 +251,7 @@ export function createDirectApiClient({
   compat,
   extensionSettings,
   saveSettingsDebounced,
+  saveSettingsNow,
   keyStorage = globalThis.localStorage,
   galleryStore,
   attemptStore: attemptStoreOption,
@@ -405,8 +406,14 @@ export function createDirectApiClient({
     }
   }
 
-  async function savePreferences() {
+  /* immediate：当场把设置写盘。参考图这种刚传完的东西不能只靠防抖——手机 Safari 切到后台常常把页面重新载入，
+     防抖还没到点就没了，再打开就「还没有参考图」。酒馆没给立即保存的函数时退回防抖。 */
+  async function savePreferences({ immediate = false } = {}) {
     await ensureReady();
+    if (immediate && typeof saveSettingsNow === 'function') {
+      await Promise.resolve(saveSettingsNow());
+      return;
+    }
     await Promise.resolve(saveSettingsDebounced?.());
   }
 
@@ -1583,7 +1590,7 @@ export function createDirectApiClient({
         { id: uploaded.id, path: uploaded.path, name: uploaded.name, addedAt: now() },
       ]);
       preset.updatedAt = now();
-      await savePreferences();
+      await savePreferences({ immediate: true });
       return publicPreset(preset, getApiKey(preset.id));
     },
     /* 删掉一张参考图：预设里去掉，文件也删（硬删除）。 */
@@ -1594,7 +1601,7 @@ export function createDirectApiClient({
       if (!target) throw new DirectError('VALIDATION_FAILED', '找不到这张参考图', 400, false, '找不到这张参考图');
       preset.references = preset.references.filter(item => item.id !== referenceId);
       preset.updatedAt = now();
-      await savePreferences();
+      await savePreferences({ immediate: true });
       await removeFile({ localRelativePath: target.path }).catch(error => console.warn('[画笺] 删除参考图文件失败', error));
       return publicPreset(preset, getApiKey(preset.id));
     },

@@ -162,4 +162,5 @@ test('设置页有参考图入口，画质说明包含 2.6', async () => {
   assert.match(source, /每张图自动带上参考图/);
   assert.match(source, /input_fidelity: high/);
   assert.match(source, /gpt-image-2\.5 \/ 2\.6/);
+  assert.match(source, /这个预设的，最多 4 张/, '参考图标题写明是哪个预设的');
 });

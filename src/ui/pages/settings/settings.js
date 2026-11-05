@@ -1075,6 +1075,10 @@ export function createToolPanel({ api, store, onError = () => {} }) {
   function renderReferences(preset) {
     referenceList.replaceChildren();
     const items = Array.isArray(preset?.references) ? preset.references : [];
+    /* 标题里写明是哪个预设的参考图：换了预设列表跟着换，别对着另一个预设纳闷「参考图怎么没了」。 */
+    referenceHeading.textContent = preset?.name
+      ? `参考图（图生图，「${preset.name}」这个预设的，最多 4 张）`
+      : '参考图（图生图，每个预设最多 4 张）';
     for (const reference of items) {
       const item = document.createElement('figure');
       item.className = 'stia-reference-item';

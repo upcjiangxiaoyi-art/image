@@ -86,12 +86,14 @@ export function createApiClient({
   compat,
   extensionSettings,
   saveSettingsDebounced,
+  saveSettingsNow,
   keyStorage,
 }) {
   const direct = createDirectApiClient({
     compat,
     extensionSettings,
     saveSettingsDebounced,
+    saveSettingsNow,
     keyStorage,
   });
   const server = createServerApiClient(compat);
