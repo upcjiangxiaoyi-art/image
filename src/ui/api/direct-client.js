@@ -22,6 +22,7 @@ import {
   createSillyTavernGalleryMetadataStore,
   normalizeGalleryRecord,
 } from './gallery-metadata-store.js';
+import { THUMBNAIL_FOLDER, createThumbnail } from '../media/thumbnail.js';
 import { createSillyTavernAttemptStore } from './attempt-store.js';
 import {
   createArtistPresetExport,
@@ -229,6 +230,9 @@ function maskKey(value) {
   return `${value.slice(0, 3)}••••${value.slice(-4)}`;
 }
 
+/* 出图后缩略图晚 2 秒再做：那一瞬间酒馆要存聊天、要重画，别再挤一件事进去。 */
+const THUMBNAIL_DELAY_MS = 2000;
+
 function normalizePath(value) {
   const path = String(value || '');
   if (!path || /^(?:https?:|data:|blob:)/i.test(path) || path.startsWith('/')) return path;
@@ -256,6 +260,9 @@ export function createDirectApiClient({
   galleryStore,
   attemptStore: attemptStoreOption,
   verifyFile,
+  /* 画廊缩略图：浏览器里用 createImageBitmap + canvas；测试注入假的；传 null 关掉。 */
+  thumbnailer = createThumbnail,
+  thumbnailDelayMs = THUMBNAIL_DELAY_MS,
 }) {
   const { namespace, legacyGallery } = ensureNamespace(extensionSettings);
   const metadataStore = galleryStore || createSillyTavernGalleryMetadataStore(compat);
@@ -642,6 +649,109 @@ export function createDirectApiClient({
     } catch (error) {
       if (error.status !== 404) throw error;
     }
+    /* 缩略图跟着原图走：原图删了它也删；删不掉只记一条，不拦着。 */
+    if (result.thumbnailPath) {
+      await requestSt('/api/images/delete', { path: result.thumbnailPath }).catch(error => {
+        if (error.status !== 404) console.warn('[画笺] 删除缩略图失败', result.resultId, error);
+      });
+    }
+  }
+
+  /* ---------- 画廊缩略图 ---------- */
+  const thumbnailJobs = new Map();
+  const thumbnailRuns = new Set();
+
+  function thumbnailsSupported() {
+    if (typeof thumbnailer !== 'function') return false;
+    return thumbnailer !== createThumbnail || typeof createImageBitmap === 'function';
+  }
+
+  /* 画廊格子用的地址：有缩略图用缩略图，没有退回原图。 */
+  function thumbnailUrl(resultId) {
+    const result = resultIndex.get(resultId);
+    return normalizePath(result?.thumbnailPath || result?.localRelativePath);
+  }
+
+  /* 给一张已经存好的图做缩略图：从酒馆读回原图、缩到长边 768、JPEG 存进自己的目录、路径记在画廊记录上。
+     原图一个字节不动。同一张图同时来几次只做一次；做不了返回 null，画廊退回用原图。 */
+  function ensureThumbnail(resultId) {
+    const record = resultIndex.get(resultId);
+    if (!record?.localRelativePath) return Promise.resolve(null);
+    if (record.thumbnailPath) return Promise.resolve(record.thumbnailPath);
+    if (!thumbnailsSupported()) return Promise.resolve(null);
+    if (thumbnailJobs.has(resultId)) return thumbnailJobs.get(resultId);
+    const job = (async () => {
+      const response = await fetch(normalizePath(record.localRelativePath), { credentials: 'same-origin' });
+      if (!response.ok) {
+        throw new DirectError('LOCAL_SAVE_FAILED', `读取原图失败（HTTP ${response.status}）`, response.status);
+      }
+      const thumbnail = await thumbnailer(await response.blob());
+      if (!thumbnail?.blob) return null;
+      const bytes = new Uint8Array(await thumbnail.blob.arrayBuffer());
+      const uploaded = await requestSt('/api/images/upload', {
+        image: bytesToBase64(bytes),
+        format: 'jpeg',
+        ch_name: THUMBNAIL_FOLDER,
+        filename: `${resultId}-thumb`,
+      });
+      if (!resultIndex.has(resultId)) {
+        /* 做的这会儿图被删了：缩略图文件也不留。 */
+        await requestSt('/api/images/delete', { path: uploaded.path }).catch(() => {});
+        return null;
+      }
+      const updated = await metadataStore.update(resultId, {
+        thumbnailPath: uploaded.path,
+        thumbnailWidth: thumbnail.width,
+        thumbnailHeight: thumbnail.height,
+      });
+      if (updated) rememberResult(updated);
+      return uploaded.path;
+    })();
+    thumbnailJobs.set(resultId, job);
+    job
+      .catch(error => console.warn('[画笺] 生成画廊缩略图失败（原图不受影响）', resultId, error))
+      .finally(() => thumbnailJobs.delete(resultId));
+    return job;
+  }
+
+  /* 出图后晚几秒在后台做，不耽误卡片，失败也不影响出图。 */
+  function scheduleThumbnails(resultIds) {
+    if (!thumbnailsSupported() || !resultIds.length) return;
+    const start = () => {
+      const run = (async () => {
+        for (const resultId of resultIds) await ensureThumbnail(resultId).catch(() => null);
+      })();
+      thumbnailRuns.add(run);
+      run.finally(() => thumbnailRuns.delete(run));
+    };
+    if (thumbnailDelayMs > 0) {
+      const timer = setTimeout(start, thumbnailDelayMs);
+      timer.unref?.();
+    } else {
+      start();
+    }
+  }
+
+  /* 1.9.0 之前的图没有缩略图：最新的先补，一次只做一张，onProgress 报进度，signal 中止。 */
+  async function backfillThumbnails({ onProgress, signal, limit = Infinity } = {}) {
+    await ensureReady();
+    const pending = metadataStore.records()
+      .filter(record => record.status === 'available' && record.localRelativePath && !record.thumbnailPath)
+      .sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)))
+      .slice(0, Number.isFinite(limit) ? limit : undefined)
+      .map(record => record.resultId);
+    const summary = { total: pending.length, done: 0, failed: 0, aborted: false };
+    for (const resultId of pending) {
+      if (signal?.aborted) {
+        summary.aborted = true;
+        break;
+      }
+      const path = await ensureThumbnail(resultId).catch(() => null);
+      if (path) summary.done += 1;
+      else summary.failed += 1;
+      onProgress?.({ ...summary, resultId });
+    }
+    return summary;
   }
 
   /* ---------- 参考图（图生图） ---------- */
@@ -1010,6 +1120,8 @@ export function createDirectApiClient({
       await persist({ persist: false });
       await saveChat([found.message]);
       persist().catch(error => console.warn('[画笺] 保存生成记录失败（图片已经存好）', error));
+      /* 画廊缩略图晚几秒在后台做（读回原图、缩小、另存一张小图），原图不动。 */
+      scheduleThumbnails(saved.map(result => result.resultId));
       return clone(attempt);
     } catch (error) {
       await Promise.allSettled(saved.map(removeFile));
@@ -1662,6 +1774,12 @@ export function createDirectApiClient({
     fileUrl,
     downloadUrl: fileUrl,
     hasResult: resultId => resultIndex.has(resultId),
+    thumbnailUrl,
+    hasThumbnail: resultId => Boolean(resultIndex.get(resultId)?.thumbnailPath),
+    ensureThumbnail,
+    backfillThumbnails,
+    /* 测试和「等后台做完」用：等所有排着的缩略图任务结束。 */
+    thumbnailsSettled: () => Promise.allSettled([...thumbnailRuns, ...thumbnailJobs.values()]),
     slimChat,
     /* 一键删除标签后，它的生成记录也一起清掉（硬删除）。 */
     forgetTag: async tagId => {

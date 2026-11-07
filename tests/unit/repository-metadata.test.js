@@ -185,3 +185,16 @@ test('卡片、画廊、参考图的图片都异步解码', async () => {
     assert.match(await fs.readFile(path.join(root, file), 'utf8'), /\.decoding = 'async'/, file);
   }
 });
+
+test('画廊缩略图：格子用 thumbnailUrl、看图器用 fileUrl，设置页有一次补全的入口，README 写明原图不动', async () => {
+  const gallery = await fs.readFile(path.join(root, 'src/ui/pages/gallery/gallery.js'), 'utf8');
+  assert.match(gallery, /image\.src = tileUrl\(result\)/, '格子用缩略图');
+  assert.match(gallery, /src: api\.fileUrl\(result\.resultId\)/, '看图器用原图');
+  assert.match(gallery, /link\.href = api\.downloadUrl\(item\.resultId\)/, '下载用原图');
+  const settings = await fs.readFile(path.join(root, 'src/ui/pages/settings/settings.js'), 'utf8');
+  assert.match(settings, /api\.backfillThumbnails\(/);
+  assert.match(settings, /补全画廊缩略图/);
+  const readme = await fs.readFile(path.join(root, 'README.md'), 'utf8');
+  assert.match(readme, /缩略图/);
+  assert.match(readme, /原图/);
+});

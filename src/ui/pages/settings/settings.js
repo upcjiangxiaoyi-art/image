@@ -1429,6 +1429,44 @@ export function createToolPanel({ api, store, onError = () => {} }) {
     });
   });
   slimChat.classList.add('stia-button--full');
+  /* 1.9.0 画廊缩略图：新图自动带；以前的图在画廊里翻到时后台慢慢补，也可以在这里一次补全。原图不动。 */
+  const thumbnailHeading = document.createElement('h4');
+  thumbnailHeading.className = 'stia-subheading';
+  thumbnailHeading.textContent = '画廊缩略图';
+  const thumbnailNotice = document.createElement('p');
+  thumbnailNotice.className = 'stia-muted';
+  thumbnailNotice.textContent = '画廊格子里放的是缩略图，点开、下载、参考重画、聊天里的卡片都是原图，原图一个字节不动。新出的图自动带缩略图；以前的图在画廊里翻到时后台慢慢补，也可以在这里一次补全（每张原图要解码一遍，建议在电脑上做，手机上做会热）。';
+  let thumbnailAbort = null;
+  const backfillThumbnails = action('▦  补全画廊缩略图', async () => {
+    if (thumbnailAbort) {
+      thumbnailAbort.abort();
+      return;
+    }
+    thumbnailAbort = new AbortController();
+    backfillThumbnails.textContent = '■  停止补全';
+    status.className = 'stia-status';
+    status.textContent = '正在清点没有缩略图的图片…';
+    try {
+      const summary = await api.backfillThumbnails({
+        signal: thumbnailAbort.signal,
+        onProgress: progress => {
+          status.textContent = `已补 ${progress.done} / ${progress.total} 张${progress.failed ? `，失败 ${progress.failed} 张` : ''}`;
+        },
+      });
+      status.textContent = summary.total
+        ? `${summary.aborted ? '已停止：' : '补全完成：'}${summary.done} / ${summary.total} 张`
+          + `${summary.failed ? `，失败 ${summary.failed} 张（原图不受影响，下次再试）` : ''}`
+        : '所有图片都已经有缩略图';
+    } catch (error) {
+      status.className = 'stia-status stia-error';
+      status.textContent = error.message;
+      onError(error, '补全画廊缩略图');
+    } finally {
+      thumbnailAbort = null;
+      backfillThumbnails.textContent = '▦  补全画廊缩略图';
+    }
+  });
+  backfillThumbnails.classList.add('stia-button--full');
   appearanceSection.append(
     appearanceTitle,
     themeField,
@@ -1439,6 +1477,9 @@ export function createToolPanel({ api, store, onError = () => {} }) {
     slimHeading,
     slimNotice,
     slimChat,
+    thumbnailHeading,
+    thumbnailNotice,
+    backfillThumbnails,
   );
 
   const warning = document.createElement('p');

@@ -861,6 +861,9 @@ async function gatedClient(t, chat, {
   attemptStore = createMemoryAttemptStore(),
   galleryStore = createMemoryGalleryMetadataStore(),
   verifyFile,
+  /* 默认关掉缩略图：老用例数上传、数读取的次数，别被后台任务搅了；要测缩略图的用例自己传一个假的。 */
+  thumbnailer = null,
+  thumbnailDelayMs = 0,
 } = {}) {
   const originalFetch = globalThis.fetch;
   const requests = [];
@@ -914,6 +917,8 @@ async function gatedClient(t, chat, {
     galleryStore,
     attemptStore,
     verifyFile,
+    thumbnailer,
+    thumbnailDelayMs,
     keyStorage: {
       getItem: key => storage.get(key) || null,
       setItem: (key, value) => storage.set(key, value),
@@ -1855,4 +1860,105 @@ test('参考图增删当场写盘，不只靠防抖：手机 Safari 后台重载
   const reloaded = make();
   const again = (await reloaded.getPresets()).items.find(item => item.id === presetId);
   assert.deepEqual(again.references, [], '写进 extension_settings 的就是内存里那份');
+});
+
+test('画廊缩略图：出图后在后台生成，原图不动；格子用缩略图、看图用原图；已有的不重做；删图连带删缩略图', async t => {
+  const tagId = crypto.randomUUID();
+  const messageUuid = crypto.randomUUID();
+  const message = { is_user: false, mes: '<draw>base64</draw>', extra: { stImageAtelier: leanMetadata(tagId, messageUuid) } };
+  const thumbnailCalls = [];
+  const thumbnailer = async blob => {
+    thumbnailCalls.push(blob.size);
+    return { blob: new Blob([new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3])], { type: 'image/jpeg' }), width: 32, height: 56 };
+  };
+  const { client, release, uploads, served, deletedPaths } = await gatedClient(t, [message], { thumbnailer });
+  release();
+  const attempt = await client.generate(generationInput(tagId, messageUuid));
+  assert.equal(attempt.status, 'succeeded');
+  const resultId = attempt.resultIds[0];
+  const original = client.fileUrl(resultId);
+  assert.match(original, /^\/user\/images\/st-image-atelier\//);
+  assert.equal(client.thumbnailUrl(resultId), original, '缩略图还没做好之前格子用原图');
+
+  await client.thumbnailsSettled();
+  assert.equal(thumbnailCalls.length, 1, '做了一张');
+  assert.ok(served.includes(original), '从酒馆读回原图来缩');
+  const thumbUpload = uploads.find(upload => upload.ch_name === 'st-image-atelier-thumbs');
+  assert.ok(thumbUpload, '缩略图存在自己的目录');
+  assert.equal(thumbUpload.filename, `${resultId}-thumb`);
+  assert.equal(thumbUpload.format, 'jpeg');
+  assert.equal(uploads.filter(upload => upload.ch_name === 'st-image-atelier').length, 1, '原图只传了一次，没有被改写');
+  assert.equal(client.fileUrl(resultId), original, '原图路径不变');
+  assert.equal(client.downloadUrl(resultId), original, '下载也是原图');
+  assert.equal(client.thumbnailUrl(resultId), `/user/images/st-image-atelier-thumbs/${resultId}-thumb.jpeg`);
+  assert.equal(client.hasThumbnail(resultId), true);
+
+  const record = (await client.galleryMetadata()).items.find(item => item.resultId === resultId);
+  assert.equal(record.localRelativePath, original.replace(/^\//, ''));
+  assert.equal(record.thumbnailPath, `user/images/st-image-atelier-thumbs/${resultId}-thumb.jpeg`);
+  assert.equal(record.thumbnailWidth, 32);
+  assert.equal(record.thumbnailHeight, 56);
+  const [state] = await client.resolveTags([tagId]);
+  assert.equal(state.results[0].thumbnailPath, record.thumbnailPath, '卡片那边读到的记录也带着');
+
+  assert.equal(await client.ensureThumbnail(resultId), record.thumbnailPath, '已有的直接给，不重做');
+  assert.equal(thumbnailCalls.length, 1);
+
+  await client.deleteResult(resultId);
+  assert.ok(deletedPaths.includes(record.localRelativePath), '原图删了');
+  assert.ok(deletedPaths.includes(record.thumbnailPath), '缩略图跟着删');
+});
+
+test('补全画廊缩略图：只补没有的、最新的先、一次一张、可中止；同一张并发只做一次；没有缩略图的退回原图', async t => {
+  const tagId = crypto.randomUUID();
+  const message = { is_user: false, mes: '<draw>base64</draw>', extra: { stImageAtelier: leanMetadata(tagId, crypto.randomUUID()) } };
+  const old = ['a', 'b', 'c'].map((suffix, index) => ({
+    resultId: `old-${suffix}`,
+    tagId,
+    status: 'available',
+    createdAt: `2026-01-0${index + 1}T00:00:00.000Z`,
+    localRelativePath: `user/images/st-image-atelier/old-${suffix}.png`,
+    prompt: 'p',
+    provider: 'openai',
+    presetId: 'main',
+    favorite: false,
+  }));
+  const galleryStore = createMemoryGalleryMetadataStore({
+    schemaVersion: 1,
+    results: Object.fromEntries(old.map(record => [record.resultId, record])),
+    updatedAt: '2026-01-04T00:00:00.000Z',
+  });
+  let made = 0;
+  const thumbnailer = async () => {
+    made += 1;
+    await new Promise(resolve => setTimeout(resolve, 5));
+    return { blob: new Blob([new Uint8Array([1, 2, 3])], { type: 'image/jpeg' }), width: 8, height: 8 };
+  };
+  const { client, uploads } = await gatedClient(t, [message], { thumbnailer, galleryStore });
+  assert.equal(client.thumbnailUrl('old-a'), '/user/images/st-image-atelier/old-a.png', '没有缩略图就退回原图');
+  assert.equal(client.hasThumbnail('old-a'), false);
+
+  const progress = [];
+  const controller = new AbortController();
+  const summary = await client.backfillThumbnails({
+    signal: controller.signal,
+    onProgress: value => {
+      progress.push(value.resultId);
+      if (progress.length === 2) controller.abort();
+    },
+  });
+  assert.deepEqual(progress, ['old-c', 'old-b'], '最新的先补，中止后不再继续');
+  assert.deepEqual(summary, { total: 3, done: 2, failed: 0, aborted: true });
+  assert.equal(made, 2);
+  assert.equal(client.thumbnailUrl('old-c'), '/user/images/st-image-atelier-thumbs/old-c-thumb.jpeg');
+  assert.equal(client.thumbnailUrl('old-a'), '/user/images/st-image-atelier/old-a.png', '没补到的还是原图');
+
+  const [first, second] = await Promise.all([client.ensureThumbnail('old-a'), client.ensureThumbnail('old-a')]);
+  assert.equal(first, second);
+  assert.equal(made, 3, '同一张并发只做一次');
+
+  const again = await client.backfillThumbnails();
+  assert.deepEqual(again, { total: 0, done: 0, failed: 0, aborted: false }, '都有了就没事可做');
+  assert.equal(uploads.filter(upload => upload.ch_name === 'st-image-atelier-thumbs').length, 3);
+  assert.equal(uploads.filter(upload => upload.ch_name === 'st-image-atelier').length, 0, '原图一张没动');
 });

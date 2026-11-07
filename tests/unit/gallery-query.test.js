@@ -205,3 +205,44 @@ test('画廊卡片标出渠道和画质：GPT 显示预设名和画质，NovelAI
   assert.equal(info.size, '1024×1536', '原图查看层的信息行顺带带上尺寸');
   assert.deepEqual(badges.map(badge => badge.kind), ['openai', 'quality']);
 });
+
+test('画廊格子用缩略图；没有的先放原图、后台补好后换成小图；只给缺的那张补', async () => {
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'https://tavern.example/' });
+  const previous = { document: globalThis.document, window: globalThis.window };
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  try {
+    const values = [
+      item({ resultId: 'with-thumb', thumbnailPath: 'user/images/st-image-atelier-thumbs/with-thumb-thumb.jpeg' }),
+      item({ resultId: 'no-thumb' }),
+    ];
+    const ensured = [];
+    const api = {
+      cleanupGallery: async () => ({}),
+      galleryMetadata: async () => ({ items: structuredClone(values), total: values.length }),
+      fileUrl: id => `/images/${id}.png`,
+      downloadUrl: id => `/download/${id}`,
+      thumbnailUrl: id => (values.find(value => value.resultId === id)?.thumbnailPath ? `/thumbs/${id}.jpeg` : `/images/${id}.png`),
+      ensureThumbnail: async id => {
+        ensured.push(id);
+        const path = `user/images/st-image-atelier-thumbs/${id}-thumb.jpeg`;
+        values.find(value => value.resultId === id).thumbnailPath = path;
+        return path;
+      },
+      setFavorite: async () => ({}),
+      deleteResult: async () => {},
+    };
+    const page = createGalleryPage(api);
+    document.body.append(page.root);
+    await page.load();
+    const src = id => page.root.querySelector(`[data-result-id="${id}"] img`).getAttribute('src');
+    assert.equal(src('with-thumb'), '/thumbs/with-thumb.jpeg', '有缩略图的格子用缩略图');
+    assert.equal(src('no-thumb'), '/images/no-thumb.png', '没有的先放原图');
+    await new Promise(resolve => setTimeout(resolve, 30));
+    assert.deepEqual(ensured, ['no-thumb'], '只给没有缩略图的那张补');
+    assert.equal(src('no-thumb'), '/thumbs/no-thumb.jpeg', '补好后格子换成小图');
+  } finally {
+    globalThis.document = previous.document;
+    globalThis.window = previous.window;
+  }
+});

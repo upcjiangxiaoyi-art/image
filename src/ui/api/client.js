@@ -209,6 +209,14 @@ export function createApiClient({
     downloadUrl: resultId => direct.hasResult(resultId)
       ? direct.downloadUrl(resultId)
       : server.downloadUrl(resultId),
+    /* 画廊格子用缩略图；只有直连的画廊有，增强模式的画廊在服务端，格子里仍是原图。 */
+    thumbnailUrl: resultId => direct.hasResult(resultId)
+      ? direct.thumbnailUrl(resultId)
+      : server.fileUrl(resultId),
+    ensureThumbnail: resultId => (direct.hasResult(resultId)
+      ? direct.ensureThumbnail(resultId)
+      : Promise.resolve(null)),
+    backfillThumbnails: options => direct.backfillThumbnails(options),
     /* 聊天瘦身和标签的生成记录清理都只关乎聊天文件和浏览器这一端的独立存储，增强模式下也走直连这份。 */
     slimChat: options => direct.slimChat(options),
     forgetTag: tagId => direct.forgetTag(tagId),

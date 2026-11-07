@@ -224,6 +224,34 @@ export function createGalleryPage(api, { onError = () => {} } = {}) {
     render();
   }
 
+  /* 格子里放缩略图（有就用，没有退回原图）；点开看图器、下载都是原图。 */
+  function tileUrl(result) {
+    return typeof api.thumbnailUrl === 'function' ? api.thumbnailUrl(result.resultId) : api.fileUrl(result.resultId);
+  }
+
+  const isShown = () => root.isConnected && !root.hidden && !root.closest('[hidden]');
+  let backfillToken = 0;
+  /* 1.9.0 之前的图没有缩略图：这一屏里缺的在后台一张张补（同一时刻只做一张），补好就把格子换成小图，
+     大图的解码内存随手释放。重画这一屏、关掉画廊就停。 */
+  async function backfillThumbnails() {
+    if (typeof api.ensureThumbnail !== 'function') return;
+    backfillToken += 1;
+    const token = backfillToken;
+    const pending = filteredItems.slice(0, visibleCount).filter(item => !item.thumbnailPath);
+    for (const item of pending) {
+      if (token !== backfillToken || !isShown()) return;
+      const path = await api.ensureThumbnail(item.resultId).catch(() => null);
+      if (!path) continue;
+      item.thumbnailPath = path;
+      const stored = allItems.find(entry => entry.resultId === item.resultId);
+      if (stored) stored.thumbnailPath = path;
+      if (token !== backfillToken) return;
+      const card = [...grid.children].find(entry => entry.dataset?.resultId === item.resultId);
+      const tile = card?.querySelector('img');
+      if (tile) tile.src = tileUrl(item);
+    }
+  }
+
   function addCard(result) {
     const card = document.createElement('article');
     card.className = 'stia-gallery-card';
@@ -253,7 +281,12 @@ export function createGalleryPage(api, { onError = () => {} } = {}) {
       cardTools.prepend(checkbox);
     }
     const image = document.createElement('img');
-    image.src = api.fileUrl(result.resultId);
+    image.src = tileUrl(result);
+    /* 缩略图文件不在了（手动清过目录）就退回原图。 */
+    image.addEventListener('error', () => {
+      const fallback = api.fileUrl(result.resultId);
+      if (image.getAttribute('src') !== fallback) image.src = fallback;
+    }, { once: true });
     image.alt = promptOf(result).slice(0, 100);
     image.loading = 'lazy';
     image.decoding = 'async';
@@ -324,6 +357,7 @@ export function createGalleryPage(api, { onError = () => {} } = {}) {
       root.insertBefore(empty, loadMore);
     }
     syncBatchState();
+    void backfillThumbnails();
   }
 
   function applyFilters({ preserveSelection = false } = {}) {
