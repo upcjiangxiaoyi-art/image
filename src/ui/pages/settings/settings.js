@@ -1093,6 +1093,7 @@ export function createToolPanel({ api, store, onError = () => {} }) {
       image.alt = reference.name || `参考图 ${position + 1}`;
       image.title = reference.name || '';
       image.loading = 'lazy';
+      image.decoding = 'async';
       /* 缩略图下面两个写着字的按钮，手机上手指点得到；之前只有角上一个 24px 的小「×」，iPhone 上找不到。 */
       const replace = action('换一张', () => {
         replacingReferenceId = reference.id;

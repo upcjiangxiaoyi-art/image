@@ -168,3 +168,20 @@ test('设置页有参考图入口，画质说明包含 2.6', async () => {
   assert.match(source, /action\('删除', async \(\) => run\(remove/, '「删除」也是写着字的按钮');
   assert.doesNotMatch(source, /stia-reference-item__remove/, '不再用缩略图角上那个 24px 的 ×');
 });
+
+test('触屏设备上不做毛玻璃：每一处 backdrop-filter 都在触屏媒体查询里关掉', async () => {
+  const css = await fs.readFile(path.join(root, 'src/ui/styles/atelier.css'), 'utf8');
+  const block = /@media \(hover: none\) and \(pointer: coarse\) \{([\s\S]*?)\n\}/.exec(css)?.[1] || '';
+  assert.match(block, /backdrop-filter: none/);
+  for (const selector of ['.stia-overlay', '.stia-panel > header', '.stia-prompt-override', '.stia-image-viewer__toolbar']) {
+    assert.ok(block.includes(selector), `${selector} 在触屏上关掉毛玻璃`);
+  }
+  const blurred = css.split('\n').filter(line => /backdrop-filter: blur/.test(line)).length;
+  assert.equal(blurred, 4, '新加的毛玻璃也要进触屏关闭列表');
+});
+
+test('卡片、画廊、参考图的图片都异步解码', async () => {
+  for (const file of ['src/ui/renderer/card.js', 'src/ui/pages/gallery/gallery.js', 'src/ui/pages/settings/settings.js']) {
+    assert.match(await fs.readFile(path.join(root, file), 'utf8'), /\.decoding = 'async'/, file);
+  }
+});

@@ -4,6 +4,11 @@ import { warnIfHeavy } from '../state/tag-footprint.js';
 
 const DOM_SETTLE_MS = 140;
 const SOURCE_SCAN_INTERVAL_MS = 1_500;
+/* 生成期间撤掉 DOM 监听：酒馆吐字时每帧重画正文，监听器每帧都得收一堆变动记录逐条判断，而这段时间卡片不需要补。
+   生成开始就断开，结束 / 中止 / 收到新楼 / 换聊天再接上并补查最后一楼；酒馆没发结束事件（报错、人点停止）时
+   最多撤这么久自动接回。 */
+const OBSERVER_PAUSE_MAX_MS = 5 * 60 * 1000;
+const OBSERVE_OPTIONS = Object.freeze({ childList: true, characterData: true, subtree: true });
 
 export function hasChangedDrawSource(message, previousSource) {
   return shouldProcessMessage(message)
@@ -11,11 +16,21 @@ export function hasChangedDrawSource(message, previousSource) {
     && /<draw\b/i.test(message.mes);
 }
 
-export function createMessageEvents({ compat, api, store, renderer, autoQueue, onError = () => {} }) {
+export function createMessageEvents({
+  compat,
+  api,
+  store,
+  renderer,
+  autoQueue,
+  onError = () => {},
+  observerPauseMaxMs = OBSERVER_PAUSE_MAX_MS,
+}) {
   const sourceCache = new Map();
   const scheduled = new Map();
   let observer = null;
   let observedChat = null;
+  let observerPaused = false;
+  let observerPauseTimer = null;
   let pollTimer = null;
   let hydrated = false;
   let cachedChatId = '';
@@ -126,8 +141,12 @@ export function createMessageEvents({ compat, api, store, renderer, autoQueue, o
           ? record.target
           : record.target?.parentElement;
         if (targetElement?.closest?.('.stia-card')) continue;
+        /* 变动落在某一楼里面时，这条记录里新增的节点都在同一楼，不用再逐个往上找。 */
         const id = messageIdFromNode(record.target);
-        if (id != null) ids.add(id);
+        if (id != null) {
+          ids.add(id);
+          continue;
+        }
         for (const node of record.addedNodes || []) {
           if (node.nodeType === Node.ELEMENT_NODE && node.matches?.('.stia-card, .stia-card-list')) {
             continue;
@@ -138,7 +157,37 @@ export function createMessageEvents({ compat, api, store, renderer, autoQueue, o
       }
       for (const id of ids) scheduleMessage(id, { live: hydrated });
     });
-    observer.observe(chatElement, { childList: true, characterData: true, subtree: true });
+    if (!observerPaused) observer.observe(chatElement, OBSERVE_OPTIONS);
+  }
+
+  function pauseObserver() {
+    if (observerPaused) return;
+    observerPaused = true;
+    observer?.disconnect();
+    clearTimeout(observerPauseTimer);
+    observerPauseTimer = setTimeout(() => resumeObserver({ catchUp: true }), observerPauseMaxMs);
+    observerPauseTimer.unref?.();
+  }
+
+  /* catchUp：撤哨期间漏掉的变动补一次：生成写的是最后一楼；往上翻、展开更多时酒馆渲染出来的旧楼里
+     <draw> 还露着，也一并补。收到新楼的事件自己会处理那一楼，不用补。 */
+  function resumeObserver({ catchUp = false } = {}) {
+    clearTimeout(observerPauseTimer);
+    observerPauseTimer = null;
+    if (!observerPaused) return;
+    observerPaused = false;
+    if (observer && observedChat && observedChat.isConnected !== false) {
+      observer.observe(observedChat, OBSERVE_OPTIONS);
+    }
+    if (!catchUp) return;
+    const ids = new Set();
+    const last = compat.chat().length - 1;
+    if (last >= 0) ids.add(String(last));
+    for (const node of document.querySelectorAll?.('#chat .mes[mesid] draw') || []) {
+      const id = messageIdFromNode(node);
+      if (id != null) ids.add(id);
+    }
+    for (const id of ids) scheduleMessage(id, { live: false });
   }
 
   function scanChangedSources() {
@@ -162,9 +211,16 @@ export function createMessageEvents({ compat, api, store, renderer, autoQueue, o
   }
 
   function bind() {
-    compat.on(['MESSAGE_RECEIVED'], (messageId, generationType) =>
-      processMessage(messageId, { live: true, generationType })
-        .catch(reportFailure('识别生图标签失败')));
+    compat.on(['GENERATION_STARTED'], (_type, _params, dryRun) => {
+      if (dryRun) return;
+      pauseObserver();
+    });
+    compat.on(['GENERATION_ENDED', 'GENERATION_STOPPED'], () => resumeObserver({ catchUp: true }));
+    compat.on(['MESSAGE_RECEIVED'], (messageId, generationType) => {
+      resumeObserver();
+      return processMessage(messageId, { live: true, generationType })
+        .catch(reportFailure('识别生图标签失败'));
+    });
     /* 画完一楼的事件紧跟在 MESSAGE_RECEIVED 后面，同一楼刚处理过；走防抖和 DOM 监听合成一次，
        别在流式结束那一瞬间连做三遍。 */
     compat.on(['CHARACTER_MESSAGE_RENDERED', 'MESSAGE_RENDERED'], messageId =>
@@ -177,6 +233,7 @@ export function createMessageEvents({ compat, api, store, renderer, autoQueue, o
       scheduleMessage(messageId, { live: false }));
     compat.on(['CHAT_CHANGED'], () => {
       queueMicrotask(() => {
+        resumeObserver();
         observeChat();
         void hydrate().catch(reportFailure('加载聊天里的生图卡片失败'));
       });

@@ -252,6 +252,8 @@ export function createCard({
       image = document.createElement('img');
       image.className = 'stia-card__image';
       image.loading = eager ? 'eager' : 'lazy';
+      /* 异步解码：几 MB 的 PNG 不在主线程上解，滑动时不卡。 */
+      image.decoding = 'async';
       image.src = source;
       makeImageSaveable(image, () => openCurrentImage?.());
       imageCache.set(source, image);

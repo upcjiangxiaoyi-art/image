@@ -1727,3 +1727,14 @@
 .stia-actions--fill.stia-actions--pairs > .stia-card__remove {
   flex: 1 1 calc(50% - var(--stia-gap) / 2);
 }
+
+/* 触屏设备上不做毛玻璃：WebKit 得把顶栏、遮罩底下的整片内容每帧重新模糊一遍，滑画廊、翻长聊天时是持续的 GPU 开销，
+   手机发烫有它一份。底色本来就 94% 不透明，去掉模糊几乎看不出来。桌面端不变。新增 backdrop-filter 记得加进来，测试会数。 */
+@media (hover: none) and (pointer: coarse) {
+  .stia-overlay,
+  .stia-panel > header,
+  .stia-prompt-override,
+  .stia-image-viewer__toolbar {
+    backdrop-filter: none;
+  }
+}

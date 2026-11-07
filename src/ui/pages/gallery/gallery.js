@@ -256,6 +256,7 @@ export function createGalleryPage(api, { onError = () => {} } = {}) {
     image.src = api.fileUrl(result.resultId);
     image.alt = promptOf(result).slice(0, 100);
     image.loading = 'lazy';
+    image.decoding = 'async';
     makeImageSaveable(image, () => {
       if (batchMode) {
         toggleSelection(result.resultId);
