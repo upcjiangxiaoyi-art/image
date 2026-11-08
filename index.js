@@ -18,6 +18,8 @@ import { createToolPanel } from './src/ui/pages/settings/settings.js';
 import { installToolMenuEntry } from './src/ui/menu/tool-menu.js';
 import { applyThemeMode } from './src/ui/theme/theme.js';
 import { removeDrawTagFromMessage } from './src/ui/state/tag-removal.js';
+import { metadataTagIds } from './src/ui/state/tag-identity.js';
+import { describeBytes } from './src/ui/state/tag-footprint.js';
 import { createPromptOverrideDialog } from './src/ui/pages/prompt-override/prompt-override.js';
 import { createErrorDialog, createProblemReporter } from './src/ui/pages/error-dialog/error-dialog.js';
 import { createGenerationController } from './src/ui/state/generation-controller.js';
@@ -130,7 +132,35 @@ const actions = {
   remove: async tag => removeTag(tag),
 };
 const renderer = createMessageRenderer({ compat, api, store, actions });
-const events = createMessageEvents({ compat, api, store, renderer, autoQueue, onError: reportError });
+
+/* 2.0.0：打开聊天后如果还有旧格式的楼（整份标签数据写在聊天里），提醒一次去整理。手机上看不到控制台，
+   用酒馆的 toastr；每个聊天每次会话只说一遍。只算账，不动任何数据。 */
+const legacyNoticed = new Set();
+async function noticeLegacyChat() {
+  try {
+    const chatId = compat.currentChatId();
+    if (!chatId || legacyNoticed.has(chatId) || typeof api.organizeChat !== 'function') return;
+    const plan = await api.organizeChat({ dryRun: true });
+    if (!plan?.containers) return;
+    legacyNoticed.add(chatId);
+    const text = `这个聊天还有 ${plan.legacyFloors} 楼旧格式的生图数据（${describeBytes(plan.before.bytes)}）。`
+      + '到「画笺 → 设置 → 整理旧数据」一次搬完，聊天文件会小很多；整理前建议先用小锚快照或导出一份。';
+    if (typeof globalThis.toastr?.info === 'function') globalThis.toastr.info(text, '画笺', { timeOut: 12000 });
+    else console.info(`[画笺] ${text}`);
+  } catch (error) {
+    console.warn('[画笺] 检查旧格式生图数据失败', error);
+  }
+}
+
+const events = createMessageEvents({
+  compat,
+  api,
+  store,
+  renderer,
+  autoQueue,
+  onError: reportError,
+  onHydrated: () => void noticeLegacyChat(),
+});
 
 /* 一键删除：卡片 + 消息里的 <draw> 注入词 + 标签元数据一起清掉，落盘后不留痕迹。 */
 async function removeTag(tag) {
@@ -139,15 +169,15 @@ async function removeTag(tag) {
   const messageId = chat.findIndex(message => {
     const metadata = message?.extra?.stImageAtelier;
     if (!metadata) return false;
-    if (tag.messageUuid && metadata.messageUuid === tag.messageUuid) return true;
-    return (metadata.tags || []).some(item => item?.tagId === tag.tagId);
+    if (metadataTagIds(metadata).includes(tag.tagId)) return true;
+    return Boolean(tag.messageUuid) && metadata.messageUuid === tag.messageUuid;
   });
   if (messageId < 0) {
     renderer.removeCard(tag.tagId);
     store.removeTag(tag.tagId);
     return false;
   }
-  const { changed } = removeDrawTagFromMessage(chat[messageId], tag.tagId);
+  const { changed } = removeDrawTagFromMessage(chat[messageId], tag.tagId, { prompt: tag.prompt });
   renderer.removeCard(tag.tagId);
   store.removeTag(tag.tagId);
   if (!changed) return false;

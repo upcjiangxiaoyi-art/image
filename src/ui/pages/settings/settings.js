@@ -1542,40 +1542,47 @@ export function createToolPanel({ api, store, onError = () => {} }) {
   }, true);
   saveMaintenance.classList.add('stia-button--full');
 
-  /* 聊天瘦身：1.7.0 之前每次生成都把整份记录写进楼层的 extra，楼层一多聊天文件就几十 MB，
+  /* 整理旧数据：2.0.0 之前楼层里写着整份标签状态（1.7.0 之前还有整份生成记录），楼层一多聊天文件就几十 MB，
      酒馆每次保存都整份上传、重写、备份。先算账再确认，做完只保存一次聊天。 */
   const slimHeading = document.createElement('h4');
   slimHeading.className = 'stia-subheading';
-  slimHeading.textContent = '聊天瘦身';
+  slimHeading.textContent = '整理旧数据';
   const slimNotice = document.createElement('p');
   slimNotice.className = 'stia-muted';
-  slimNotice.textContent = '把旧版留在当前聊天里的生成记录搬到独立文件，每一楼只留图片引用；每张卡最多留 10 张图，更早的会删除（收藏的不删）。做完只保存一次聊天，重复执行没有副作用。';
-  const slimChat = action('◫  瘦身当前聊天', async () => {
+  slimNotice.textContent = '2.0.0 起每一楼只留百来字节的引用，提示词在正文里、标签状态在按聊天分的侧文件里，出图不再保存聊天。旧聊天里还带着整份标签数据的楼，点这里一次搬完：先把侧文件和画廊整理好，再把每一楼换成引用，只保存一次聊天。开始前建议先用小锚「立即快照」或导出一份聊天。重复执行没有副作用。';
+  const slimChat = action('◫  整理旧数据', async () => {
     await run(slimChat, async () => {
-      const plan = await api.slimChat({ dryRun: true });
+      const plan = await api.organizeChat({ dryRun: true });
       if (!plan.messages) {
         status.textContent = '当前没有打开聊天';
         return;
       }
-      const summary = `当前聊天 ${plan.messages} 楼，生图标签数据 ${describeBytes(plan.before.bytes)}`
+      if (!plan.containers) {
+        status.textContent = `当前聊天 ${plan.messages} 楼都已经是引用格式（生图标签数据 ${describeBytes(plan.before.bytes)}），不用整理`;
+        return;
+      }
+      const summary = `当前聊天 ${plan.messages} 楼，其中 ${plan.legacyFloors} 楼还是旧格式，生图标签数据 ${describeBytes(plan.before.bytes)}`
         + `（${plan.tags} 个标签，${plan.legacyTags} 个带着旧版记录）。`;
       const deletion = plan.deletedImages
         ? `会删除 ${plan.deletedImages} 张超过每张卡 10 张上限的旧图（收藏的不删）；`
         : '';
-      if (!confirm(`${summary}\n瘦身会把生成记录搬到独立文件、楼层里只留图片引用；${deletion}然后保存一次聊天。确定继续吗？`)) {
-        status.textContent = '已取消瘦身';
+      if (!confirm(`${summary}
+整理会把生成记录搬到独立文件、标签状态写进侧文件、每一楼只留引用；${deletion}然后保存一次聊天。
+
+建议先用小锚「立即快照」或导出一份聊天再继续。确定继续吗？`)) {
+        status.textContent = '已取消整理';
         return;
       }
-      const result = await api.slimChat();
+      const result = await api.organizeChat();
       const saved = Math.max(0, result.before.bytes - result.after.bytes);
       const percent = result.before.bytes ? Math.round((saved / result.before.bytes) * 100) : 0;
       status.textContent = result.changed
-        ? `瘦身完成：${describeBytes(result.before.bytes)} → ${describeBytes(result.after.bytes)}（省下 ${percent}%）；`
-          + `搬走 ${result.movedAttempts} 条生成记录`
+        ? `整理完成：${describeBytes(result.before.bytes)} → ${describeBytes(result.after.bytes)}（省下 ${percent}%）；${result.legacyFloors} 楼换成引用`
+          + `${result.movedAttempts ? `，搬走 ${result.movedAttempts} 条生成记录` : ''}`
           + `${result.restoredResults ? `，补回 ${result.restoredResults} 张图的画廊记录` : ''}`
           + `${result.deletedImages ? `，删除 ${result.deletedImages} 张超出上限的旧图` : ''}`
-          + `${result.droppedRefs ? `，去掉 ${result.droppedRefs} 个文件已不在的引用` : ''}；聊天已保存`
-        : `当前聊天已经是精简形（${describeBytes(result.after.bytes)}），没有需要改的`;
+          + `${result.droppedRefs ? `，去掉 ${result.droppedRefs} 个文件已不在的引用` : ''}；聊天已保存一次`
+        : `当前聊天已经是引用格式（${describeBytes(result.after.bytes)}），没有需要改的`;
     });
   });
   slimChat.classList.add('stia-button--full');

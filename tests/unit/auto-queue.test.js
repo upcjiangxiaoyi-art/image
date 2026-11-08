@@ -65,13 +65,13 @@ test('流式输出期间不排自动生图，写完后只排定稿里的那个�
 
   await events.processMessage(0, { live: true });
   assert.equal(enqueued.length, 0, '还在写的时候不排队');
-  const streamedTagId = message.extra.stImageAtelier.tags[0].tagId;
+  const streamedTagId = message.extra.stImageAtelier.tagIds[0];
 
   streaming = false;
   message.mes = '正文 <draw ratio="portrait">海边\n夕阳，写完后被正则补了一句</draw> 写完了';
   await events.processMessage(0, { live: true, generationType: 'normal' });
   assert.equal(enqueued.length, 1, '写完后排一次');
-  const finalTag = message.extra.stImageAtelier.tags[0];
-  assert.notEqual(finalTag.tagId, streamedTagId, '定稿的提示词变了，标签随之更新');
-  assert.equal(enqueued[0].tagId, finalTag.tagId, '排进队的是定稿里的标签，不会轮到一个已经不存在的标签');
+  const finalTagId = message.extra.stImageAtelier.tagIds[0];
+  assert.notEqual(finalTagId, streamedTagId, '定稿的提示词变了，标签随之更新');
+  assert.equal(enqueued[0].tagId, finalTagId, '排进队的是定稿里的标签，不会轮到一个已经不存在的标签');
 });

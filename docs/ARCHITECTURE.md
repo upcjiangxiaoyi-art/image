@@ -5,7 +5,7 @@
 ```text
 MESSAGE_RECEIVED (live)
   -> 解析 <draw>
-  -> message.extra.stImageAtelier 写入稳定 UUID
+  -> message.extra.stImageAtelier 只写引用 { messageUuid, tagIds }；标签状态在按聊天分的侧文件 st-image-atelier-chat-*.json
   -> saveChatConditional
   -> 手动点击或自动串行队列
   -> 按设置选择 GPT/OpenAI-compatible 或 NovelAI
@@ -16,14 +16,15 @@ MESSAGE_RECEIVED (live)
   -> 图片进入当前 ST 用户图片目录
   -> 画廊元数据写入当前用户文件 st-image-atelier-gallery.json
   -> 生成记录（attempt）写入当前用户文件 st-image-atelier-attempts.json
-  -> 出图后把图片引用（resultId、路径、时间）写回 message.extra，整份聊天只保存这一次
+  -> 出图后把图片引用（resultId、路径、时间）写进侧文件；聊天不保存
 ```
 
 `CHAT_CHANGED`、启动 hydration、消息重渲染只解析和恢复，不产生上游请求。
 
 ## 保存与写入的节奏（1.7.1）
 
-- 聊天：`compat.saveSoon()` 并进酒馆的 `saveChatDebounced`（没有就自己拖 1 秒）。识别到新标签、出图后写引用、读状态的改动都走它；`MESSAGE_RECEIVED` 时标签 ID 已经同步写进内存里的 `message.extra`，酒馆紧跟着的保存会带上。只有「瘦身当前聊天」用 `compat.save()` 当场写完。酒馆的 `saveChatConditional` 自带互斥。
+- 聊天：只在出现新标签（`reconcileMessage` 写引用）和用户删标签时才动，走 `compat.saveSoon()`（并进酒馆的 `saveChatDebounced`，没有就自己拖 1 秒）；`MESSAGE_RECEIVED` 时引用已经同步写进内存里的 `message.extra`，酒馆紧跟着的保存会带上。出图、读状态、删图、清理都不保存聊天。只有「整理旧数据」用 `compat.save()` 当场写完。酒馆的 `saveChatConditional` 自带互斥。
+- 侧文件（`chat-tag-store.js`，`CHAT_TAG_FLUSH_DELAY_MS` 1.5 秒）延后合并写；序列化时 tagId 排序、没有时间戳，和上次写进文件的一样就不写，空文档不建文件。每个聊天一份，切过的聊天在内存里留几个。
 - 文件：画廊元数据（`GALLERY_FLUSH_DELAY_MS` 1.5 秒）和生成记录（`ATTEMPT_FLUSH_DELAY_MS` 2 秒）延后合并写，写时直接序列化内存文档；发上游请求前的防重复记录用 `immediate` 当拍落盘。写失败内存不回退，下一次写一起带上；要等写完就 `flush()`。
 - 重绘：`store` 的通知带 `change.tagId`，渲染器只重画那一张卡；`change.all`（设置、健康状态）才全部重画。画完一楼的事件走 `scheduleMessage` 防抖，与 DOM 监听合成一次。生成期间（`GENERATION_STARTED` 到结束 / 中止 / 新楼 / 换聊天）撤掉 `#chat` 的 MutationObserver，接回时补查最后一楼和撤哨期间渲染出来、还露着 `<draw>` 的楼，最多撤 5 分钟自动接回。
 - 图片：上游 base64 原样上传（只解开头几十个字节认格式、按长度算大小），`fetchJson` 成功时直接 `response.json()`，上传完释放引用。自动清理在出图后 3 秒再查，两条规则都关着时不读画廊。出图后 2 秒在后台做画廊缩略图（`media/thumbnail.js`：createImageBitmap + canvas，长边 768 的 JPEG，存 `st-image-atelier-thumbs/`，记录上 `thumbnailPath`），画廊格子用 `thumbnailUrl`，看图器、下载、参考重画、卡片用原图；`removeFile` 连带删缩略图；`backfillThumbnails` 给旧图补，画廊页翻到缺的也会一张张补。
@@ -43,6 +44,9 @@ MESSAGE_RECEIVED (live)
   - 当前生图引擎、普通设置和 GPT API 预设
   - 参考图组 `referenceSets`（每组最多 4 张，只记酒馆里的路径，文件在 `st-image-atelier-refs/`；`useReferences`、`referenceFidelity` 跟着组）、默认组 `defaultReferenceSetId`（'' = 默认不带）、按角色卡的绑定 `referenceBindings`（键 `char:<头像文件名>` / `group:<群 id>`，值 '' = 这个角色不带）。1.10.0 之前记在预设上的由 `migrateReferenceSets` 迁成组（同样几张只留一组），预设上不再带
   - NovelAI 非敏感参数与画师串预设
+- SillyTavern 当前用户文件 `st-image-atelier-chat-<聊天名>-<指纹>.json`（每个聊天一份，`chat-tag-store.js`）
+  - 标签状态按 `tagId`：`promptHash`、`latestResultId`、`resultRefs`（每张图只记 id、路径、时间）、`autoAttempted`、`autoSuppressed`
+  - 文件名 = 前缀 + 聊天名（截短、去掉文件名里不能用的字符）+ 角色和聊天名一起算的指纹；酒馆的 files 接口不认子目录，只能平铺一层
 - SillyTavern 当前用户文件 `st-image-atelier-gallery.json`
   - 独立画廊索引；提示词只保留 `prompt` / `negativePrompt` 各一份；另记画质、尺寸、开始时间，生成记录清掉后卡片信息照样显示
   - 删除时直接移除记录，不保留墓碑
@@ -51,11 +55,11 @@ MESSAGE_RECEIVED (live)
 - SillyTavern 用户图片目录
   - `st-image-atelier/<resultId>.<ext>`
 
-图片 Base64、原始 API 响应、提示词的复制品都不写入聊天或扩展设置。保存聊天前 `src/ui/state/tag-footprint.js` 会检查，单楼 `tags` 超过 20 KB 就 `console.warn` 并列出各字段大小。
+聊天的每一楼只有 `extra.stImageAtelier = { messageUuid, tagIds }`（`tag-identity.js`：`reconcileMessage` 按提示词指纹对上 tagId，`locateTag` 在当前版本和滑动存档里找），图片 Base64、原始 API 响应、提示词的复制品都不写入聊天或扩展设置。保存聊天前 `src/ui/state/tag-footprint.js` 仍会检查，单楼超过 20 KB（只有还没整理的旧格式楼才会）就 `console.warn` 并列出各字段大小。
 
-## 聊天瘦身
+## 整理旧数据
 
-1.7.0 之前每次生成都把整份记录写进楼层的 `extra`。设置页的「瘦身当前聊天」（`direct-client.js` 的 `slimChat`）遍历所有楼层和 `swipe_info[].extra` 里的副本：先把旧版生成记录搬进独立文件、整份图片记录补回画廊（都写进文件之后才动聊天），画廊索引里没有的引用按路径核对文件（在的补回画廊、不在的去掉），标签改写成精简形，超过每张卡上限的旧图硬删，最后只保存一次聊天；`dryRun` 只算账。重复执行没有副作用。读状态时（`resolveTags`）也会把旧版的 `attempts` 搬进独立文件，写进文件之后再从聊天里删，但不单独保存聊天。
+2.0.0 之前楼层里写着整份标签状态（1.7.0 之前还有生成记录和图片记录）。读聊天时 `direct-client.js` 的 `importLegacyTags` 只把它们搬进侧文件和画廊（聊天一个字不动，侧文件里已有的不覆盖）；设置页的「整理旧数据」（`organizeChat`）遍历所有楼层和 `swipe_info[].extra` 里的副本：旧版生成记录搬进独立文件、整份图片记录补回画廊（都写进文件之后才动聊天），画廊索引里没有的引用按路径核对文件（在的补回画廊、不在的去掉），超过每张卡上限的旧图硬删，状态写进侧文件并 flush，每一楼换成 `{ messageUuid, tagIds }`，最后只保存一次聊天；`dryRun` 只算账。重复执行没有副作用。读状态时（`resolveTags`）只把旧版的 `attempts` 搬进独立文件，不再改聊天。打开聊天后 `index.js` 算一次账，还有旧格式的楼就用酒馆的 toastr 提醒一次。
 
 ## 防重复
 

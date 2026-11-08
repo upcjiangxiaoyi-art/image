@@ -201,3 +201,18 @@ test('画廊缩略图：格子用 thumbnailUrl、看图器用 fileUrl，设置�
   assert.match(readme, /缩略图/);
   assert.match(readme, /原图/);
 });
+
+test('2.0.0 聊天里只留引用：设置页有「整理旧数据」并提醒先快照，README 写明侧文件，打开聊天后提醒旧格式', async () => {
+  const settings = await fs.readFile(path.join(root, 'src/ui/pages/settings/settings.js'), 'utf8');
+  assert.match(settings, /api\.organizeChat\(/);
+  assert.match(settings, /整理旧数据/);
+  assert.match(settings, /小锚「立即快照」/);
+  assert.doesNotMatch(settings, /api\.slimChat\(/, '设置页不再叫瘦身');
+  const readme = await fs.readFile(path.join(root, 'README.md'), 'utf8');
+  assert.match(readme, /st-image-atelier-chat-/);
+  assert.match(readme, /\{ messageUuid, tagIds \}/);
+  const index = await fs.readFile(path.join(root, 'index.js'), 'utf8');
+  assert.match(index, /onHydrated/, '打开聊天后提醒旧格式');
+  const events = await fs.readFile(path.join(root, 'src/ui/events/message-events.js'), 'utf8');
+  assert.doesNotMatch(events, /reconcileTagMetadata/, '识别走 reconcileMessage（侧文件）');
+});

@@ -32,7 +32,8 @@ function setup() {
 test('新标签的保存走延后合并，不当场整份存聊天', async () => {
   const { handlers, message, counts } = setup();
   await handlers.get('MESSAGE_RECEIVED')(0, 'normal');
-  assert.equal(message.extra.stImageAtelier.tags.length, 1, '标签 ID 已经写进内存里的 extra，酒馆紧跟着的保存会带上');
+  assert.deepEqual(Object.keys(message.extra.stImageAtelier), ['messageUuid', 'tagIds'], '楼里只留引用');
+  assert.equal(message.extra.stImageAtelier.tagIds.length, 1, '标签 ID 已经写进内存里的 extra，酒馆紧跟着的保存会带上');
   assert.equal(counts().soon, 1);
   assert.equal(counts().immediate, 0);
 });

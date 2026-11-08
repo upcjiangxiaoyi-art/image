@@ -1,4 +1,9 @@
-import { canonicalTag } from './tag-storage.js';
+/* 楼层里只留引用：extra.stImageAtelier = { messageUuid, tagIds }。提示词在正文的 <draw> 里，
+   标签的状态（当前显示哪张、图片引用、自动生图标记）在按聊天分的侧文件里按 tagId 记（chat-tag-store.js）。
+   2.0.0 之前楼层里是 { messageUuid, tags: [{ tagId, prompt, …, resultRefs, … }] }，旧格式只读不改，
+   由「整理旧数据」一次搬完。 */
+import { parseDrawTags } from '../parser/draw-parser.js';
+import { normalizeTagRecord, promptHash } from '../api/chat-tag-store.js';
 
 function createUuid() {
   if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
@@ -9,57 +14,103 @@ function createUuid() {
   });
 }
 
-export function reconcileTagMetadata(message, parsedTags, uuid = createUuid) {
-  message.extra ??= {};
-  const previous = message.extra.stImageAtelier ?? {};
-  const previousTags = Array.isArray(previous.tags) ? previous.tags : [];
-  const unused = new Set(previousTags.map((_, index) => index));
-
-  const tags = parsedTags.map((tag, ordinal) => {
-    let matchedIndex = previousTags.findIndex((saved, index) =>
-      unused.has(index) && saved.prompt === tag.prompt,
-    );
-    if (matchedIndex < 0 && previousTags[ordinal]?.prompt === tag.prompt) {
-      matchedIndex = ordinal;
-    }
-    const saved = matchedIndex >= 0 ? previousTags[matchedIndex] : null;
-    if (matchedIndex >= 0) unused.delete(matchedIndex);
-    /* 聊天里只留轻量引用（见 tag-storage.js）。旧版的 resultIds / attempts / results 只在旧数据里
-       还有时原样带上，读状态或瘦身时搬走；每次都补一个空的就会每次识别都算改动、整份聊天保存两遍。
-       新标签直接用精简形。 */
-    return canonicalTag({
-      tagId: saved?.tagId || uuid(),
-      prompt: tag.prompt,
-      ordinal,
-      ratio: tag.ratio,
-      quality: tag.quality,
-      count: tag.count,
-      latestResultId: saved?.latestResultId || null,
-      ...(Array.isArray(saved?.resultIds) ? { resultIds: saved.resultIds } : {}),
-      ...(Array.isArray(saved?.attempts) ? { attempts: saved.attempts } : {}),
-      ...(Array.isArray(saved?.results) ? { results: saved.results } : {}),
-      ...(Array.isArray(saved?.resultRefs) ? { resultRefs: saved.resultRefs } : (saved ? {} : { resultRefs: [] })),
-      autoAttempted: Boolean(saved?.autoAttempted),
-      autoSuppressed: Boolean(saved?.autoSuppressed),
-    });
-  });
-
-  const metadata = {
-    messageUuid: previous.messageUuid || uuid(),
-    tags,
-    schemaVersion: 2,
-  };
-  message.extra.stImageAtelier = metadata;
-  return {
-    metadata,
-    changed: JSON.stringify(previous) !== JSON.stringify(metadata),
-  };
+export function isLegacyMetadata(metadata) {
+  return Array.isArray(metadata?.tags);
 }
 
-function tagIn(metadata, tagId) {
-  return Array.isArray(metadata?.tags)
-    ? metadata.tags.find(item => item?.tagId === tagId) || null
-    : null;
+/* 这份元数据（引用或旧格式）按顺序列出的 tagId。 */
+export function metadataTagIds(metadata) {
+  if (Array.isArray(metadata?.tagIds)) return metadata.tagIds.filter(id => typeof id === 'string' && id);
+  if (Array.isArray(metadata?.tags)) return metadata.tags.map(tag => tag?.tagId).filter(id => typeof id === 'string' && id);
+  return [];
+}
+
+export function legacyTagOf(metadata, tagId) {
+  return Array.isArray(metadata?.tags) ? metadata.tags.find(tag => tag?.tagId === tagId) || null : null;
+}
+
+/* 旧格式标签 → 侧文件记录（不查画廊的基础版；要按画廊补路径用 direct-client 里的 leanTag）。 */
+export function legacyTagRecord(tag) {
+  return normalizeTagRecord({
+    promptHash: promptHash(tag?.prompt),
+    latestResultId: tag?.latestResultId,
+    resultRefs: Array.isArray(tag?.resultRefs)
+      ? tag.resultRefs
+      : (Array.isArray(tag?.resultIds) ? tag.resultIds.map(resultId => ({ resultId })) : []),
+    autoAttempted: tag?.autoAttempted,
+    autoSuppressed: tag?.autoSuppressed,
+  });
+}
+
+export function buildRef(messageUuid, tagIds) {
+  return { messageUuid: String(messageUuid), tagIds: [...tagIds] };
+}
+
+export function sameRef(current, next) {
+  if (!current || isLegacyMetadata(current)) return false;
+  if (current.messageUuid !== next.messageUuid) return false;
+  const ids = Array.isArray(current.tagIds) ? current.tagIds : null;
+  if (!ids || ids.length !== next.tagIds.length) return false;
+  if (ids.some((id, index) => id !== next.tagIds[index])) return false;
+  return Object.keys(current).length === 2;
+}
+
+function promptAt(text, ordinal, fallback = '') {
+  if (typeof text !== 'string' || !Number.isInteger(ordinal) || ordinal < 0) return fallback;
+  return parseDrawTags(text, { warn: () => {} })[ordinal]?.prompt ?? fallback;
+}
+
+/* 认标签：正文里的每个 <draw> 对上楼里原来的哪个 tagId。
+   提示词一样（指纹一样）就是同一个：改了提示词就是新标签（新 tagId）。records(tagId) 取侧文件里的记录；
+   旧格式楼层没有记录时拿楼里那份自己的字段顶上。
+   返回：
+   - ref：这楼该有的引用 { messageUuid, tagIds }
+   - refChanged：和楼里现在存的不一样（旧格式一律算不一样）
+   - legacy：楼里现在是旧格式
+   - identityChanged：tagId 的集合或顺序变了（旧格式楼层只有这时才升级成引用，否则不动聊天）
+   - records：这些标签的记录（新的按默认值建；原来的保留）
+   - tags：给卡片和生图用的合并视图 */
+export function reconcileMessage(message, parsedTags, { records = () => null, uuid = createUuid } = {}) {
+  const previous = message?.extra?.stImageAtelier ?? {};
+  const legacy = isLegacyMetadata(previous);
+  const previousIds = metadataTagIds(previous);
+  const candidates = previousIds.map(tagId => {
+    const legacyTag = legacy ? legacyTagOf(previous, tagId) : null;
+    const record = records(tagId) || (legacyTag ? legacyTagRecord(legacyTag) : null);
+    return { tagId, record, hash: record?.promptHash || '' };
+  });
+  const unused = new Set(candidates.keys());
+  const nextRecords = {};
+  const tags = parsedTags.map((parsed, ordinal) => {
+    const hash = promptHash(parsed.prompt);
+    const index = candidates.findIndex((candidate, position) => unused.has(position) && candidate.hash === hash);
+    const matched = index >= 0 ? candidates[index] : null;
+    if (matched) unused.delete(index);
+    const tagId = matched?.tagId || uuid();
+    const record = normalizeTagRecord({ ...(matched?.record || {}), promptHash: hash });
+    nextRecords[tagId] = record;
+    return {
+      tagId,
+      prompt: parsed.prompt,
+      ordinal,
+      ratio: parsed.ratio,
+      quality: parsed.quality,
+      count: parsed.count,
+      latestResultId: record.latestResultId,
+      resultRefs: record.resultRefs,
+      autoAttempted: record.autoAttempted,
+      autoSuppressed: record.autoSuppressed,
+    };
+  });
+  const ref = buildRef(previous.messageUuid || uuid(), tags.map(tag => tag.tagId));
+  return {
+    ref,
+    refChanged: !sameRef(previous, ref),
+    legacy,
+    identityChanged: previousIds.join('\n') !== ref.tagIds.join('\n'),
+    records: nextRecords,
+    tags,
+  };
 }
 
 /* 这一层正在生成新的滑动版本：extra 还是上一版留下的。不开流式时新版本的位置还空着，
@@ -71,21 +122,36 @@ function showsPreviousSwipe(message, messageId, isStreaming) {
   return pendingSwipe || Boolean(isStreaming(messageId));
 }
 
+function ordinalOf(metadata, tagId) {
+  const legacyTag = legacyTagOf(metadata, tagId);
+  if (legacyTag && Number.isInteger(legacyTag.ordinal)) return legacyTag.ordinal;
+  return metadataTagIds(metadata).indexOf(tagId);
+}
+
 /* 在聊天里找标签，并说明它现在在哪：
    - active：某一层当前显示的那一版；
-   - swipe：同一层另一个滑动版本的存档。酒馆滑走时把整份 extra 深拷贝进
-     swipe_info[旧版].extra 再换上另一版，画到一半被滑走的图要写回这份存档，滑回去才看得到。
-   当前显示那一版自己的存档是过期拷贝，不算；正在生成新滑动版本时，这一层的 extra 还是
-   上一版留下的，以上一版的存档为准。都找不到返回 null：消息被重新生成、删除、改动过，
-   或者已经切到了别的聊天。 */
+   - swipe：同一层另一个滑动版本的存档。酒馆滑走时把整份 extra 深拷贝进 swipe_info[旧版].extra 再换上另一版，
+     引用跟着拷过去，记录在侧文件里按 tagId 放着，滑回去照样找得到。
+   当前显示那一版自己的存档是过期拷贝，不算；正在生成新滑动版本时，这一层的 extra 还是上一版留下的，
+   以上一版的存档为准。都找不到返回 null：消息被重新生成、删除、改动过，或者已经切到了别的聊天。
+   返回里带 ordinal 和 prompt（从对应那一版的正文里解析；旧格式退回楼里存的那份）。 */
 export function locateTag(chat, tagId, { isStreaming = () => false } = {}) {
   const messages = Array.isArray(chat) ? chat : [];
   let active = null;
   for (const [messageId, message] of messages.entries()) {
     const metadata = message?.extra?.stImageAtelier;
-    const tag = tagIn(metadata, tagId);
-    if (!tag) continue;
-    active = { message, metadata, tag, placement: 'active' };
+    if (!metadataTagIds(metadata).includes(tagId)) continue;
+    const legacyTag = legacyTagOf(metadata, tagId);
+    const ordinal = ordinalOf(metadata, tagId);
+    active = {
+      message,
+      metadata,
+      placement: 'active',
+      swipeId: null,
+      ordinal,
+      prompt: promptAt(message.mes, ordinal, legacyTag?.prompt || ''),
+      tag: legacyTag,
+    };
     if (!showsPreviousSwipe(message, messageId, isStreaming)) return active;
     break;
   }
@@ -94,8 +160,19 @@ export function locateTag(chat, tagId, { isStreaming = () => false } = {}) {
     for (const [swipeId, swipe] of message.swipe_info.entries()) {
       if (swipeId === message.swipe_id) continue;
       const metadata = swipe?.extra?.stImageAtelier;
-      const tag = tagIn(metadata, tagId);
-      if (tag) return { message, metadata, tag, placement: 'swipe' };
+      if (!metadataTagIds(metadata).includes(tagId)) continue;
+      const legacyTag = legacyTagOf(metadata, tagId);
+      const ordinal = ordinalOf(metadata, tagId);
+      const text = Array.isArray(message.swipes) ? message.swipes[swipeId] : undefined;
+      return {
+        message,
+        metadata,
+        placement: 'swipe',
+        swipeId,
+        ordinal,
+        prompt: promptAt(text, ordinal, legacyTag?.prompt || ''),
+        tag: legacyTag,
+      };
     }
   }
   return active;

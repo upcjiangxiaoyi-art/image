@@ -225,8 +225,13 @@ export function createApiClient({
       : Promise.resolve(null)),
     backfillThumbnails: options => direct.backfillThumbnails(options),
     /* 聊天瘦身和标签的生成记录清理都只关乎聊天文件和浏览器这一端的独立存储，增强模式下也走直连这份。 */
-    slimChat: options => direct.slimChat(options),
+    organizeChat: options => direct.organizeChat(options),
+    slimChat: options => direct.organizeChat(options),
     forgetTag: tagId => direct.forgetTag(tagId),
+    reconcileMessage: messageId => direct.reconcileMessage(messageId),
+    ensureTagStore: () => direct.ensureTagStore(),
+    tagRecord: tagId => direct.tagRecord(tagId),
+    chatTagFile: () => direct.chatTagFile(),
     mode: () => direct.mode(),
   };
 }

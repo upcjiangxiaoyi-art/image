@@ -1,5 +1,5 @@
 import { parseDrawTags, shouldProcessMessage } from '../parser/draw-parser.js';
-import { reconcileTagMetadata } from '../state/tag-identity.js';
+import { reconcileMessage as reconcileLocally } from '../state/tag-identity.js';
 import { warnIfHeavy } from '../state/tag-footprint.js';
 
 const DOM_SETTLE_MS = 140;
@@ -23,6 +23,7 @@ export function createMessageEvents({
   renderer,
   autoQueue,
   onError = () => {},
+  onHydrated = () => {},
   observerPauseMaxMs = OBSERVER_PAUSE_MAX_MS,
 }) {
   const sourceCache = new Map();
@@ -42,6 +43,21 @@ export function createMessageEvents({
     };
   }
 
+  /* 认标签走 api（侧文件在那边）；没有 api.reconcileMessage 的环境（单元测试）用内存里的一份记录。 */
+  const localRecords = new Map();
+  async function reconcile(messageId, message, parsed) {
+    if (typeof api?.reconcileMessage === 'function') return api.reconcileMessage(messageId);
+    const result = reconcileLocally(message, parsed, { records: tagId => localRecords.get(tagId) || null });
+    for (const [tagId, record] of Object.entries(result.records)) localRecords.set(tagId, record);
+    let changed = false;
+    if (result.refChanged && (!result.legacy || result.identityChanged)) {
+      message.extra ??= {};
+      message.extra.stImageAtelier = result.ref;
+      changed = true;
+    }
+    return { tags: result.tags, messageUuid: result.ref.messageUuid, changed };
+  }
+
   async function processMessage(messageId, { live = false, generationType = '' } = {}) {
     const message = compat.chat()[Number(messageId)];
     if (!shouldProcessMessage(message)) return;
@@ -49,7 +65,7 @@ export function createMessageEvents({
     const parsed = parseDrawTags(message.mes);
     if (!parsed.length) return;
 
-    const { metadata, changed } = reconcileTagMetadata(message, parsed);
+    const { tags: identified, changed, messageUuid } = await reconcile(messageId, message, parsed);
     if (changed) {
       /* 写入前检查：这一楼的标签数据超过 20 KB 就在控制台警告并列出各字段大小。 */
       warnIfHeavy(message, messageId);
@@ -63,10 +79,10 @@ export function createMessageEvents({
       }
     }
 
-    const tags = metadata.tags.map((tag, index) => ({
+    const tags = identified.map((tag, index) => ({
       ...parsed[index],
       ...tag,
-      messageUuid: metadata.messageUuid,
+      messageUuid,
       chatId: compat.currentChatId(),
     }));
     renderer.mount(messageId, tags);
@@ -105,6 +121,11 @@ export function createMessageEvents({
       await processMessage(messageId, { live: false });
     }
     hydrated = true;
+    try {
+      onHydrated();
+    } catch (error) {
+      console.warn('[画笺] 加载聊天后的检查失败', error);
+    }
   }
 
   function scheduleMessage(messageId, options = {}) {

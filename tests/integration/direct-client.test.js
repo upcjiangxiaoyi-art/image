@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import { createDirectApiClient } from '../../src/ui/api/direct-client.js';
 import { createMemoryGalleryMetadataStore } from '../../src/ui/api/gallery-metadata-store.js';
 import { createMemoryAttemptStore } from '../../src/ui/api/attempt-store.js';
+import { createMemoryChatTagStore } from '../../src/ui/api/chat-tag-store.js';
 import { PNG_BASE64, startMockUpstream } from '../mocks/mock-upstream.js';
 import { byteLength } from '../../src/ui/state/tag-footprint.js';
 
@@ -135,16 +136,17 @@ test('仓库链接直装模式完成生成、幂等、画廊与删除', async t 
     tagOrdinal: 0,
     parameters: { count: 1, ratio: 'square' },
   };
+  const legacySnapshot = JSON.stringify(message.extra.stImageAtelier);
   const attempt = await client.generate(input);
   assert.equal(attempt.status, 'succeeded');
   assert.equal(attempt.resultIds.length, 1);
   assert.equal(uploads.size, 1);
-  assert.equal(chatSaves, 1, '出图后聊天只保存这一次：生成记录不再逐步写进聊天');
+  assert.equal(chatSaves, 0, '出图不再保存聊天：图片引用写进侧文件');
   assert.ok(settingsSaves >= 3);
-  const storedTag = message.extra.stImageAtelier.tags[0];
-  assert.equal(storedTag.attempts, undefined, '生成记录不留在聊天里');
-  assert.deepEqual(storedTag.resultRefs.map(ref => ref.resultId), attempt.resultIds, '聊天里只留图片引用');
-  assert.match(storedTag.resultRefs[0].path, /^user\/images\/st-image-atelier\//);
+  const record = client.tagRecord(tagId);
+  assert.deepEqual(record.resultRefs.map(ref => ref.resultId), attempt.resultIds, '侧文件里记着图片引用');
+  assert.match(record.resultRefs[0].path, /^user\/images\/st-image-atelier\//);
+  assert.equal(JSON.stringify(message.extra.stImageAtelier), legacySnapshot, '旧格式的楼原样不动');
 
   const duplicate = await client.generate(input);
   assert.equal(duplicate.attemptId, attemptId);
@@ -175,10 +177,10 @@ test('仓库链接直装模式完成生成、幂等、画廊与删除', async t 
 
   await client.deleteResult(state.results[0].resultId);
   assert.equal(deleteCalls, 1);
-  assert.equal(chatSaves, 2, '删除图片时保存一次');
+  assert.equal(chatSaves, 0, '删除图片也不保存聊天：记录在侧文件里');
   assert.equal((await client.gallery()).items.length, 0);
   assert.equal((await client.resolveTags([tagId]))[0].tag.autoSuppressed, true);
-  assert.deepEqual(message.extra.stImageAtelier.tags[0].resultRefs, [], '引用一起删掉，不留墓碑');
+  assert.deepEqual(client.tagRecord(tagId).resultRefs, [], '引用一起删掉，不留墓碑');
 
   const serializedSettings = JSON.stringify(extensionSettings);
   assert.doesNotMatch(serializedSettings, /sk-test/);
@@ -227,20 +229,10 @@ test('保存触发消息重绘时不会把当前自动任务误判为 interrupte
   const storage = new Map();
   const observedStatuses = [];
   let client;
-  let resolving = false;
+  let saves = 0;
   const compat = {
     chat: () => [message],
-    save: async () => {
-      message.extra.stImageAtelier = structuredClone(message.extra.stImageAtelier);
-      if (!client || resolving) return;
-      resolving = true;
-      try {
-        const [state] = await client.resolveTags([tagId]);
-        observedStatuses.push(state.attempts[0]?.status || 'none');
-      } finally {
-        resolving = false;
-      }
-    },
+    save: async () => { saves += 1; },
     headers: () => ({ 'Content-Type': 'application/json', 'X-CSRF-Token': 'test' }),
   };
   client = createDirectApiClient({
@@ -262,7 +254,7 @@ test('保存触发消息重绘时不会把当前自动任务误判为 interrupte
     selectedModel: 'gpt-image-1',
   });
 
-  const attempt = await client.generate({
+  const pending = client.generate({
     tagId,
     attemptId: `auto:${tagId}`,
     requestMode: 'auto',
@@ -272,13 +264,20 @@ test('保存触发消息重绘时不会把当前自动任务误判为 interrupte
     tagOrdinal: 0,
     parameters: { count: 1, ratio: 'square' },
   });
+  /* 生成还在路上时读状态（酒馆重绘、切回来都会读）：不能把正在跑的记录判成中断，也不保存聊天。 */
+  while (upstream.state.generationCalls < 1) await new Promise(resolve => setTimeout(resolve, 5));
+  const [during] = await client.resolveTags([tagId]);
+  observedStatuses.push(during.attempts[0]?.status || 'none');
+  const attempt = await pending;
   const [state] = await client.resolveTags([tagId]);
   assert.equal(attempt.status, 'succeeded');
+  assert.equal(saves, 0, '自动生图的标记记在侧文件里，不保存聊天');
+  assert.equal(client.tagRecord(tagId).autoAttempted, true);
   assert.equal(state.attempts[0].status, 'succeeded');
   assert.equal(state.results.length, 1);
   assert.equal(observedStatuses.includes('interrupted'), false);
   assert.equal(observedStatuses.includes('queued'), false);
-  assert.equal(observedStatuses.includes('generating'), true);
+  assert.ok(['generating', 'downloading', 'saving', 'succeeded'].includes(observedStatuses[0]), `读到的是进行中或终态：${observedStatuses[0]}`);
   assert.equal(upstream.state.generationCalls, 1);
 
   t.after(async () => {
@@ -621,18 +620,19 @@ test('直连画廊按时间或数量自动清理，合并并发检查且真删�
   assert.equal(first.byAgeCount, 1);
   assert.equal(first.byCountCount, 2);
   assert.deepEqual(deletedPaths, values.slice(0, 2).map(item => item.localRelativePath));
-  assert.equal(chatSaves, 1);
+  assert.equal(chatSaves, 0, '清理不保存聊天：记录在侧文件里');
   assert.equal(settingsSaves, 1);
-  assert.equal(tag.autoSuppressed, true);
-  assert.deepEqual(tag.resultRefs.map(ref => ref.resultId), values.slice(2).map(item => item.resultId));
-  assert.equal('resultIds' in tag, false, '改写时顺手换成精简形');
+  const record = client.tagRecord(tag.tagId);
+  assert.equal(record.autoSuppressed, true);
+  assert.deepEqual(record.resultRefs.map(ref => ref.resultId), values.slice(2).map(item => item.resultId));
+  assert.equal('resultIds' in tag, true, '旧格式的楼原样不动，由「整理旧数据」一次换成引用');
   assert.equal(tag.latestResultId, values.at(-1).resultId);
   assert.deepEqual((await client.gallery()).items.map(item => item.resultId), [
     values[3].resultId,
     values[2].resultId,
   ]);
   assert.equal((await client.resolveTags([tagId]))[0].results.length, 2);
-  assert.equal('results' in tag, false);
+  assert.equal('results' in tag, true, '旧格式原样不动');
   assert.equal('gallery' in extensionSettings.stImageAtelier, false);
   assert.equal('deletedResultIds' in extensionSettings.stImageAtelier, false);
 });
@@ -798,8 +798,8 @@ test('已迁移版本不会从旧聊天副本复活已删除的画廊记录', as
   });
   const [state] = await client.resolveTags([tagId]);
   assert.equal(state.results.length, 0);
-  assert.equal('results' in tag, false);
-  assert.deepEqual(tag.resultIds, []);
+  assert.equal('results' in tag, true, '旧格式原样不动');
+  assert.deepEqual(client.tagRecord(tagId).resultRefs, [], '没有文件路径的旧记录不复活，引用也不留');
   assert.equal((await client.galleryMetadata()).total, 0);
 });
 
@@ -835,14 +835,14 @@ test('聊天里可用但索引里没有的旧记录，清理前补回画廊索�
     attemptStore: createMemoryAttemptStore(),
   });
   const [state] = await client.resolveTags([tagId]);
-  assert.equal(tag.results, undefined, '聊天里的整份记录清掉');
-  assert.deepEqual(tag.resultIds, ['orphan-1'], '可用记录保留在 resultIds 里');
+  assert.equal(Array.isArray(tag.results), true, '旧格式的楼原样不动（整理时再清）');
+  assert.deepEqual(client.tagRecord(tagId).resultRefs.map(ref => ref.resultId), ['orphan-1'], '补回画廊后引用记在侧文件里');
   assert.equal(state.results.length, 1);
   assert.equal(state.results[0].prompt, 'orphan prompt');
   assert.equal(client.fileUrl('orphan-1'), '/user/images/st-image-atelier/orphan-1.png');
   await galleryStore.flush();
   assert.equal(Object.keys(galleryStore.document.results).length, 1, '补回了索引文件');
-  assert.equal(chatSaves, 1);
+  assert.equal(chatSaves, 0, '补回画廊不动聊天');
 });
 
 
@@ -875,7 +875,15 @@ async function gatedClient(t, chat, {
   thumbnailer = null,
   thumbnailDelayMs = 0,
   compatExtra = {},
+  /* 聊天的生图标签侧文件：每个聊天（identity）一份内存版，测试里能看写了几次、写了什么。 */
+  chatTagStore,
 } = {}) {
+  const tagStores = new Map();
+  const chatTagStoreFactory = chatTagStore || (identity => {
+    const key = `${identity.characterKey}|${identity.chatId}`;
+    if (!tagStores.has(key)) tagStores.set(key, createMemoryChatTagStore(null, identity));
+    return tagStores.get(key);
+  });
   const originalFetch = globalThis.fetch;
   const requests = [];
   const deletedPaths = [];
@@ -931,6 +939,7 @@ async function gatedClient(t, chat, {
     verifyFile,
     thumbnailer,
     thumbnailDelayMs,
+    chatTagStore: chatTagStoreFactory,
     keyStorage: {
       getItem: key => storage.get(key) || null,
       setItem: (key, value) => storage.set(key, value),
@@ -942,7 +951,7 @@ async function gatedClient(t, chat, {
     apiKey: 'sk-test',
     selectedModel: 'gpt-image-1',
   });
-  return { client, requests, release, started, deletedPaths, uploads, edits, served, attemptStore, galleryStore };
+  return { client, requests, release, started, deletedPaths, uploads, edits, served, attemptStore, galleryStore, tagStores };
 }
 
 function leanMetadata(tagId, messageUuid, prompt = 'base64') {
@@ -999,15 +1008,16 @@ test('画到一半滑到新的一版：图写回上一版的存档，滑回去�
   message.mes = message.swipes[1];
   message.swipe_info.push({ extra: structuredClone(message.extra) });
   message.extra.stImageAtelier = tagMetadata(crypto.randomUUID(), messageUuid, 'another');
+  const archivedSnapshot = JSON.stringify(message.swipe_info[0].extra);
 
   release();
   const attempt = await pending;
   assert.equal(attempt.status, 'succeeded');
-  const archived = message.swipe_info[0].extra.stImageAtelier.tags[0];
-  assert.deepEqual(archived.attempts ?? [], [], '生成记录不写进聊天，在独立存储里');
-  assert.deepEqual(archived.resultRefs.map(ref => ref.resultId), attempt.resultIds, '上一版的存档里记着图片引用');
-  assert.equal(archived.latestResultId, attempt.resultIds[0]);
-  assert.deepEqual(message.extra.stImageAtelier.tags[0].resultIds, [], '新的一版不受影响');
+  const record = client.tagRecord(tagId);
+  assert.deepEqual(record.resultRefs.map(ref => ref.resultId), attempt.resultIds, '图片引用记在侧文件里，按 tagId，滑走了也写得到');
+  assert.equal(record.latestResultId, attempt.resultIds[0]);
+  assert.equal(JSON.stringify(message.swipe_info[0].extra), archivedSnapshot, '聊天里的存档一个字不动');
+  assert.equal(client.tagRecord(message.extra.stImageAtelier.tags[0].tagId), null, '新的一版不受影响');
 
   /* 滑回上一版：酒馆把存档拷回来。 */
   message.swipe_info[1].extra = structuredClone(message.extra);
@@ -1058,11 +1068,7 @@ test('回复被重新生成：图照样存进画廊；再看到停在「生成�
   assert.equal(recovered.attempts[0].status, 'succeeded', '独立存储里记着已经画完');
   assert.deepEqual(recovered.attempts[0].resultIds, attempt.resultIds);
   assert.deepEqual(recovered.results.map(result => result.resultId), attempt.resultIds, '聊天文件里还没记上的图按画廊接回卡片');
-  assert.deepEqual(
-    savedWhileGenerating.stImageAtelier.tags[0].resultRefs.map(ref => ref.resultId),
-    attempt.resultIds,
-    '接回来的引用写进聊天',
-  );
+  assert.deepEqual(client.tagRecord(tagId).resultRefs.map(ref => ref.resultId), attempt.resultIds, '接回来的引用写进侧文件');
   assert.equal(recovered.tag.latestResultId, attempt.resultIds[0]);
   assert.equal(interrupted.attempts[0].status, 'interrupted', '聊天里旧版的「生成中」记录搬进独立存储；画廊里也没有才算中断');
 });
@@ -1203,7 +1209,7 @@ test('老预设的超时：没改过的 3 分钟和原来的上限 10 分钟换�
   assert.equal((await timeouts(reloaded)).untouched, 180_000, '迁过一次后自己改回 3 分钟，重新加载也不再动');
 });
 
-test('读卡片状态时要等聊天保存，这期间图画好了：读回来的是保存完的最新状态，不是开始读时的旧快照', async t => {
+test('读状态不保存聊天：生成中读到的是「生成中」，画完读到的是终态', async t => {
   const tagId = crypto.randomUUID();
   const messageUuid = crypto.randomUUID();
   const message = {
@@ -1216,23 +1222,21 @@ test('读卡片状态时要等聊天保存，这期间图画好了：读回来�
   let holdSaves = false;
   const save = () => (holdSaves ? new Promise(resolve => held.push(resolve)) : Promise.resolve());
   const { client, release, started } = await gatedClient(t, [message], { save });
+  holdSaves = true;
   const pending = client.generate(generationInput(tagId, messageUuid));
   await started;
 
-  message.extra.stImageAtelier.tags[0].results = [];
-  holdSaves = true;
-  const reading = client.resolveTags([tagId]);
-  await new Promise(resolve => setTimeout(resolve, 0));
-  assert.equal(held.length, 1, '读状态时清掉旧字段，正在等保存');
-  holdSaves = false;
+  const [during] = await client.resolveTags([tagId]);
+  assert.equal(during.attempts[0].status, 'generating', '生成中读到的就是生成中，不是中断');
+  assert.equal(held.length, 0, '读状态不保存聊天');
 
   release();
   const attempt = await pending;
   assert.equal(attempt.status, 'succeeded');
-  held.splice(0).forEach(resolve => resolve());
-  const [state] = await reading;
-  assert.equal(state.attempts[0].status, 'succeeded', '不能把开始读时的「生成中」送回卡片');
+  const [state] = await client.resolveTags([tagId]);
+  assert.equal(state.attempts[0].status, 'succeeded');
   assert.deepEqual(state.results.map(result => result.resultId), attempt.resultIds);
+  assert.equal(held.length, 0, '出图也不保存聊天');
 });
 
 test('读还没出图的卡片状态不会每次都整份保存聊天', async t => {
@@ -1297,26 +1301,32 @@ test('备用线路设置：默认不用、自动换默认关；删掉当备用�
 
 /* 1.7.0：聊天文件膨胀的根因是每次生成都把整份记录（含好几份提示词复制品）写进楼层的 extra，
    每楼最多 50 条、每条几 KB，819 楼的聊天光 tags 就 18.7 MB，酒馆每次保存都整份上传重写。 */
-test('出图后聊天里只留轻量引用：没有生成记录和提示词复制品，除提示词外不到 2 KB；记录在独立存储里', async t => {
+test('出图不保存聊天、楼里只有一百来字节的引用：没有生成记录、没有提示词复制品；图片引用和记录在侧文件和独立存储里', async t => {
   const tagId = crypto.randomUUID();
   const messageUuid = crypto.randomUUID();
   const prompt = '雨夜霓虹街道中的电影感人像，长发女子撑着透明伞，'.repeat(120);
-  const message = { is_user: false, mes: `<draw>${prompt}</draw>`, extra: { stImageAtelier: leanMetadata(tagId, messageUuid, prompt) } };
+  const message = { is_user: false, mes: `<draw>${prompt}</draw>`, extra: { stImageAtelier: { messageUuid, tagIds: [tagId] } } };
   let saves = 0;
-  const { client, release, attemptStore } = await gatedClient(t, [message], { save: async () => { saves += 1; } });
+  const { client, release, attemptStore, tagStores } = await gatedClient(t, [message], { save: async () => { saves += 1; } });
   release();
   for (let index = 0; index < 3; index += 1) {
     await client.generate({ ...generationInput(tagId, messageUuid), prompt });
   }
-  const tag = message.extra.stImageAtelier.tags[0];
-  assert.equal(saves, 3, '每次出图只保存一次聊天，进度不再逐步写进聊天');
-  assert.equal('attempts' in tag, false, '生成记录不进聊天');
-  assert.equal(tag.resultRefs.length, 3);
-  assert.deepEqual(Object.keys(tag.resultRefs[0]), ['resultId', 'path', 'createdAt'], '每张图只记 id、路径、时间');
-  const { prompt: storedPrompt, ...rest } = tag;
-  assert.equal(storedPrompt, prompt, '提示词只存这一份');
-  assert.ok(byteLength(rest) < 2048, `除提示词外 ${byteLength(rest)} 字节，要在 2 KB 以内`);
-  assert.doesNotMatch(JSON.stringify(rest), /雨夜霓虹/, '聊天里没有第二份提示词');
+  assert.equal(saves, 0, '出图不保存聊天');
+  assert.deepEqual(message.extra.stImageAtelier, { messageUuid, tagIds: [tagId] }, '楼里只有引用');
+  assert.ok(byteLength(message.extra.stImageAtelier) < 120, `一楼的引用 ${byteLength(message.extra.stImageAtelier)} 字节`);
+  assert.doesNotMatch(JSON.stringify(message.extra), /雨夜霓虹/, '聊天里没有第二份提示词');
+
+  const record = client.tagRecord(tagId);
+  assert.deepEqual(Object.keys(record), ['promptHash', 'latestResultId', 'resultRefs', 'autoAttempted', 'autoSuppressed']);
+  assert.equal(record.resultRefs.length, 3);
+  assert.deepEqual(Object.keys(record.resultRefs[0]), ['resultId', 'path', 'createdAt'], '每张图只记 id、路径、时间');
+  assert.doesNotMatch(JSON.stringify(record), /雨夜霓虹/, '侧文件里也没有提示词，只有指纹');
+  const [store] = [...tagStores.values()];
+  await store.flush();
+  assert.ok(store.writes >= 1, '侧文件写过');
+  assert.equal('updatedAt' in store.document, false, '侧文件里没有时间戳');
+  assert.deepEqual(Object.keys(store.document.tags), [tagId]);
 
   const stored = attemptStore.forTag(tagId);
   assert.equal(stored.length, 3);
@@ -1328,12 +1338,12 @@ test('出图后聊天里只留轻量引用：没有生成记录和提示词复�
   assert.ok(attemptStore.writes >= 3, '记录真的写进了独立文件');
 
   const [state] = await client.resolveTags([tagId]);
-  assert.equal(state.attempts[0].promptSnapshot, prompt, '读出来补回标签的提示词');
+  assert.equal(state.attempts[0].promptSnapshot, prompt, '读出来按正文里的提示词补回');
   assert.equal(state.results.length, 3);
   assert.equal(state.results[0].requestedSize, '1024x1024', '画质、尺寸、开始时间记在画廊记录里，生成记录清掉后卡片照样能显示');
   assert.equal(state.results[0].qualitySnapshot, 'auto');
   assert.equal(typeof state.results[0].startedAt, 'string');
-  assert.equal(saves, 3, '读状态没有改动就不保存');
+  assert.equal(saves, 0, '读状态也不保存');
 });
 
 test('每张卡最多留 10 张：第 11 张画好时硬删最早的那张（文件和画廊记录一起），收藏的不删', async t => {
@@ -1349,17 +1359,17 @@ test('每张卡最多留 10 张：第 11 张画好时硬删最早的那张（文
   const attempts = [];
   for (let index = 0; index < 11; index += 1) attempts.push(await client.generate(generationInput(tagId, messageUuid)));
   assert.equal(infos.filter(line => /历史超过 10 张，已删除最早的 1 张/.test(line)).length, 1, '控制台说明删了哪张');
-  const tag = message.extra.stImageAtelier.tags[0];
-  const idsOf = () => tag.resultRefs.map(ref => ref.resultId);
-  assert.equal(tag.resultRefs.length, 10);
+  const recordOf = () => client.tagRecord(tagId);
+  const idsOf = () => recordOf().resultRefs.map(ref => ref.resultId);
+  assert.equal(recordOf().resultRefs.length, 10);
   assert.deepEqual(deletedPaths.map(path => path.split('/').at(-1)), [`${attempts[0].resultIds[0]}.png`], '最早那张的文件删掉');
   assert.equal(idsOf().includes(attempts[0].resultIds[0]), false);
-  assert.equal(tag.latestResultId, attempts[10].resultIds[0]);
+  assert.equal(recordOf().latestResultId, attempts[10].resultIds[0]);
   assert.equal((await client.galleryMetadata()).total, 10, '画廊记录一起删');
 
   await client.setFavorite(attempts[1].resultIds[0], true);
   await client.generate(generationInput(tagId, messageUuid));
-  assert.equal(tag.resultRefs.length, 10);
+  assert.equal(recordOf().resultRefs.length, 10);
   assert.equal(deletedPaths.length, 2);
   assert.match(deletedPaths[1], new RegExp(attempts[2].resultIds[0]), '收藏的那张不删，删它后面最早的');
   assert.ok(idsOf().includes(attempts[1].resultIds[0]), '收藏的留着');
@@ -1368,7 +1378,7 @@ test('每张卡最多留 10 张：第 11 张画好时硬删最早的那张（文
   assert.deepEqual(state.tag.resultIds, idsOf());
 });
 
-test('读状态时把旧版留在聊天里的生成记录搬进独立存储，写进文件后才从聊天里删掉；保存前超过 20 KB 会警告', async t => {
+test('读状态时把旧版留在聊天里的生成记录搬进独立存储；聊天里那份原样不动、不保存', async t => {
   const tagId = crypto.randomUUID();
   const messageUuid = crypto.randomUUID();
   const prompt = '提示词的复制品占了大头，'.repeat(60);
@@ -1411,11 +1421,8 @@ test('读状态时把旧版留在聊天里的生成记录搬进独立存储，�
   assert.ok(before > 20 * 1024, `旧数据 ${before} 字节`);
 
   const [state] = await client.resolveTags([tagId]);
-  assert.equal(saves, 1, '清掉旧版的 results 字段时保存一次（和以前一样）');
-  assert.equal(warnings.length, 1, '保存前检查到这一楼超过 20 KB');
-  assert.match(warnings[0][0], /第 0 楼的生图标签数据有 .* KB，超过 20\.0 KB/);
-  assert.equal(warnings[0][1][0].标签, tagId);
-  assert.match(warnings[0][1][0].字段.attempts, /KB$/);
+  assert.equal(saves, 0, '读状态不保存聊天：旧格式原样留着，由「整理旧数据」一次换成引用');
+  assert.equal(warnings.length, 0, '没有保存就没有「超过 20 KB」的警告');
   assert.equal(state.attempts.length, 20, '搬进去的时候就按每个标签 20 条的上限截断');
   assert.equal(state.attempts[0].attemptId, 'legacy-39', '最近的在前');
   assert.equal(state.attempts[0].promptSnapshot, prompt, '读出来的记录补回提示词');
@@ -1425,16 +1432,14 @@ test('读状态时把旧版留在聊天里的生成记录搬进独立存储，�
   await attemptStore.flush();
   await flushMicrotasks();
   const tag = message.extra.stImageAtelier.tags[0];
-  assert.equal('attempts' in tag, false, '写进文件之后聊天里的旧记录删掉');
-  assert.deepEqual(Object.keys(tag), ['tagId', 'prompt', 'ordinal', 'count', 'latestResultId', 'resultIds', 'autoAttempted', 'autoSuppressed'], '字段顺序和识别时一致');
-  assert.equal(saves, 1, '删掉不单独保存聊天，酒馆下次保存时带上');
-  assert.ok(byteLength(tag) - byteLength(prompt) < 2048, '除提示词外不到 2 KB');
+  assert.equal(Array.isArray(tag.attempts), true, '聊天里那份旧记录原样留着，由「整理旧数据」一次清掉');
+  assert.equal(saves, 0, '读状态不保存聊天');
   await client.resolveTags([tagId]);
-  assert.equal(saves, 1, '再读不再保存');
+  assert.equal(saves, 0, '再读也不保存');
   assert.equal((await client.resolveTags([tagId]))[0].attempts.length, 20);
 });
 
-test('「瘦身当前聊天」：遍历所有楼层和滑动存档，搬走生成记录、补回画廊记录、只留引用、超上限的旧图硬删，保存一次，重复执行无副作用', async t => {
+test('「整理旧数据」：遍历所有楼层和滑动存档，搬走生成记录、补回画廊记录、状态进侧文件、楼里只留引用、超上限的旧图硬删，只保存一次，重复执行无副作用', async t => {
   const prompt = '一个很长的提示词模板，'.repeat(100);
   const artist = 'artist:someone, artist:another, '.repeat(40);
   const record = (resultId, tagId, extra = {}) => ({
@@ -1515,56 +1520,71 @@ test('「瘦身当前聊天」：遍历所有楼层和滑动存档，搬走生�
   const originalInfo = console.info;
   console.info = (...args) => infos.push(args.map(String).join(' '));
   t.after(() => { console.info = originalInfo; });
-  const { client, attemptStore, galleryStore, deletedPaths } = await gatedClient(t, chat, {
+  const { client, attemptStore, galleryStore, deletedPaths, tagStores } = await gatedClient(t, chat, {
     save: async () => { saves += 1; },
     verifyFile: async path => { checked.push(path); return !path.includes('C-gone'); },
   });
 
-  const plan = await client.slimChat({ dryRun: true });
+  const plan = await client.organizeChat({ dryRun: true });
   assert.equal(plan.changed, false);
   assert.equal(saves, 0, '只算账不动数据');
   assert.equal(plan.messages, 4);
-  assert.equal(plan.tags, 5, 'A、A 的存档副本、B、C、D');
+  assert.equal(plan.legacyFloors, 3, 'A、C、D 三楼还是旧格式');
+  assert.equal(plan.containers, 5, 'A、A 的存档副本、B（另一版的存档）、C、D');
+  assert.equal(plan.tags, 5);
   assert.equal(plan.legacyTags, 4);
   assert.equal(plan.movedAttempts, 30 + 5 + 3);
-  assert.equal(plan.restoredResults, 2 + 1 + 12);
+  assert.equal(plan.restoredResults, 0, '旧版整份图片记录在读聊天时就已经补回画廊（只写画廊文件，不动聊天）');
+  assert.equal((await client.galleryMetadata()).total, 15);
   assert.equal(plan.danglingRefs, 2);
   assert.equal(plan.deletedImages, 2, 'D 有 12 张，超过上限 2 张（收藏的 D-1 不删）');
   assert.equal(attemptStore.size, 0);
   assert.equal(checked.length, 0);
+  assert.equal(JSON.stringify(chat).includes('"tagIds"'), false, '算账不改聊天');
 
-  const result = await client.slimChat();
+  const result = await client.organizeChat();
   assert.equal(result.changed, true);
   assert.equal(saves, 1, '整个聊天只保存一次');
   assert.ok(result.before.bytes > result.after.bytes * 20, `${result.before.bytes} → ${result.after.bytes}`);
+  assert.equal(result.legacyFloors, 3);
   assert.equal(result.movedAttempts, 38);
-  assert.equal(result.restoredResults, 15 + 1, '旧版整份记录 15 张补回画廊，加上按路径核实的 C-1');
+  assert.equal(result.restoredResults, 1, '按路径核实的 C-1 补回画廊');
   assert.equal(result.droppedRefs, 1, 'C-gone 文件不在，引用去掉');
   assert.equal(result.deletedImages, 2);
   assert.deepEqual(checked.sort(), ['user/images/st-image-atelier/C-1.png', 'user/images/st-image-atelier/C-gone.png']);
   assert.deepEqual(deletedPaths.map(path => path.split('/').at(-1)).sort(), ['D-2.png', 'D-3.png'], '最早的、没收藏的两张硬删');
-  assert.equal(infos.filter(line => /瘦身前：生图标签数据共 \d+ 字节/.test(line)).length, 1);
-  assert.equal(infos.filter(line => /瘦身后：生图标签数据共 \d+ 字节/.test(line)).length, 1);
+  assert.equal(infos.filter(line => /整理前：生图标签数据共 \d+ 字节/.test(line)).length, 1);
+  assert.equal(infos.filter(line => /整理后：生图标签数据共 \d+ 字节/.test(line)).length, 1);
 
-  const tagA = messageA.extra.stImageAtelier.tags[0];
-  assert.deepEqual(Object.keys(tagA), ['tagId', 'prompt', 'ordinal', 'count', 'latestResultId', 'resultRefs', 'autoAttempted', 'autoSuppressed']);
-  assert.deepEqual(tagA.resultRefs.map(ref => ref.resultId), aIds);
-  assert.equal(tagA.resultRefs[0].path, 'user/images/st-image-atelier/A-1.png');
-  assert.equal(tagA.latestResultId, 'A-2');
-  assert.deepEqual(messageA.swipe_info[0].extra.stImageAtelier.tags[0], tagA, '当前版本的存档副本一样精简');
-  const tagB = messageA.swipe_info[1].extra.stImageAtelier.tags[0];
-  assert.equal('attempts' in tagB, false, '另一个滑动版本的存档也处理');
-  assert.deepEqual(tagB.resultRefs.map(ref => ref.resultId), ['B-1']);
-  const tagC = messageC.extra.stImageAtelier.tags[0];
-  assert.deepEqual(tagC.resultRefs.map(ref => ref.resultId), ['C-1']);
-  assert.equal(tagC.latestResultId, 'C-1');
+  /* 楼里只剩引用。 */
+  assert.deepEqual(messageA.extra.stImageAtelier, { messageUuid: 'mA', tagIds: ['A'] });
+  assert.deepEqual(messageA.swipe_info[0].extra.stImageAtelier, { messageUuid: 'mA', tagIds: ['A'] }, '当前版本的存档副本一样换成引用');
+  assert.deepEqual(messageA.swipe_info[1].extra.stImageAtelier, { messageUuid: 'mA', tagIds: ['B'] }, '另一个滑动版本的存档也处理');
+  assert.deepEqual(messageC.extra.stImageAtelier, { messageUuid: 'mC', tagIds: ['C'] });
+  assert.deepEqual(messageD.extra.stImageAtelier, { messageUuid: 'mD', tagIds: ['D'] });
+  for (const message of [messageA, messageC, messageD]) {
+    assert.ok(byteLength(message.extra.stImageAtelier) < 120, `一楼的引用 ${byteLength(message.extra.stImageAtelier)} 字节`);
+  }
+  assert.doesNotMatch(JSON.stringify(chat.map(message => message.extra)), /一个很长的提示词模板/, '聊天的 extra 里没有提示词');
+
+  /* 状态在侧文件里。 */
+  const recordA = client.tagRecord('A');
+  assert.deepEqual(recordA.resultRefs.map(ref => ref.resultId), aIds);
+  assert.equal(recordA.resultRefs[0].path, 'user/images/st-image-atelier/A-1.png');
+  assert.equal(recordA.latestResultId, 'A-2');
+  assert.equal(recordA.autoAttempted, true);
+  assert.deepEqual(client.tagRecord('B').resultRefs.map(ref => ref.resultId), ['B-1']);
+  const recordC = client.tagRecord('C');
+  assert.deepEqual(recordC.resultRefs.map(ref => ref.resultId), ['C-1']);
+  assert.equal(recordC.latestResultId, 'C-1');
   assert.equal(galleryStore.document.results['C-1'].recovered, true, '文件还在的按引用补回画廊');
-  const tagD = messageD.extra.stImageAtelier.tags[0];
-  assert.equal(tagD.resultRefs.length, 10);
-  assert.ok(tagD.resultRefs.some(ref => ref.resultId === 'D-1'), '收藏的留着');
-  assert.equal(tagD.resultRefs.some(ref => ref.resultId === 'D-2'), false);
-  assert.equal(tagD.latestResultId, 'D-12');
-  assert.ok(byteLength(tagD) - byteLength(prompt) < 2048, '除提示词外不到 2 KB');
+  const recordD = client.tagRecord('D');
+  assert.equal(recordD.resultRefs.length, 10);
+  assert.ok(recordD.resultRefs.some(ref => ref.resultId === 'D-1'), '收藏的留着');
+  assert.equal(recordD.resultRefs.some(ref => ref.resultId === 'D-2'), false);
+  assert.equal(recordD.latestResultId, 'D-12');
+  const [tagStore] = [...tagStores.values()];
+  assert.deepEqual(Object.keys(tagStore.document.tags).sort(), ['A', 'B', 'C', 'D'], '侧文件写好了');
 
   assert.equal(attemptStore.forTag('A').length, 20, '搬进去时按上限截断');
   assert.equal(attemptStore.forTag('B').length, 5);
@@ -1575,28 +1595,30 @@ test('「瘦身当前聊天」：遍历所有楼层和滑动存档，搬走生�
   assert.equal('resolvedPrompt' in galleryStore.document.results['A-1'], false, '画廊记录也只留一份提示词');
 
   const [stateA, stateC, stateD] = await client.resolveTags(['A', 'C', 'D']);
-  assert.deepEqual(stateA.results.map(item => item.resultId), aIds, '瘦身后图照样能显示');
+  assert.deepEqual(stateA.results.map(item => item.resultId), aIds, '整理后图照样能显示');
   assert.equal(stateA.attempts.length, 20);
-  assert.equal(stateA.attempts[0].promptSnapshot, prompt);
+  assert.equal(stateA.attempts[0].promptSnapshot, prompt, '提示词从正文里来');
   assert.equal(client.fileUrl('A-1'), '/user/images/st-image-atelier/A-1.png');
   assert.deepEqual(stateC.results.map(item => item.resultId), ['C-1']);
   assert.equal(stateD.results.length, 10);
   assert.equal(saves, 1, '读状态没有改动');
 
   const snapshot = JSON.stringify(chat);
-  const again = await client.slimChat();
+  const writesBefore = tagStore.writes;
+  const again = await client.organizeChat();
   assert.equal(again.changed, false, '再跑一次什么都不改');
+  assert.equal(again.containers, 0);
   assert.equal(again.movedAttempts, 0);
   assert.equal(again.deletedImages, 0);
-  assert.equal(again.restoredResults, 0);
   assert.equal(saves, 1, '没改动就不保存');
+  assert.equal(tagStore.writes, writesBefore, '侧文件也不写');
   assert.equal(JSON.stringify(chat), snapshot);
   assert.equal(again.before.bytes, again.after.bytes);
 });
 
 /* 1.7.1 白屏：出图返回、正文写完那一瞬间，酒馆自己要存聊天、要重画，插件再当场整份存一次、写两份文件，
    手机上就白屏。插件的保存并进酒馆的防抖（同一秒只写一次盘），文件写入延后合并，发请求前的防重复记录照样当拍落盘。 */
-test('出图后和读状态的改动都走延后合并的保存，不再当场整份存聊天；瘦身仍当场存', async t => {
+test('出图、读状态都不保存聊天；只有「整理旧数据」当场存一次', async t => {
   const tagId = crypto.randomUUID();
   const messageUuid = crypto.randomUUID();
   const legacy = {
@@ -1613,13 +1635,14 @@ test('出图后和读状态的改动都走延后合并的保存，不再当场�
   });
   release();
   await client.generate(generationInput(tagId, messageUuid));
-  assert.equal(soon, 1, '出图后的那次保存走防抖');
-  assert.equal(immediate, 0, '不当场整份存聊天');
-  await client.resolveTags(['legacy']);
-  assert.equal(soon, 2, '清掉旧版 results 字段的保存也走防抖');
+  assert.equal(soon, 0, '出图不保存聊天：引用写进侧文件');
   assert.equal(immediate, 0);
-  await client.slimChat();
-  assert.equal(immediate, 1, '瘦身当场存，状态行说「已保存」就是真的');
+  await client.resolveTags(['legacy']);
+  assert.equal(soon, 0, '读状态也不保存：旧格式的楼原样留着');
+  assert.equal(immediate, 0);
+  await client.organizeChat();
+  assert.equal(immediate, 1, '整理当场存一次，状态行说「已保存」就是真的');
+  assert.equal(soon, 0);
 });
 
 test('发上游请求前防重复记录当拍落盘；画完的终态记录和画廊记录延后合并写，不耽误卡片更新', async t => {
@@ -2113,4 +2136,135 @@ test('补全画廊缩略图：只补没有的、最新的先、一次一张、�
   assert.deepEqual(again, { total: 0, done: 0, failed: 0, aborted: false }, '都有了就没事可做');
   assert.equal(uploads.filter(upload => upload.ch_name === 'st-image-atelier-thumbs').length, 3);
   assert.equal(uploads.filter(upload => upload.ch_name === 'st-image-atelier').length, 0, '原图一张没动');
+});
+
+/* 2.0.0 幂等：聊天放着不动、刷新、切回来，聊天和侧文件都不该再写。小锚十分钟里不该冒出新快照。 */
+test('引用格式的聊天：重新识别、重新加载、切回来都不写聊天也不写侧文件', async t => {
+  const tagId = crypto.randomUUID();
+  const messageUuid = crypto.randomUUID();
+  const prompt = '夜色里的码头，'.repeat(50);
+  const document = {
+    schemaVersion: 1,
+    chatId: 'chat-1',
+    characterKey: 'char:a.png',
+    tags: {
+      [tagId]: {
+        promptHash: (await import('../../src/ui/api/chat-tag-store.js')).promptHash(prompt),
+        latestResultId: null,
+        resultRefs: [],
+        autoAttempted: true,
+        autoSuppressed: false,
+      },
+    },
+  };
+  const chat = [
+    { is_user: true, mes: '你好' },
+    { is_user: false, mes: `正文 <draw>${prompt}</draw>`, extra: { stImageAtelier: { messageUuid, tagIds: [tagId] } } },
+  ];
+  const snapshot = JSON.stringify(chat);
+  const stores = [];
+  const open = () => gatedClient(t, chat, {
+    save: async () => { throw new Error('不该保存聊天'); },
+    saveSoon: async () => { throw new Error('不该保存聊天'); },
+    compatExtra: { currentChatId: () => 'chat-1', currentCharacterKey: () => 'char:a.png' },
+    chatTagStore: () => { const store = createMemoryChatTagStore(document, { chatId: 'chat-1', characterKey: 'char:a.png' }); stores.push(store); return store; },
+  });
+
+  const first = await open();
+  for (let round = 0; round < 3; round += 1) {
+    const result = await first.client.reconcileMessage(1);
+    assert.equal(result.changed, false, '一样的引用不算改动');
+    assert.equal(result.tags[0].tagId, tagId);
+    assert.equal(result.tags[0].prompt, prompt, '提示词从正文里来');
+    const [state] = await first.client.resolveTags([tagId]);
+    assert.equal(state.tag.autoAttempted, true);
+  }
+  assert.equal(stores[0].writes, 0, '侧文件一次都没写');
+  assert.equal(JSON.stringify(chat), snapshot, '聊天一个字没动');
+
+  /* 刷新页面 = 新的客户端、同一份侧文件。 */
+  const second = await open();
+  await second.client.reconcileMessage(1);
+  await second.client.resolveTags([tagId]);
+  assert.equal(stores[1].writes, 0, '重新加载也不写');
+  assert.equal(JSON.stringify(chat), snapshot);
+  assert.equal(second.client.chatTagFile(), first.client.chatTagFile());
+  assert.match(second.client.chatTagFile(), /^st-image-atelier-chat-chat-1-[0-9a-z]+\.json$/);
+});
+
+test('旧格式的楼：读聊天时状态搬进侧文件（只写一次），聊天不动；刷新再读不再写；标签改了才升级成引用', async t => {
+  const tagId = crypto.randomUUID();
+  const messageUuid = crypto.randomUUID();
+  const message = { is_user: false, mes: '<draw>base64</draw>', extra: { stImageAtelier: leanMetadata(tagId, messageUuid) } };
+  message.extra.stImageAtelier.tags[0].autoAttempted = true;
+  const snapshot = JSON.stringify(message);
+  let saves = 0;
+  const shared = createMemoryChatTagStore(null, { chatId: 'c', characterKey: 'k' });
+  const options = () => ({
+    save: async () => { saves += 1; },
+    saveSoon: async () => { saves += 1; },
+    compatExtra: { currentChatId: () => 'c', currentCharacterKey: () => 'k' },
+    chatTagStore: () => shared,
+  });
+
+  const first = await gatedClient(t, [message], options());
+  const result = await first.client.reconcileMessage(0);
+  assert.equal(result.changed, false, '旧格式的楼不动');
+  assert.deepEqual(result.tags.map(tag => [tag.tagId, tag.autoAttempted]), [[tagId, true]], '状态从楼里带出来');
+  await first.client.resolveTags([tagId]);
+  await shared.flush();
+  assert.equal(shared.writes, 1, '搬进侧文件写一次');
+  assert.deepEqual(Object.keys(shared.document.tags), [tagId]);
+  assert.equal(JSON.stringify(message), snapshot, '聊天一个字没动');
+  assert.equal(saves, 0);
+
+  /* 刷新：同一份侧文件再读，不写。 */
+  const reopened = createMemoryChatTagStore(shared.document, { chatId: 'c', characterKey: 'k' });
+  const second = await gatedClient(t, [message], { ...options(), chatTagStore: () => reopened });
+  await second.client.reconcileMessage(0);
+  await second.client.resolveTags([tagId]);
+  await reopened.flush();
+  assert.equal(reopened.writes, 0, '重新加载不写侧文件');
+  assert.equal(JSON.stringify(message), snapshot);
+  assert.equal(saves, 0);
+
+  /* 正文里的标签变了：这楼升级成引用，新标签拿新 ID，旧 ID 的记录还在。 */
+  message.mes = '<draw>base64</draw> <draw>another</draw>';
+  const edited = await second.client.reconcileMessage(0);
+  assert.equal(edited.changed, true);
+  assert.deepEqual(Object.keys(message.extra.stImageAtelier), ['messageUuid', 'tagIds']);
+  assert.equal(message.extra.stImageAtelier.messageUuid, messageUuid, 'messageUuid 沿用');
+  assert.equal(message.extra.stImageAtelier.tagIds[0], tagId, '没变的标签 ID 不变');
+  assert.equal(message.extra.stImageAtelier.tagIds.length, 2);
+  await reopened.flush();
+  assert.equal(reopened.writes, 1, '新标签的记录写进侧文件');
+});
+
+test('侧文件按聊天分：换聊天换文件、记录不串；切回来照样找得到', async t => {
+  const tagId = crypto.randomUUID();
+  const messageUuid = crypto.randomUUID();
+  const chats = {
+    a: [{ is_user: false, mes: '<draw>base64</draw>', extra: { stImageAtelier: { messageUuid, tagIds: [tagId] } } }],
+    b: [{ is_user: false, mes: '别的聊天' }],
+  };
+  let current = 'a';
+  const { client, release, tagStores } = await gatedClient(t, chats.a, {
+    compatExtra: { currentChatId: () => `chat-${current}`, currentCharacterKey: () => 'char:a.png' },
+  });
+  release();
+  const attempt = await client.generate(generationInput(tagId, messageUuid));
+  assert.equal(attempt.status, 'succeeded');
+  const fileA = client.chatTagFile();
+  assert.deepEqual(client.tagRecord(tagId).resultRefs.map(ref => ref.resultId), attempt.resultIds);
+
+  current = 'b';
+  await client.ensureTagStore();
+  const fileB = client.chatTagFile();
+  assert.notEqual(fileA, fileB, '另一个聊天另一个文件');
+  assert.equal(client.tagRecord(tagId), null, '别的聊天里没有这条记录');
+
+  current = 'a';
+  assert.equal(client.chatTagFile(), fileA);
+  assert.deepEqual(client.tagRecord(tagId).resultRefs.map(ref => ref.resultId), attempt.resultIds, '切回来照样在');
+  assert.equal(tagStores.size, 2);
 });

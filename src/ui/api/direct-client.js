@@ -30,20 +30,29 @@ import {
 } from './artist-preset-transfer.js';
 import { normalizeRetentionSettings, selectCleanupCandidates } from '../gallery/retention.js';
 import { normalizeThemeMode } from '../theme/theme.js';
-import { locateTag } from '../state/tag-identity.js';
+import {
+  isLegacyMetadata,
+  locateTag,
+  reconcileMessage as reconcileMessageIdentity,
+} from '../state/tag-identity.js';
+import { parseDrawTags, shouldProcessMessage } from '../parser/draw-parser.js';
+import {
+  chatTagFileName,
+  createSillyTavernChatTagStore,
+  normalizeTagRecord,
+  promptHash,
+} from './chat-tag-store.js';
 import {
   MAX_RESULTS_PER_TAG,
-  canonicalTag,
+  buildResultRefs,
   displayableResultIds,
   hasLegacyFields,
   hydrateAttempt,
   leanTag,
   normalizeLatestResultId,
-  rebuildInPlace,
   selectResultEvictions,
   slimAttempt,
   tagResultIds,
-  writeTagResults,
 } from '../state/tag-storage.js';
 import { chatTagsFootprint, describeFootprint, warnIfHeavy } from '../state/tag-footprint.js';
 
@@ -328,10 +337,134 @@ export function createDirectApiClient({
   /* 画廊缩略图：浏览器里用 createImageBitmap + canvas；测试注入假的；传 null 关掉。 */
   thumbnailer = createThumbnail,
   thumbnailDelayMs = THUMBNAIL_DELAY_MS,
+  /* 聊天的生图标签侧文件：默认走酒馆的 user/files；测试注入内存版 (identity) => store。 */
+  chatTagStore: chatTagStoreFactory,
 }) {
   const { namespace, legacyGallery } = ensureNamespace(extensionSettings);
   const metadataStore = galleryStore || createSillyTavernGalleryMetadataStore(compat);
   const attemptStore = attemptStoreOption || createSillyTavernAttemptStore(compat);
+
+  /* ---------- 聊天的生图标签侧文件（按聊天分，按 tagId 记） ---------- */
+  const tagStores = new Map();
+  const MAX_TAG_STORES = 6;
+
+  function chatIdentity() {
+    return {
+      chatId: String(compat.currentChatId?.() || ''),
+      characterKey: typeof compat.currentCharacterKey === 'function' ? String(compat.currentCharacterKey() || '') : '',
+    };
+  }
+
+  function tagStoreKey(identity) {
+    return chatTagFileName(identity) || `memory:${identity.chatId}`;
+  }
+
+  function tagStoreEntry(identity = chatIdentity()) {
+    const key = tagStoreKey(identity);
+    let entry = tagStores.get(key);
+    if (!entry) {
+      const store = typeof chatTagStoreFactory === 'function'
+        ? chatTagStoreFactory(identity)
+        : createSillyTavernChatTagStore(compat, identity);
+      entry = { key, identity, store, ready: null, initialized: false };
+      tagStores.set(key, entry);
+      /* 切过的聊天留几个在内存里（切回来不用重读），多了把最早的放掉（先把没写完的写完）。 */
+      if (tagStores.size > MAX_TAG_STORES) {
+        const oldestKey = tagStores.keys().next().value;
+        const oldest = tagStores.get(oldestKey);
+        tagStores.delete(oldestKey);
+        Promise.resolve(oldest?.store?.flush?.()).catch(() => {});
+      }
+    }
+    return entry;
+  }
+
+  /* 当前聊天的侧文件：第一次用时读进来，并把旧格式楼层里的标签状态搬进内存（只写侧文件，不动聊天）。 */
+  async function ensureTagStore(identity = chatIdentity()) {
+    await ensureReady();
+    const entry = tagStoreEntry(identity);
+    if (!entry.ready) {
+      entry.ready = (async () => {
+        await entry.store.initialize();
+        entry.initialized = true;
+        await importLegacyTags(entry.store);
+        return entry.store;
+      })().catch(error => {
+        entry.ready = null;
+        entry.initialized = false;
+        throw error;
+      });
+    }
+    return entry.ready;
+  }
+
+  /* 已经读好的当前聊天侧文件；还没读就是 null（同步路径用）。 */
+  function currentTagStore() {
+    const entry = tagStores.get(tagStoreKey(chatIdentity()));
+    return entry?.initialized ? entry.store : null;
+  }
+
+  /* 旧格式楼层里的标签 → 侧文件记录：图片引用按画廊补路径，旧版只有 id 又没记录的丢掉。 */
+  function legacyRecord(tag) {
+    const lean = leanTag(tag, lookup);
+    return normalizeTagRecord({
+      promptHash: promptHash(tag?.prompt),
+      latestResultId: lean.latestResultId,
+      resultRefs: lean.resultRefs,
+      autoAttempted: lean.autoAttempted,
+      autoSuppressed: lean.autoSuppressed,
+    });
+  }
+
+  /* 聊天里还带着旧格式（tags 数组）的容器：每一楼当前的 extra，和滑动存档 swipe_info[].extra 里的副本。 */
+  function legacyContainers(chat) {
+    const containers = [];
+    for (const [messageId, message] of (Array.isArray(chat) ? chat : []).entries()) {
+      const active = message?.extra?.stImageAtelier;
+      if (isLegacyMetadata(active)) containers.push({ message, messageId, metadata: active, placement: 'active', swipeId: null });
+      const swipes = Array.isArray(message?.swipe_info) ? message.swipe_info : [];
+      for (const [swipeId, swipe] of swipes.entries()) {
+        const metadata = swipe?.extra?.stImageAtelier;
+        if (isLegacyMetadata(metadata)) containers.push({ message, messageId, metadata, placement: 'swipe', swipeId });
+      }
+    }
+    return containers;
+  }
+
+  /* 2.0.0 之前的楼层把标签状态（甚至整份生成记录、图片记录）写在聊天里。读聊天时只把它们搬进侧文件和画廊，
+     聊天一个字不动——改聊天只在用户点「整理旧数据」时做一次。侧文件里已经有的不覆盖。 */
+  async function importLegacyTags(store) {
+    const containers = legacyContainers(compat.chat());
+    if (!containers.length) return;
+    const orphans = new Map();
+    for (const container of containers) {
+      for (const tag of container.metadata.tags) {
+        for (const record of Array.isArray(tag?.results) ? tag.results : []) {
+          if (!record?.resultId || record.status !== 'available' || !record.localRelativePath) continue;
+          if (resultIndex.has(record.resultId) || orphans.has(record.resultId)) continue;
+          orphans.set(record.resultId, { ...record, tagId: tag.tagId });
+        }
+      }
+    }
+    if (orphans.size) {
+      const restored = await metadataStore.putMany([...orphans.values()]);
+      for (const result of restored) rememberResult(result);
+    }
+    const entries = [];
+    const seen = new Set();
+    const ordered = [
+      ...containers.filter(container => container.placement === 'active'),
+      ...containers.filter(container => container.placement === 'swipe'),
+    ];
+    for (const container of ordered) {
+      for (const tag of container.metadata.tags) {
+        if (!tag?.tagId || seen.has(tag.tagId) || store.has(tag.tagId)) continue;
+        seen.add(tag.tagId);
+        entries.push([tag.tagId, legacyRecord(tag)]);
+      }
+    }
+    if (entries.length) store.putMany(entries);
+  }
   const controllers = new Map();
   /* 画廊记录的内存索引：按 resultId 直接取，按 tagId 找属于这张卡的图。 */
   const resultIndex = new Map();
@@ -503,20 +636,22 @@ export function createDirectApiClient({
     return compat.save();
   }
 
+  /* 在聊天里找这个标签（当前这一版或滑动存档），连同侧文件里的记录。侧文件还没读好、或记录丢了
+     （换过聊天名、分支出来的聊天）就按楼里的信息临时拼一条，之后 resolveTags 会按画廊补齐并写回。 */
   function findTag(tagId) {
-    for (const message of compat.chat()) {
-      const metadata = message?.extra?.stImageAtelier;
-      const tag = metadata?.tags?.find(item => item.tagId === tagId);
-      if (tag) return { message, metadata, tag };
-    }
-    return null;
+    const found = locateTag(compat.chat(), tagId, { isStreaming: compat.isStreaming });
+    if (!found) return null;
+    const store = currentTagStore();
+    const record = store?.get(tagId)
+      || (found.tag ? legacyRecord(found.tag) : normalizeTagRecord({ promptHash: promptHash(found.prompt) }));
+    return { ...found, tagId, record, store };
   }
 
-  /* 出图后写图片引用时找标签：卡片还在就写当前这一版；画到一半被滑走就写回那一版的存档，
-     滑回去就能看到；消息已经不在了（重新生成、删除、改动或切走了聊天）就写进原来那份
-     对象，图照常存进画廊，回到原来的聊天时由 resolveTags 按画廊接回卡片。 */
-  function locateForWrite(tagId, fallback) {
-    return locateTag(compat.chat(), tagId, { isStreaming: compat.isStreaming }) || fallback || null;
+  /* 改一条标签的状态：写进它所在聊天的侧文件。内容没变 store 自己会跳过，不会多写。 */
+  function updateRecord(store, tagId, patch) {
+    const target = store || currentTagStore();
+    if (!target) return null;
+    return target.update(tagId, patch);
   }
 
   /* 按 attemptId 在画廊里找这次生成存下的图，按出图顺序排。 */
@@ -529,45 +664,42 @@ export function createDirectApiClient({
   function stateOf(tagId) {
     const found = findTag(tagId);
     if (!found) return { tagId, tag: null, attempts: [], results: [] };
-    const { tag } = found;
-    const available = displayableResultIds(tag, lookup);
-    const attempts = attemptStore.forTag(tagId).map(item => hydrateAttempt(item, tag.prompt));
-    const autoAttempted = Boolean(tag.autoAttempted
+    const { record, prompt } = found;
+    const available = displayableResultIds(record, lookup);
+    const attempts = attemptStore.forTag(tagId).map(item => hydrateAttempt(item, prompt));
+    const autoAttempted = Boolean(record.autoAttempted
       || attempts.some(attempt => attempt.attemptId === `auto:${tagId}`));
-    if (autoAttempted && tag.autoAttempted !== true) tag.autoAttempted = true;
-    /* 旧版留在聊天里的 attempts / results 不往卡片送，卡片要的在独立存储和画廊里。 */
-    const { attempts: _legacyAttempts, results: _legacyResults, ...rest } = tag;
+    /* 自动生图的标记记在侧文件里，不动聊天。 */
+    if (autoAttempted && record.autoAttempted !== true) updateRecord(found.store, tagId, { autoAttempted: true });
     return {
       tagId,
-      tag: clone({
-        ...rest,
+      tag: {
+        tagId,
+        messageUuid: found.metadata?.messageUuid || null,
+        prompt,
+        ordinal: found.ordinal,
+        placement: found.placement,
         resultIds: available,
-        latestResultId: normalizeLatestResultId(tag, lookup),
+        latestResultId: normalizeLatestResultId(record, lookup),
         autoAttempted,
-      }),
+        autoSuppressed: record.autoSuppressed === true,
+      },
       attempts,
       results: clone(available.map(resultId => resultIndex.get(resultId))),
     };
   }
 
-  /* 旧版把生成记录整份复制在聊天里。读状态时先把它们搬进独立存储（精简后），真正写进文件之后
-     再从聊天里删掉；搬运中途再读到同一个标签不重复搬，也不提前删。删掉后不单独保存聊天，
-     酒馆下次保存时自然带上（「瘦身当前聊天」会立刻保存）。 */
+  /* 旧版把生成记录整份复制在聊天里。读状态时把它们搬进独立存储（精简后）；聊天里那份不动，
+     由「整理旧数据」一次清掉。搬运中途再读到同一个标签不重复搬。 */
   function migrateLegacyAttempts(tagId) {
     if (legacyMigrations.has(tagId)) return legacyMigrations.get(tagId);
     const found = findTag(tagId);
     const legacy = Array.isArray(found?.tag?.attempts) ? found.tag.attempts : [];
     const fresh = legacy
       .filter(item => item?.attemptId && !attemptStore.has(item.attemptId))
-      .map(item => slimAttempt({ ...item, tagId }, found.tag.prompt));
-    const pending = (fresh.length ? attemptStore.putMany(fresh) : Promise.resolve())
-      .then(() => {
-        const current = findTag(tagId)?.tag;
-        if (current && Array.isArray(current.attempts)) {
-          delete current.attempts;
-          rebuildInPlace(current, canonicalTag(current));
-        }
-      })
+      .map(item => slimAttempt({ ...item, tagId }, found.prompt));
+    if (!fresh.length) return Promise.resolve();
+    const pending = attemptStore.putMany(fresh)
       .catch(error => console.warn('[画笺] 搬运旧版生成记录失败，下次再试', error))
       .finally(() => legacyMigrations.delete(tagId));
     legacyMigrations.set(tagId, pending);
@@ -973,34 +1105,36 @@ export function createDirectApiClient({
     return removed;
   }
 
-  /* 每张卡最多留 MAX_RESULTS_PER_TAG 张：超了就删最早的（收藏的不删，刚画好的不删）。 */
-  async function enforceResultCap(tag, protect = new Set()) {
-    const victims = selectResultEvictions(tag.resultRefs || [], lookup, { protect });
-    if (!victims.length) return [];
+  /* 每张卡最多留 MAX_RESULTS_PER_TAG 张：超了就删最早的（收藏的不删，刚画好的不删）。记录写进侧文件。 */
+  async function enforceResultCap(store, tagId, record, protect = new Set()) {
+    const victims = selectResultEvictions(record.resultRefs || [], lookup, { protect });
+    if (!victims.length) return { removed: [], record };
     const removed = await evictResults(victims);
-    if (!removed.length) return [];
+    if (!removed.length) return { removed, record };
     const dropped = new Set(removed);
-    writeTagResults(tag, tagResultIds(tag).filter(resultId => !dropped.has(resultId)), lookup);
-    if (dropped.has(tag.latestResultId) || !tag.latestResultId) {
-      tag.latestResultId = normalizeLatestResultId(tag, lookup);
+    const next = {
+      ...record,
+      resultRefs: buildResultRefs(record, tagResultIds(record).filter(resultId => !dropped.has(resultId)), lookup),
+    };
+    if (dropped.has(next.latestResultId) || !next.latestResultId) {
+      next.latestResultId = normalizeLatestResultId(next, lookup);
     }
+    const updated = updateRecord(store, tagId, { resultRefs: next.resultRefs, latestResultId: next.latestResultId })
+      || normalizeTagRecord(next);
     console.info(
       `[画笺] 这张卡的历史超过 ${MAX_RESULTS_PER_TAG} 张，已删除最早的 ${removed.length} 张（收藏的不删）`,
-      tag.tagId,
+      tagId,
     );
-    return removed;
+    return { removed, record: updated };
   }
 
   async function resolveTags(tagIds) {
     await ensureReady();
-    let changed = false;
-    const touched = new Set();
+    const store = await ensureTagStore();
     for (const tagId of tagIds) {
       const found = findTag(tagId);
       if (!found) continue;
-      const { tag } = found;
-      touched.add(found.message);
-      if (Array.isArray(tag.attempts)) void migrateLegacyAttempts(tagId);
+      if (Array.isArray(found.tag?.attempts)) void migrateLegacyAttempts(tagId);
       for (const attempt of attemptStore.forTag(tagId)) {
         if (!ACTIVE_STATUSES.has(attempt.status) || controllers.has(attempt.attemptId)) continue;
         /* 记录停在「生成中」、这个页面上又没有在跑：多半是画到一半被滑走、切走聊天或刷新了
@@ -1019,61 +1153,52 @@ export function createDirectApiClient({
         }
         attemptStore.put(attempt).catch(error => console.warn('[画笺] 保存生成记录失败', error));
       }
-      if (Object.hasOwn(tag, 'results')) {
-        /* 旧版把整份记录复制在聊天里。删之前先把"聊天里可用、索引里没有"的补回索引，
-           否则这张图就从卡片上消失了（文件其实还在）。 */
-        const orphans = (Array.isArray(tag.results) ? tag.results : [])
-          .filter(result => result?.resultId
-            && result.status === 'available'
-            && result.localRelativePath
-            && !resultIndex.has(result.resultId));
-        if (orphans.length) {
-          const restored = await metadataStore.putMany(orphans.map(result => ({ ...result, tagId })));
-          for (const result of restored) rememberResult(result);
-        }
-        delete tag.results;
-        changed = true;
-      }
-      /* 旧版只记 id：没有画廊记录的去掉（和以前一样）。精简形的引用带着路径，画廊记录不在也留着
-         （卡片上不显示），瘦身时按路径核对。 */
-      if (Array.isArray(tag.resultIds)) {
-        const kept = [...new Set(tag.resultIds)].filter(resultId => resultIndex.has(resultId));
-        if (JSON.stringify(kept) !== JSON.stringify(tag.resultIds)) {
-          tag.resultIds = kept;
-          changed = true;
-        }
-      }
-      /* 画廊里属于这张卡的图，引用里都要有：画到一半切走聊天、再回来时聊天文件里还没记上。 */
-      const ids = tagResultIds(tag);
+      /* 画廊里属于这张卡的图，记录里都要有：画到一半切走聊天、再回来时侧文件里还没记上。
+         记录本身一样就不会写；侧文件里还没有这条（换过聊天名、分支出来的聊天）时补一条。 */
+      const { record } = found;
+      const ids = tagResultIds(record);
       const known = new Set(ids);
       const missing = ownedResults(tagId)
         .filter(result => !known.has(result.resultId))
         .map(result => result.resultId);
-      if (missing.length) {
-        writeTagResults(tag, [...ids, ...missing], lookup);
-        changed = true;
-      }
-      /* 只在真的变了时才算改动：还没出图的卡片 latestResultId 本来就是 null，
-         不能每读一次就整份聊天保存一次。 */
-      const latestResultId = normalizeLatestResultId(tag, lookup);
-      if (latestResultId !== tag.latestResultId) {
-        tag.latestResultId = latestResultId;
-        changed = true;
-      }
+      const next = missing.length
+        ? { ...record, resultRefs: buildResultRefs(record, [...ids, ...missing], lookup) }
+        : { ...record };
+      next.latestResultId = normalizeLatestResultId(next, lookup);
+      store.update(tagId, next);
     }
-    if (changed) await saveChat([...touched]);
-    /* 等保存完再取状态：手机上酒馆保存聊天要排队，可能等好几秒，这期间图可能已经画好、
-       卡片也刷新过了。先取的快照这时候送回去，会把卡片打回「正在保存到酒馆」并一直转圈。 */
     return tagIds.map(stateOf);
+  }
+
+  /* 识别一楼：正文里的 <draw> 对上 tagId，记录放进侧文件，楼里只放引用 { messageUuid, tagIds }。
+     返回给卡片用的标签视图和「聊天有没有改」：只有出现新标签、标签变了才改；旧格式楼层原样不动
+     （它的状态已经搬进侧文件），除非它的标签变了才升级成引用。 */
+  async function reconcileMessage(messageId) {
+    const message = compat.chat()[Number(messageId)];
+    if (!shouldProcessMessage(message)) return { tags: [], changed: false, messageUuid: null };
+    const parsed = parseDrawTags(message.mes);
+    if (!parsed.length) return { tags: [], changed: false, messageUuid: message.extra?.stImageAtelier?.messageUuid || null };
+    const store = await ensureTagStore();
+    const result = reconcileMessageIdentity(message, parsed, { records: tagId => store.get(tagId) });
+    store.putMany(Object.entries(result.records));
+    let changed = false;
+    if (result.refChanged && (!result.legacy || result.identityChanged)) {
+      message.extra ??= {};
+      message.extra.stImageAtelier = result.ref;
+      changed = true;
+    }
+    return { tags: result.tags, messageUuid: result.ref.messageUuid, changed };
   }
 
   async function generate(input) {
     await ensureReady();
     /* 只给眼前这一版的卡片出图。排着队的旧标签（这一层已经重新生成、正在生成新的滑动版本、
        改动或删除过）在扣费前就停下。 */
-    let found = locateTag(compat.chat(), input.tagId, { isStreaming: compat.isStreaming });
+    const found = locateTag(compat.chat(), input.tagId, { isStreaming: compat.isStreaming });
     if (found?.placement !== 'active') throw new DirectError('TAG_NOT_FOUND', '找不到对应的生图标签', 404);
-    const tagPrompt = found.tag.prompt;
+    const tagPrompt = found.prompt;
+    /* 图片引用写进这个聊天的侧文件：现在就把它拿在手里，画完时就算切了聊天也写得回原来那份。 */
+    const tagStore = await ensureTagStore();
     const existing = attemptStore.get(input.attemptId);
     if (existing) return clone(hydrateAttempt(existing, tagPrompt));
     const provider = input.provider || namespace.settings.generationProvider || 'openai';
@@ -1146,12 +1271,13 @@ export function createDirectApiClient({
     const controller = new AbortController();
     controllers.set(attempt.attemptId, controller);
     try {
-      /* 发上游请求前先把记录写进独立文件（防重复，这一次当拍就写）。自动生图再在聊天里记一笔
-         autoAttempted：独立存储的记录满了被清掉，也不会再自动画一次。 */
+      /* 发上游请求前先把记录写进独立文件（防重复，这一次当拍就写）。自动生图再在侧文件里记一笔
+         autoAttempted（当拍写）：独立存储的记录满了被清掉，也不会再自动画一次。聊天不动。 */
       await persist({ immediate: true });
-      if (input.requestMode === 'auto' && found.tag.autoAttempted !== true) {
-        found.tag.autoAttempted = true;
-        await saveChat([found.message]);
+      if (input.requestMode === 'auto' && tagStore.get(input.tagId)?.autoAttempted !== true) {
+        const base = tagStore.get(input.tagId) || normalizeTagRecord({ promptHash: promptHash(tagPrompt) });
+        tagStore.update(input.tagId, { ...base, autoAttempted: true }, { immediate: true });
+        await tagStore.flush();
       }
     } catch (error) {
       controllers.delete(attempt.attemptId);
@@ -1215,23 +1341,28 @@ export function createDirectApiClient({
       const normalizedSaved = await metadataStore.putMany(saved);
       saved.splice(0, saved.length, ...normalizedSaved);
       for (const result of saved) rememberResult(result);
-      found = locateForWrite(input.tagId, found);
       /* 后台那张（之后又 roll 过）画好时，新的那次已经出图，就不抢卡片上显示的那张，只进历史。 */
       const siblings = attemptStore.forTag(input.tagId);
       const position = siblings.findIndex(item => item.attemptId === attempt.attemptId);
       const newerSucceeded = siblings.slice(0, Math.max(0, position)).some(item => item.status === 'succeeded');
-      writeTagResults(found.tag, [...tagResultIds(found.tag), ...saved.map(result => result.resultId)], lookup);
-      if (!newerSucceeded || !found.tag.latestResultId) {
-        found.tag.latestResultId = saved.at(-1)?.resultId || found.tag.latestResultId || null;
-      }
-      await enforceResultCap(found.tag, new Set(saved.map(result => result.resultId)));
+      /* 图片引用、当前显示哪张：写进这个聊天的侧文件（按 tagId），聊天文件不动。卡片被滑走、切了聊天
+         也一样写得到，滑回去、切回来由 resolveTags 读侧文件接回卡片。 */
+      const current = tagStore.get(input.tagId) || normalizeTagRecord({ promptHash: promptHash(tagPrompt) });
+      const latestResultId = (!newerSucceeded || !current.latestResultId)
+        ? (saved.at(-1)?.resultId || current.latestResultId || null)
+        : current.latestResultId;
+      const written = tagStore.update(input.tagId, {
+        ...current,
+        resultRefs: buildResultRefs(current, [...tagResultIds(current), ...saved.map(result => result.resultId)], lookup),
+        latestResultId,
+      });
+      await enforceResultCap(tagStore, input.tagId, written, new Set(saved.map(result => result.resultId)));
       attempt.status = 'succeeded';
       attempt.resultIds = saved.map(result => result.resultId);
       attempt.completedAt = now();
-      /* 先改内存再保存聊天：保存触发的重绘读到的是「已完成」。聊天只在出图后保存这一次（延后合并）；
-         终态记录也延后合并写，不等它：图已经存好、引用已经在内存里的聊天里。 */
+      /* 先改内存再写记录：卡片重绘读到的是「已完成」。聊天不用保存——楼里只有引用，没变。
+         终态记录和侧文件都延后合并写，不等它们：图已经存好、引用已经在内存里。 */
       await persist({ persist: false });
-      await saveChat([found.message]);
       persist().catch(error => console.warn('[画笺] 保存生成记录失败（图片已经存好）', error));
       /* 画廊缩略图晚几秒在后台做（读回原图、缩小、另存一张小图），原图不动。 */
       scheduleThumbnails(saved.map(result => result.resultId));
@@ -1240,14 +1371,16 @@ export function createDirectApiClient({
       await Promise.allSettled(saved.map(removeFile));
       await metadataStore.removeMany(saved.map(result => result.resultId)).catch(() => {});
       for (const result of saved) forgetResult(result.resultId);
-      if (found?.tag) {
+      if (saved.length && tagStore.has(input.tagId)) {
         const discarded = new Set(saved.map(result => result.resultId));
-        const ids = tagResultIds(found.tag);
+        const current = tagStore.get(input.tagId);
+        const ids = tagResultIds(current);
         if (ids.some(resultId => discarded.has(resultId))) {
-          writeTagResults(found.tag, ids.filter(resultId => !discarded.has(resultId)), lookup);
-          if (discarded.has(found.tag.latestResultId)) {
-            found.tag.latestResultId = normalizeLatestResultId(found.tag, lookup);
-          }
+          const next = { ...current, resultRefs: buildResultRefs(current, ids.filter(resultId => !discarded.has(resultId)), lookup) };
+          tagStore.update(input.tagId, {
+            ...next,
+            latestResultId: discarded.has(next.latestResultId) ? normalizeLatestResultId(next, lookup) : next.latestResultId,
+          });
         }
       }
       const cancelled = controller.signal.aborted;
@@ -1322,6 +1455,7 @@ export function createDirectApiClient({
 
   async function deleteResult(resultId) {
     await ensureReady();
+    await ensureTagStore();
     const result = resultIndex.get(resultId);
     if (!result) throw new DirectError('VALIDATION_FAILED', '找不到图片');
     await removeFile(result);
@@ -1329,10 +1463,13 @@ export function createDirectApiClient({
     forgetResult(resultId);
     const found = findTag(result.tagId);
     if (found) {
-      writeTagResults(found.tag, tagResultIds(found.tag).filter(id => id !== resultId), lookup);
-      found.tag.latestResultId = normalizeLatestResultId(found.tag, lookup);
-      found.tag.autoSuppressed = true;
-      await saveChat([found.message]);
+      const refs = buildResultRefs(found.record, tagResultIds(found.record).filter(id => id !== resultId), lookup);
+      const next = { ...found.record, resultRefs: refs };
+      updateRecord(found.store, result.tagId, {
+        resultRefs: refs,
+        latestResultId: normalizeLatestResultId(next, lookup),
+        autoSuppressed: true,
+      });
     }
     return { resultId, status: 'deleted' };
   }
@@ -1353,6 +1490,7 @@ export function createDirectApiClient({
       };
     }
     await ensureReady();
+    await ensureTagStore();
     const selection = selectCleanupCandidates(metadataStore.records(), namespace.settings);
 
     const deletedIds = [];
@@ -1371,17 +1509,18 @@ export function createDirectApiClient({
     await metadataStore.removeMany(deletedIds);
     for (const resultId of deletedIds) forgetResult(resultId);
 
-    const touched = new Set();
     const deleted = new Set(deletedIds);
     for (const tagId of affectedTags) {
       const found = findTag(tagId);
       if (!found) continue;
-      writeTagResults(found.tag, tagResultIds(found.tag).filter(resultId => !deleted.has(resultId)), lookup);
-      found.tag.latestResultId = normalizeLatestResultId(found.tag, lookup);
-      found.tag.autoSuppressed = true;
-      touched.add(found.message);
+      const refs = buildResultRefs(found.record, tagResultIds(found.record).filter(resultId => !deleted.has(resultId)), lookup);
+      const next = { ...found.record, resultRefs: refs };
+      updateRecord(found.store, tagId, {
+        resultRefs: refs,
+        latestResultId: normalizeLatestResultId(next, lookup),
+        autoSuppressed: true,
+      });
     }
-    if (touched.size) await saveChat([...touched]);
 
     return {
       enabled: true,
@@ -1420,23 +1559,34 @@ export function createDirectApiClient({
     return response.ok;
   }
 
-  /* 「瘦身当前聊天」：遍历所有楼层（含滑动存档 swipe_info[].extra 里的副本），把旧版留在聊天里的
-     生成记录搬进独立存储、整份图片记录补回画廊，标签改写成精简形（只留图片引用），超过每张卡
-     上限的旧图硬删，最后只保存一次聊天。重复执行没有副作用。dryRun 只算账、不动任何数据。 */
-  async function slimChat({ dryRun = false } = {}) {
+  /* 「整理旧数据」：2.0.0 之前的楼层把标签状态、甚至整份生成记录和图片记录写在聊天里。遍历所有楼层
+     （含滑动存档 swipe_info[].extra 里的副本）：生成记录搬进独立存储、图片记录补回画廊、引用按路径核对
+     （文件在的补回画廊、不在的去掉）、超过每张卡上限的旧图硬删、标签状态写进侧文件，楼里只留
+     { messageUuid, tagIds }，最后只保存一次聊天。重复执行没有副作用。dryRun 只算账、不动任何数据。 */
+  async function organizeChat({ dryRun = false } = {}) {
     await ensureReady();
+    const store = await ensureTagStore();
     const chat = compat.chat();
     const before = chatTagsFootprint(chat);
-    const containers = [];
-    for (const [messageId, message] of chat.entries()) {
-      const active = message?.extra?.stImageAtelier;
-      if (Array.isArray(active?.tags)) containers.push({ message, messageId, metadata: active, placement: 'active' });
-      const swipes = Array.isArray(message?.swipe_info) ? message.swipe_info : [];
-      for (const [swipeId, swipe] of swipes.entries()) {
-        const metadata = swipe?.extra?.stImageAtelier;
-        if (Array.isArray(metadata?.tags)) containers.push({ message, messageId, metadata, placement: 'swipe', swipeId });
-      }
-    }
+    const containers = legacyContainers(chat);
+    const legacyFloors = new Set(containers.filter(container => container.placement === 'active').map(container => container.messageId)).size;
+    const summary = extra => ({
+      dryRun,
+      before,
+      after: before,
+      messages: chat.length,
+      legacyFloors,
+      containers: containers.length,
+      tags: 0,
+      legacyTags: 0,
+      movedAttempts: 0,
+      restoredResults: 0,
+      danglingRefs: 0,
+      deletedImages: 0,
+      droppedRefs: 0,
+      changed: false,
+      ...extra,
+    });
 
     const attemptsToMove = new Map();
     const orphans = new Map();
@@ -1476,23 +1626,18 @@ export function createDirectApiClient({
           wouldDelete += selectResultEvictions(lean.resultRefs, lookup).length;
         }
       }
-      return {
-        dryRun: true,
-        before,
-        after: before,
-        messages: chat.length,
+      return summary({
         tags: tagCount,
         legacyTags: legacyTagCount,
         movedAttempts: attemptsToMove.size,
         restoredResults: orphans.size,
         danglingRefs: dangling.size,
         deletedImages: wouldDelete,
-        droppedRefs: 0,
-        changed: false,
-      };
+      });
     }
+    if (!containers.length) return summary({});
 
-    console.info(`[画笺] 瘦身前：生图标签数据共 ${before.bytes} 字节，${describeFootprint(before)}`);
+    console.info(`[画笺] 整理前：生图标签数据共 ${before.bytes} 字节，${describeFootprint(before)}`);
     /* 先把要留的搬走、等写进文件，再动聊天：中途失败也不会丢数据。 */
     if (orphans.size) {
       const restored = await metadataStore.putMany([...orphans.values()]);
@@ -1534,38 +1679,52 @@ export function createDirectApiClient({
       await metadataStore.flush();
     }
 
-    const leanByTagId = new Map();
+    /* 每个 tagId 一条记录：侧文件里已有的（读聊天时搬进来的、这次会话出过图的）为准，引用按画廊核对，
+       超出上限的旧图硬删。当前显示的那一版先算，滑动存档里同一个 tagId 的旧拷贝不覆盖。 */
+    const records = new Map();
     let deletedImages = 0;
-    let changed = false;
-    for (const container of containers) {
+    const ordered = [
+      ...containers.filter(container => container.placement === 'active'),
+      ...containers.filter(container => container.placement === 'swipe'),
+    ];
+    for (const container of ordered) {
       for (const tag of container.metadata.tags) {
-        if (!tag?.tagId) continue;
-        let lean = leanByTagId.get(tag.tagId);
-        if (!lean) {
-          lean = leanTag(tag, lookup, { dropDangling });
-          const victims = selectResultEvictions(lean.resultRefs, lookup);
-          if (victims.length) {
-            const removed = new Set(await evictResults(victims));
-            deletedImages += removed.size;
-            lean = leanTag({ ...lean, resultRefs: lean.resultRefs.filter(ref => !removed.has(ref.resultId)) }, lookup);
-          }
-          leanByTagId.set(tag.tagId, lean);
+        if (!tag?.tagId || records.has(tag.tagId)) continue;
+        const existing = store.get(tag.tagId) || legacyRecord(tag);
+        let refs = buildResultRefs(existing, tagResultIds(existing), lookup).filter(ref => !dropDangling.has(ref.resultId));
+        const victims = selectResultEvictions(refs, lookup);
+        if (victims.length) {
+          const removed = new Set(await evictResults(victims));
+          deletedImages += removed.size;
+          refs = refs.filter(ref => !removed.has(ref.resultId));
         }
-        const previous = JSON.stringify(tag);
-        rebuildInPlace(tag, clone(lean));
-        if (JSON.stringify(tag) !== previous) changed = true;
+        const next = { ...existing, promptHash: existing.promptHash || promptHash(tag.prompt), resultRefs: refs };
+        next.latestResultId = normalizeLatestResultId(next, lookup);
+        records.set(tag.tagId, normalizeTagRecord(next));
       }
     }
-    /* 这一次当场写完：状态行说「聊天已保存」就是真的保存了。 */
+    store.putMany([...records.entries()]);
+    /* 画廊（删掉的记录）和侧文件都先写完，再动聊天。 */
     await metadataStore.flush();
-    if (changed) await saveChat([...new Set(containers.map(container => container.message))], { immediate: true });
+    await store.flush();
+
+    /* 侧文件写完了，再把楼里的大字段换成引用；最后只保存一次聊天。 */
+    const touched = new Set();
+    for (const container of containers) {
+      const { metadata } = container;
+      const tagIds = metadata.tags.map(tag => tag?.tagId).filter(Boolean);
+      const ref = { messageUuid: String(metadata.messageUuid || uuid()), tagIds };
+      const holder = container.placement === 'active'
+        ? container.message.extra
+        : container.message.swipe_info[container.swipeId].extra;
+      holder.stImageAtelier = ref;
+      touched.add(container.message);
+    }
+    await saveChat([...touched], { immediate: true });
     const after = chatTagsFootprint(chat);
-    console.info(`[画笺] 瘦身后：生图标签数据共 ${after.bytes} 字节，${describeFootprint(after)}`);
-    return {
-      dryRun: false,
-      before,
+    console.info(`[画笺] 整理后：生图标签数据共 ${after.bytes} 字节，${describeFootprint(after)}`);
+    return summary({
       after,
-      messages: chat.length,
       tags: tagCount,
       legacyTags: legacyTagCount,
       movedAttempts: attemptsToMove.size,
@@ -1573,8 +1732,8 @@ export function createDirectApiClient({
       danglingRefs: dangling.size,
       deletedImages,
       droppedRefs: dropDangling.size,
-      changed,
-    };
+      changed: true,
+    });
   }
 
   return {
@@ -1966,11 +2125,17 @@ export function createDirectApiClient({
     backfillThumbnails,
     /* 测试和「等后台做完」用：等所有排着的缩略图任务结束。 */
     thumbnailsSettled: () => Promise.allSettled([...thumbnailRuns, ...thumbnailJobs.values()]),
-    slimChat,
-    /* 一键删除标签后，它的生成记录也一起清掉（硬删除）。 */
+    organizeChat,
+    slimChat: organizeChat,
+    reconcileMessage,
+    ensureTagStore: () => ensureTagStore(),
+    tagRecord: tagId => currentTagStore()?.get(tagId) || null,
+    chatTagFile: () => chatTagFileName(chatIdentity()),
+    /* 一键删除标签后，它的生成记录和侧文件里的记录也一起清掉（硬删除）。 */
     forgetTag: async tagId => {
       await ensureReady();
       await attemptStore.removeForTag(tagId);
+      currentTagStore()?.remove(tagId);
     },
   };
 }
