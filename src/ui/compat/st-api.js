@@ -96,6 +96,23 @@ export function createStCompat(dependencies) {
     return streamingId >= 0 ? streamingId === target : target === chat().length - 1;
   }
 
+  /* 参考图组按角色卡记：群聊按群 id，单人按头像文件名（角色列表重排也不变）。没开聊天为空。 */
+  function currentCharacterKey() {
+    const current = context();
+    if (!current) return '';
+    if (current.groupId) return `group:${current.groupId}`;
+    const character = current.characters?.[current.characterId];
+    if (character?.avatar) return `char:${character.avatar}`;
+    return current.characterId == null ? '' : `char-index:${current.characterId}`;
+  }
+
+  function currentCharacterName() {
+    const current = context();
+    if (!current) return '';
+    if (current.groupId) return String(current.groups?.find(group => group.id === current.groupId)?.name || '群聊');
+    return String(current.characters?.[current.characterId]?.name || '');
+  }
+
   function messageElement(messageId) {
     return document.querySelector(`#chat .mes[mesid="${CSS.escape(String(messageId))}"]`);
   }
@@ -104,6 +121,8 @@ export function createStCompat(dependencies) {
     context,
     chat,
     currentChatId,
+    currentCharacterKey,
+    currentCharacterName,
     save,
     saveSoon,
     headers,

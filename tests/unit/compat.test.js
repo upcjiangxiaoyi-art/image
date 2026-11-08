@@ -79,3 +79,18 @@ test('saveSoon：有酒馆的 saveChatDebounced 就并进它；没有就自己�
   assert.equal(viaContext, 1, '没从 script.js 拿到时，getContext() 里的也认');
   await assert.doesNotReject(fallback.save, '当场保存照旧可用');
 });
+
+test('currentCharacterKey / currentCharacterName：单人按头像文件名，群聊按群 id，没开聊天为空', () => {
+  let ctx = { characterId: 1, characters: [{ name: 'A', avatar: 'a.png' }, { name: 'B', avatar: 'b.png' }], groups: [] };
+  const compat = createStCompat({ getContext: () => ctx });
+  assert.equal(compat.currentCharacterKey(), 'char:b.png');
+  assert.equal(compat.currentCharacterName(), 'B');
+  ctx = { characterId: undefined, groupId: 'g1', characters: [], groups: [{ id: 'g1', name: '群' }] };
+  assert.equal(compat.currentCharacterKey(), 'group:g1');
+  assert.equal(compat.currentCharacterName(), '群');
+  ctx = { characterId: 3, characters: [] };
+  assert.equal(compat.currentCharacterKey(), 'char-index:3', '没有头像名就退回下标');
+  ctx = { characters: [] };
+  assert.equal(compat.currentCharacterKey(), '');
+  assert.equal(compat.currentCharacterName(), '');
+});

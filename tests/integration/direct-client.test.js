@@ -7,6 +7,13 @@ import { createMemoryAttemptStore } from '../../src/ui/api/attempt-store.js';
 import { PNG_BASE64, startMockUpstream } from '../mocks/mock-upstream.js';
 import { byteLength } from '../../src/ui/state/tag-footprint.js';
 
+/* node --test 多文件并行跑时，子进程里零散的 console 输出偶尔会把运行器的消息流搅坏
+   （Unable to deserialize cloned data）。插件代码的 info / warn 在这一文件里只收进内存；要断言的用例自己再接管。 */
+export const quietConsole = [];
+for (const level of ['info', 'warn']) {
+  console[level] = (...args) => { quietConsole.push([level, ...args]); };
+}
+
 function response(status, payload) {
   return new Response(JSON.stringify(payload), {
     status,
@@ -712,8 +719,11 @@ test('画廊元数据迁移后新增记录不改写 extension_settings', async t
     'activeArtistPresetId',
     'activePresetId',
     'artistPresets',
+    'defaultReferenceSetId',
     'novelAi',
     'presets',
+    'referenceBindings',
+    'referenceSets',
     'schemaVersion',
     'settings',
   ]);
@@ -864,6 +874,7 @@ async function gatedClient(t, chat, {
   /* 默认关掉缩略图：老用例数上传、数读取的次数，别被后台任务搅了；要测缩略图的用例自己传一个假的。 */
   thumbnailer = null,
   thumbnailDelayMs = 0,
+  compatExtra = {},
 } = {}) {
   const originalFetch = globalThis.fetch;
   const requests = [];
@@ -911,6 +922,7 @@ async function gatedClient(t, chat, {
       save,
       ...(saveSoon ? { saveSoon } : {}),
       headers: () => ({ 'Content-Type': 'application/json', 'X-CSRF-Token': 'test' }),
+      ...compatExtra,
     },
     extensionSettings: {},
     saveSettingsDebounced: () => {},
@@ -1687,32 +1699,52 @@ test('图片大小上限：没改过的老默认 30 MB 换成 64 MB，自己设�
 });
 
 /* 1.8.0 参考图（图生图）。 */
-test('参考图：给预设加最多 4 张，删掉时文件一起删；格式不对的拒收', async t => {
+test('参考图组：新建、每组最多 4 张、删掉时文件一起删、格式不对拒收；第一组自动成为默认组；预设上不再带参考图', async t => {
   const tagId = crypto.randomUUID();
   const message = { is_user: false, mes: '<draw>base64</draw>', extra: { stImageAtelier: leanMetadata(tagId, crypto.randomUUID()) } };
   const { client, deletedPaths, uploads } = await gatedClient(t, [message]);
   const png = Buffer.from(PNG_BASE64, 'base64');
-  const presetId = (await client.getPresets()).activePresetId;
-  for (let index = 0; index < 4; index += 1) {
-    await client.addReference(presetId, { bytes: png, filename: `face-${index}.png` });
-  }
-  await assert.rejects(client.addReference(presetId, { bytes: png, filename: 'one-more.png' }), /最多 4 张/);
-  const preset = (await client.getPresets()).items.find(item => item.id === presetId);
-  assert.equal(preset.references.length, 4);
-  assert.match(preset.references[0].path, /^user\/images\/st-image-atelier-refs\/ref-/);
-  assert.equal(preset.references[0].name, 'face-0.png');
-  assert.equal(uploads.filter(upload => upload.ch_name === 'st-image-atelier-refs').length, 4, '存在自己的目录，和生成结果分开');
-  assert.equal(preset.useReferences, true);
-  assert.equal(preset.referenceFidelity, '');
+  const empty = await client.getReferenceSets();
+  assert.deepEqual(empty.sets, []);
+  assert.equal(empty.defaultSetId, '');
+  assert.equal(empty.activeSetId, '');
 
-  const removed = await client.removeReference(presetId, preset.references[0].id);
-  assert.equal(removed.references.length, 3);
-  assert.equal(deletedPaths.at(-1), preset.references[0].path, '文件一起删');
+  let overview = await client.createReferenceSet({ name: '港哥' });
+  const setId = overview.created.setId;
+  assert.equal(overview.created.becameDefault, true, '第一组自动成为默认组');
+  assert.equal(overview.defaultSetId, setId);
+  assert.equal(overview.activeSetId, setId);
+  for (let index = 0; index < 4; index += 1) {
+    overview = await client.addReference(setId, { bytes: png, filename: `face-${index}.png` });
+  }
+  await assert.rejects(client.addReference(setId, { bytes: png, filename: 'one-more.png' }), /最多 4 张/);
+  const set = overview.sets.find(item => item.id === setId);
+  assert.equal(set.references.length, 4);
+  assert.match(set.references[0].path, /^user\/images\/st-image-atelier-refs\/ref-/);
+  assert.equal(set.references[0].name, 'face-0.png');
+  assert.equal(uploads.filter(upload => upload.ch_name === 'st-image-atelier-refs').length, 4, '存在自己的目录');
+  assert.equal(set.useReferences, true);
+  assert.equal(set.referenceFidelity, '');
+  const presets = await client.getPresets();
+  assert.equal('references' in presets.items[0], false, '预设上不再带参考图');
+
+  const removed = await client.removeReference(setId, set.references[0].id);
+  assert.equal(removed.sets.find(item => item.id === setId).references.length, 3);
+  assert.equal(deletedPaths.at(-1), set.references[0].path, '文件一起删');
   await assert.rejects(
-    client.addReference(presetId, { bytes: new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]), filename: 'bad.bin' }),
+    client.addReference(setId, { bytes: new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]), filename: 'bad.bin' }),
     /PNG、JPEG、WebP/,
   );
-  await assert.rejects(client.removeReference(presetId, 'missing'), /找不到这张参考图/);
+  await assert.rejects(client.removeReference(setId, 'missing'), /找不到这张参考图/);
+  await assert.rejects(client.addReference('nope', { bytes: png, filename: 'x.png' }), /找不到这组参考图/);
+
+  const renamed = await client.renameReferenceSet(setId, '港哥（新）');
+  assert.equal(renamed.sets[0].name, '港哥（新）');
+  const deleted = await client.deleteReferenceSet(setId);
+  assert.deepEqual(deleted.sets, []);
+  assert.equal(deleted.defaultSetId, '');
+  assert.equal(deleted.activeSetId, '');
+  assert.equal(deletedPaths.filter(path => path.includes('st-image-atelier-refs')).length, 4, '删组时剩下的 3 张文件也删了');
 });
 
 test('换一张参考图：原位替换顺序不变，满 4 张也能换；新图传好、写盘后才删旧文件；新图格式不对时原图不动', async t => {
@@ -1720,52 +1752,51 @@ test('换一张参考图：原位替换顺序不变，满 4 张也能换；新�
   const message = { is_user: false, mes: '<draw>base64</draw>', extra: { stImageAtelier: leanMetadata(tagId, crypto.randomUUID()) } };
   const { client, deletedPaths, uploads } = await gatedClient(t, [message]);
   const png = Buffer.from(PNG_BASE64, 'base64');
-  const presetId = (await client.getPresets()).activePresetId;
+  const setId = (await client.createReferenceSet({ name: '组' })).created.setId;
+  let overview;
   for (let index = 0; index < 4; index += 1) {
-    await client.addReference(presetId, { bytes: png, filename: `face-${index}.png` });
+    overview = await client.addReference(setId, { bytes: png, filename: `face-${index}.png` });
   }
-  const before = (await client.getPresets()).items.find(item => item.id === presetId).references;
+  const before = overview.sets[0].references;
   const uploadsBefore = uploads.length;
   const deletesBefore = deletedPaths.length;
 
-  const replaced = await client.replaceReference(presetId, before[1].id, { bytes: png, filename: 'face-new.png' });
-  assert.equal(replaced.references.length, 4, '满 4 张也能换，数量不变');
+  const replaced = (await client.replaceReference(setId, before[1].id, { bytes: png, filename: 'face-new.png' })).sets[0].references;
+  assert.equal(replaced.length, 4, '满 4 张也能换，数量不变');
   assert.deepEqual(
-    replaced.references.map(item => item.id).filter((_, index) => index !== 1),
+    replaced.map(item => item.id).filter((_, index) => index !== 1),
     [before[0].id, before[2].id, before[3].id],
     '别的三张原样不动',
   );
-  assert.notEqual(replaced.references[1].id, before[1].id);
-  assert.equal(replaced.references[1].name, 'face-new.png', '新的那张顶在原来的位置');
-  assert.notEqual(replaced.references[1].path, before[1].path);
+  assert.notEqual(replaced[1].id, before[1].id);
+  assert.equal(replaced[1].name, 'face-new.png', '新的那张顶在原来的位置');
+  assert.notEqual(replaced[1].path, before[1].path);
   assert.equal(uploads.length, uploadsBefore + 1, '新图传上去');
   assert.deepEqual(deletedPaths.slice(deletesBefore), [before[1].path], '只删旧文件这一份');
 
-  const persisted = (await client.getPresets()).items.find(item => item.id === presetId).references;
-  assert.deepEqual(persisted.map(item => item.path), replaced.references.map(item => item.path));
+  const persisted = (await client.getReferenceSets()).sets[0].references;
+  assert.deepEqual(persisted.map(item => item.path), replaced.map(item => item.path));
 
   await assert.rejects(
-    client.replaceReference(presetId, replaced.references[0].id, { bytes: new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]), filename: 'bad.bin' }),
+    client.replaceReference(setId, replaced[0].id, { bytes: new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]), filename: 'bad.bin' }),
     /PNG、JPEG、WebP/,
   );
-  const untouched = (await client.getPresets()).items.find(item => item.id === presetId).references;
-  assert.deepEqual(untouched, persisted, '格式不对时原图原样留着');
+  assert.deepEqual((await client.getReferenceSets()).sets[0].references, persisted, '格式不对时原图原样留着');
   assert.equal(uploads.length, uploadsBefore + 1, '没有多传');
   assert.equal(deletedPaths.length, deletesBefore + 1, '没有多删');
-  await assert.rejects(client.replaceReference(presetId, 'missing', { bytes: png, filename: 'x.png' }), /找不到这张参考图/);
+  await assert.rejects(client.replaceReference(setId, 'missing', { bytes: png, filename: 'x.png' }), /找不到这张参考图/);
 });
 
-test('出图自动带上预设的参考图：走 edits 接口、表单里有图、记录和画廊记录上记着路径；关掉自动带上就走普通接口', async t => {
+test('出图自动带上这个角色用的那组参考图：走 edits 接口、表单里有图、记录和画廊记录上记着路径；关掉自动带上就走普通接口', async t => {
   const tagId = crypto.randomUUID();
   const messageUuid = crypto.randomUUID();
   const message = { is_user: false, mes: '<draw>base64</draw>', extra: { stImageAtelier: leanMetadata(tagId, messageUuid) } };
   const { client, release, edits, served, requests } = await gatedClient(t, [message]);
   release();
   const png = Buffer.from(PNG_BASE64, 'base64');
-  const presetId = (await client.getPresets()).activePresetId;
-  await client.addReference(presetId, { bytes: png, filename: 'face.png' });
-  await client.addReference(presetId, { bytes: png, filename: 'outfit.png' });
-  const paths = (await client.getPresets()).items.find(item => item.id === presetId).references.map(item => item.path);
+  const setId = (await client.createReferenceSet({ name: '港哥' })).created.setId;
+  await client.addReference(setId, { bytes: png, filename: 'face.png' });
+  const paths = (await client.addReference(setId, { bytes: png, filename: 'outfit.png' })).sets[0].references.map(item => item.path);
 
   const attempt = await client.generate(generationInput(tagId, messageUuid));
   assert.equal(attempt.status, 'succeeded');
@@ -1779,7 +1810,7 @@ test('出图自动带上预设的参考图：走 edits 接口、表单里有图�
   assert.deepEqual(state.results[0].references, paths, '画廊记录上也记着');
   assert.equal(state.attempts[0].references.length, 2);
 
-  await client.updatePreset(presetId, { useReferences: false });
+  await client.updateReferenceSet(setId, { useReferences: false });
   const plain = await client.generate(generationInput(tagId, messageUuid));
   assert.equal(plain.status, 'succeeded');
   assert.equal(requests.length, 1, '关掉自动带上就走普通接口');
@@ -1787,16 +1818,17 @@ test('出图自动带上预设的参考图：走 edits 接口、表单里有图�
   assert.equal(edits.length, 1);
 });
 
-test('「参考重画」：指定的那张排最前，再带预设里的，最多 4 张；相册里临时选的用完就删', async t => {
+test('「参考重画」：指定的那张排最前，再带这组的，最多 4 张；相册里临时选的用完就删', async t => {
   const tagId = crypto.randomUUID();
   const messageUuid = crypto.randomUUID();
   const message = { is_user: false, mes: '<draw>base64</draw>', extra: { stImageAtelier: leanMetadata(tagId, messageUuid) } };
   const { client, release, edits, served, deletedPaths } = await gatedClient(t, [message]);
   release();
   const png = Buffer.from(PNG_BASE64, 'base64');
-  const presetId = (await client.getPresets()).activePresetId;
-  for (let index = 0; index < 4; index += 1) await client.addReference(presetId, { bytes: png, filename: `ref-${index}.png` });
-  const presetPaths = (await client.getPresets()).items.find(item => item.id === presetId).references.map(item => item.path);
+  const setId = (await client.createReferenceSet({ name: '组' })).created.setId;
+  let overview;
+  for (let index = 0; index < 4; index += 1) overview = await client.addReference(setId, { bytes: png, filename: `ref-${index}.png` });
+  const setPaths = overview.sets[0].references.map(item => item.path);
 
   const first = await client.generate(generationInput(tagId, messageUuid));
   const [state] = await client.resolveTags([tagId]);
@@ -1805,21 +1837,21 @@ test('「参考重画」：指定的那张排最前，再带预设里的，最�
   const again = await client.generate({ ...generationInput(tagId, messageUuid), references: [{ resultId: first.resultIds[0] }] });
   assert.equal(again.status, 'succeeded');
   assert.equal(edits.at(-1).body.getAll('image[]').length, 4, '最多 4 张');
-  assert.deepEqual(again.references, [shownPath, ...presetPaths.slice(0, 3)], '指定的那张排最前，预设的补满');
+  assert.deepEqual(again.references, [shownPath, ...setPaths.slice(0, 3)], '指定的那张排最前，这组的补满');
   assert.equal(served[0].replace(/^\//, ''), shownPath);
 
   const temp = await client.uploadReferenceImage({ bytes: png, filename: 'temp.png' });
   assert.match(temp.path, /st-image-atelier-refs\/ref-/);
-  await client.updatePreset(presetId, { useReferences: false });
+  await client.updateReferenceSet(setId, { useReferences: false });
   const withTemp = await client.generate({ ...generationInput(tagId, messageUuid), references: [{ path: temp.path, temporary: true }] });
   assert.deepEqual(withTemp.references, [temp.path]);
   assert.ok(edits.at(-1).body.get('image') instanceof Blob, '一张用 image');
   await new Promise(resolve => setTimeout(resolve, 10));
   assert.ok(deletedPaths.includes(temp.path), '临时参考图用完就删');
-  assert.ok(presetPaths.every(path => !deletedPaths.includes(path)), '预设里的不动');
+  assert.ok(setPaths.every(path => !deletedPaths.includes(path)), '组里的不动');
 });
 
-test('参考图增删当场写盘，不只靠防抖：手机 Safari 后台重载也不丢', async t => {
+test('参考图组的增删换、建组都当场写盘，不只靠防抖：手机 Safari 后台重载也不丢', async t => {
   const tagId = crypto.randomUUID();
   const message = { is_user: false, mes: '<draw>base64</draw>', extra: { stImageAtelier: leanMetadata(tagId, crypto.randomUUID()) } };
   const originalFetch = globalThis.fetch;
@@ -1847,19 +1879,139 @@ test('参考图增删当场写盘，不只靠防抖：手机 Safari 后台重载
   const client = make();
   const presetId = (await client.getPresets()).activePresetId;
   const before = immediate;
-  const preset = await client.addReference(presetId, { bytes: Buffer.from(PNG_BASE64, 'base64'), filename: 'face.png' });
-  assert.equal(immediate, before + 1, '加参考图当场写盘');
-  const replaced = await client.replaceReference(presetId, preset.references[0].id, { bytes: Buffer.from(PNG_BASE64, 'base64'), filename: 'face-2.png' });
-  assert.equal(immediate, before + 2, '换一张也当场写盘');
-  await client.removeReference(presetId, replaced.references[0].id);
-  assert.equal(immediate, before + 3, '删参考图也当场写盘');
+  const setId = (await client.createReferenceSet({ name: '组' })).created.setId;
+  assert.equal(immediate, before + 1, '建组当场写盘');
+  const added = await client.addReference(setId, { bytes: Buffer.from(PNG_BASE64, 'base64'), filename: 'face.png' });
+  assert.equal(immediate, before + 2, '加参考图当场写盘');
+  const replaced = await client.replaceReference(setId, added.sets[0].references[0].id, { bytes: Buffer.from(PNG_BASE64, 'base64'), filename: 'face-2.png' });
+  assert.equal(immediate, before + 3, '换一张也当场写盘');
+  await client.removeReference(setId, replaced.sets[0].references[0].id);
+  assert.equal(immediate, before + 4, '删参考图也当场写盘');
   await client.updatePreset(presetId, { name: '改个名' });
-  assert.equal(immediate, before + 3, '普通改动照旧防抖');
+  assert.equal(immediate, before + 4, '普通改动照旧防抖');
   assert.ok(debounced >= 1);
 
   const reloaded = make();
-  const again = (await reloaded.getPresets()).items.find(item => item.id === presetId);
-  assert.deepEqual(again.references, [], '写进 extension_settings 的就是内存里那份');
+  const again = await reloaded.getReferenceSets();
+  assert.equal(again.sets.length, 1);
+  assert.deepEqual(again.sets[0].references, [], '写进 extension_settings 的就是内存里那份');
+  assert.equal(again.defaultSetId, setId);
+});
+
+test('迁移：老版本每个预设上的参考图各成一组，一样的几张只留一组，当前预设那组是默认组；预设上不再带参考图', async () => {
+  const refs = (...names) => names.map(name => ({ id: name, path: `user/images/st-image-atelier-refs/${name}.png`, name: `${name}.png`, addedAt: '' }));
+  const extensionSettings = {
+    stImageAtelier: {
+      activePresetId: 'b',
+      presets: [
+        { id: 'a', name: '主站', references: refs('face', 'outfit'), useReferences: true, referenceFidelity: 'high' },
+        { id: 'b', name: '港', references: refs('face', 'outfit'), useReferences: false },
+        { id: 'c', name: '备用', references: refs('other') },
+        { id: 'd', name: '没图' },
+      ],
+    },
+  };
+  const client = createDirectApiClient({
+    compat: { chat: () => [], save: async () => {}, headers: () => ({}) },
+    extensionSettings,
+    saveSettingsDebounced: () => {},
+    galleryStore: createMemoryGalleryMetadataStore(),
+    attemptStore: createMemoryAttemptStore(),
+    keyStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+  });
+  const overview = await client.getReferenceSets();
+  assert.deepEqual(
+    overview.sets.map(set => [set.name, set.references.map(item => item.name), set.useReferences, set.referenceFidelity]),
+    [
+      ['主站', ['face.png', 'outfit.png'], true, 'high'],
+      ['备用', ['other.png'], true, ''],
+    ],
+    '一样的几张只留一组（组名用先出现的预设名），不同的各成一组',
+  );
+  assert.equal(overview.defaultSetId, overview.sets[0].id, '当前预设「港」和「主站」是同一组，它是默认组');
+  assert.equal(overview.activeSetId, overview.sets[0].id);
+  for (const preset of (await client.getPresets()).items) {
+    assert.equal('references' in preset, false, `${preset.name} 不再带 references`);
+    assert.equal('useReferences' in preset, false);
+    assert.equal('referenceFidelity' in preset, false);
+  }
+  assert.ok(extensionSettings.stImageAtelier.presets.every(preset => !('references' in preset)), '写回设置的预设也不带');
+  assert.equal(extensionSettings.stImageAtelier.referenceSets.length, 2);
+  const again = createDirectApiClient({
+    compat: { chat: () => [], save: async () => {}, headers: () => ({}) },
+    extensionSettings,
+    saveSettingsDebounced: () => {},
+    galleryStore: createMemoryGalleryMetadataStore(),
+    attemptStore: createMemoryAttemptStore(),
+    keyStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+  });
+  assert.equal((await again.getReferenceSets()).sets.length, 2, '再加载不会重复迁移');
+});
+
+test('角色卡绑定：每个角色记住自己用哪组，没设置的用默认组，设成「不带」就不带；删掉绑定的组退回默认；高保真跟着组走', async t => {
+  const tagId = crypto.randomUUID();
+  const messageUuid = crypto.randomUUID();
+  const message = { is_user: false, mes: '<draw>base64</draw>', extra: { stImageAtelier: leanMetadata(tagId, messageUuid) } };
+  let character = { key: 'char:a.png', name: '阿A' };
+  const { client, release, edits, requests } = await gatedClient(t, [message], {
+    compatExtra: { currentCharacterKey: () => character.key, currentCharacterName: () => character.name },
+  });
+  release();
+  const png = Buffer.from(PNG_BASE64, 'base64');
+
+  let overview = await client.createReferenceSet({ name: '阿A的脸' });
+  const setA = overview.created.setId;
+  assert.equal(overview.created.becameDefault, true);
+  assert.equal(overview.created.boundCharacter, false, '第一组就是默认组，不用单独绑');
+  assert.equal(overview.character.name, '阿A');
+  await client.addReference(setA, { bytes: png, filename: 'a.png' });
+  await client.updateReferenceSet(setA, { referenceFidelity: 'high' });
+
+  character = { key: 'char:b.png', name: '小B' };
+  overview = await client.createReferenceSet({ name: '小B的脸' });
+  const setB = overview.created.setId;
+  assert.equal(overview.created.boundCharacter, true, '打开着别的角色卡建新组，这个角色直接用新组');
+  assert.equal(overview.character.setId, setB);
+  assert.equal(overview.character.follows, false);
+  assert.equal(overview.activeSetId, setB);
+  assert.equal(overview.defaultSetId, setA, '默认组还是第一组');
+  await client.addReference(setB, { bytes: png, filename: 'b1.png' });
+  await client.addReference(setB, { bytes: png, filename: 'b2.png' });
+
+  let attempt = await client.generate(generationInput(tagId, messageUuid));
+  assert.equal(edits.length, 1, '小B 出图带参考图');
+  assert.equal(edits[0].body.getAll('image[]').length, 2, '带的是小B那组的 2 张');
+  assert.equal(edits[0].body.get('input_fidelity'), null, '小B那组没开高保真');
+  assert.equal(attempt.references.length, 2);
+
+  character = { key: 'char:a.png', name: '阿A' };
+  attempt = await client.generate(generationInput(tagId, messageUuid));
+  assert.equal(edits.length, 2);
+  assert.ok(edits[1].body.get('image') instanceof Blob, '阿A 跟默认组，1 张用 image');
+  assert.equal(edits[1].body.get('input_fidelity'), 'high', '高保真跟着组走');
+
+  overview = await client.bindReferenceSet('');
+  assert.equal(overview.character.setId, '');
+  assert.equal(overview.activeSetId, '');
+  attempt = await client.generate(generationInput(tagId, messageUuid));
+  assert.equal(requests.length, 1, '设成不带参考图就走普通接口');
+  assert.equal('references' in attempt, false);
+
+  overview = await client.bindReferenceSet(null);
+  assert.equal(overview.character.follows, true);
+  assert.equal(overview.activeSetId, setA);
+
+  await client.deleteReferenceSet(setB);
+  character = { key: 'char:b.png', name: '小B' };
+  overview = await client.getReferenceSets();
+  assert.equal(overview.character.follows, true, '绑定的组删了就退回跟默认');
+  assert.equal(overview.activeSetId, setA);
+
+  character = { key: '', name: '' };
+  await assert.rejects(client.bindReferenceSet(setA), /没有打开角色卡/);
+  overview = await client.getReferenceSets();
+  assert.equal(overview.activeSetId, setA, '没开角色卡也按默认组出');
+  assert.equal(overview.character.key, '');
 });
 
 test('画廊缩略图：出图后在后台生成，原图不动；格子用缩略图、看图用原图；已有的不重做；删图连带删缩略图', async t => {

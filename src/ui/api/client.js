@@ -174,20 +174,27 @@ export function createApiClient({
     listModels: presetId => selected().listModels(presetId),
     testPreset: presetId => selected().testPreset(presetId),
     resolveTags: tagIds => selected().resolveTags(tagIds),
-    /* 参考图（图生图）目前只有免服务端直连的 GPT 有。 */
+    /* 参考图组（图生图）：组是全局的、按角色卡记，和 API 预设无关；出图带参考图目前只有免服务端直连的 GPT 有。 */
     uploadReferenceImage: file => direct.uploadReferenceImage(file),
-    addReference: (presetId, file) => {
+    getReferenceSets: () => direct.getReferenceSets(),
+    createReferenceSet: input => direct.createReferenceSet(input),
+    renameReferenceSet: (setId, name) => direct.renameReferenceSet(setId, name),
+    updateReferenceSet: (setId, patch) => direct.updateReferenceSet(setId, patch),
+    deleteReferenceSet: setId => direct.deleteReferenceSet(setId),
+    setDefaultReferenceSet: setId => direct.setDefaultReferenceSet(setId),
+    bindReferenceSet: setId => direct.bindReferenceSet(setId),
+    addReference: (setId, file) => {
       if (direct.mode() !== 'direct') {
         throw new ApiError({ message: '参考图目前用于免服务端直连模式' }, 400);
       }
-      return direct.addReference(presetId, file);
+      return direct.addReference(setId, file);
     },
-    removeReference: (presetId, referenceId) => direct.removeReference(presetId, referenceId),
-    replaceReference: (presetId, referenceId, file) => {
+    removeReference: (setId, referenceId) => direct.removeReference(setId, referenceId),
+    replaceReference: (setId, referenceId, file) => {
       if (direct.mode() !== 'direct') {
         throw new ApiError({ message: '参考图目前用于免服务端直连模式' }, 400);
       }
-      return direct.replaceReference(presetId, referenceId, file);
+      return direct.replaceReference(setId, referenceId, file);
     },
     generate: input => {
       if (input.provider === 'novelai') return direct.generate(input);

@@ -59,6 +59,10 @@ const NAMESPACE_KEYS = new Set([
   'novelAi',
   'activePresetId',
   'activeArtistPresetId',
+  /* 1.10.0 参考图组：组、默认组、按角色卡的绑定。 */
+  'referenceSets',
+  'defaultReferenceSetId',
+  'referenceBindings',
   'schemaVersion',
 ]);
 
@@ -97,6 +101,69 @@ function normalizeReferences(value) {
     }));
 }
 
+/* 参考图组：{ id, name, references, useReferences, referenceFidelity }。 */
+function normalizeReferenceSet(value = {}) {
+  return {
+    id: String(value.id || uuid()),
+    name: String(value.name || '参考图组').trim().slice(0, 60) || '参考图组',
+    references: normalizeReferences(value.references),
+    useReferences: value.useReferences !== false,
+    referenceFidelity: value.referenceFidelity === 'high' ? 'high' : '',
+    createdAt: String(value.createdAt || ''),
+    updatedAt: String(value.updatedAt || ''),
+  };
+}
+
+function referenceSignature(references) {
+  return references.map(item => item.path).join('\n');
+}
+
+/* 1.10.0 参考图组：参考图从 API 预设里拿出来，全局一份，换渠道不变；每个角色卡可以记住用哪一组。
+   老数据：每个预设上的参考图各成一组（同样几张只留一组，组名用先出现的预设名），当前预设那组设为默认组；
+   预设上不再带参考图。图片文件不动。 */
+function migrateReferenceSets(namespace) {
+  if (!Array.isArray(namespace.referenceSets)) namespace.referenceSets = [];
+  namespace.referenceSets = namespace.referenceSets.map(normalizeReferenceSet);
+  const bySignature = new Map(namespace.referenceSets.map(set => [referenceSignature(set.references), set]));
+  for (const preset of namespace.presets) {
+    const references = normalizeReferences(preset.references);
+    if (references.length) {
+      const signature = referenceSignature(references);
+      let set = bySignature.get(signature);
+      if (!set) {
+        set = normalizeReferenceSet({
+          name: preset.name,
+          references,
+          useReferences: preset.useReferences,
+          referenceFidelity: preset.referenceFidelity,
+          createdAt: now(),
+          updatedAt: now(),
+        });
+        bySignature.set(signature, set);
+        namespace.referenceSets.push(set);
+      }
+      if (!namespace.defaultReferenceSetId && preset.id === namespace.activePresetId) {
+        namespace.defaultReferenceSetId = set.id;
+      }
+    }
+    delete preset.references;
+    delete preset.useReferences;
+    delete preset.referenceFidelity;
+  }
+  const ids = new Set(namespace.referenceSets.map(set => set.id));
+  const current = namespace.defaultReferenceSetId;
+  /* '' 是用户明确选的「默认不带参考图」，留着；没设过或指向已删的组就取第一组。 */
+  if (typeof current !== 'string' || (current !== '' && !ids.has(current))) {
+    namespace.defaultReferenceSetId = namespace.referenceSets[0]?.id || '';
+  }
+  const bindings = namespace.referenceBindings && typeof namespace.referenceBindings === 'object'
+    ? namespace.referenceBindings
+    : {};
+  namespace.referenceBindings = Object.fromEntries(
+    Object.entries(bindings).filter(([key, setId]) => key && (setId === '' || ids.has(setId))),
+  );
+}
+
 function normalizePreset(value = {}) {
   const migrateTimeout = !(Number(value.timeoutVersion) >= DEFAULT_PRESET.timeoutVersion);
   const preset = {
@@ -109,9 +176,6 @@ function normalizePreset(value = {}) {
       ...(value.ratioMap || {}),
     },
     editsPath: String(value.editsPath || DEFAULT_PRESET.editsPath),
-    references: normalizeReferences(value.references),
-    useReferences: value.useReferences !== false,
-    referenceFidelity: value.referenceFidelity === 'high' ? 'high' : '',
   };
   preset.id = String(preset.id || uuid());
   preset.name = String(preset.name || '未命名预设').trim() || '未命名预设';
@@ -220,6 +284,7 @@ function ensureNamespace(extensionSettings) {
     .some(item => item.id === namespace.activeArtistPresetId)
     ? namespace.activeArtistPresetId
     : namespace.artistPresets[0].id;
+  migrateReferenceSets(namespace);
   extensionSettings[MODULE_NAME] = namespace;
   return { namespace, legacyGallery };
 }
@@ -788,7 +853,52 @@ export function createDirectApiClient({
 
   /* 这次要带的参考图：明确指定的（卡片上「以这张为参考」、相册选的）排前面，再带预设里的角色参考图
      （开着「自动带上」时），同一张不重复，最多 MAX_PRESET_REFERENCES 张。 */
-  function planReferences(input, preset) {
+  /* ---------- 参考图组：这个角色出图用哪组 ---------- */
+  function referenceSetById(setId) {
+    return namespace.referenceSets.find(set => set.id === setId) || null;
+  }
+
+  function characterKey() {
+    return typeof compat.currentCharacterKey === 'function' ? String(compat.currentCharacterKey() || '') : '';
+  }
+
+  /* 单独设置过的角色：组 id 或 ''（不带参考图）；没设置过返回 null（跟默认组）。 */
+  function boundSetId(key) {
+    return key && Object.prototype.hasOwnProperty.call(namespace.referenceBindings, key)
+      ? namespace.referenceBindings[key]
+      : null;
+  }
+
+  function resolveReferenceSet(key = characterKey()) {
+    const bound = boundSetId(key);
+    const setId = bound === null ? namespace.defaultReferenceSetId : bound;
+    return setId ? referenceSetById(setId) : null;
+  }
+
+  function referenceOverview(extra = {}) {
+    const key = characterKey();
+    const bound = boundSetId(key);
+    return {
+      sets: clone(namespace.referenceSets),
+      defaultSetId: namespace.defaultReferenceSetId,
+      character: {
+        key,
+        name: typeof compat.currentCharacterName === 'function' ? String(compat.currentCharacterName() || '') : '',
+        setId: bound,
+        follows: bound === null,
+      },
+      activeSetId: resolveReferenceSet(key)?.id || '',
+      ...extra,
+    };
+  }
+
+  function requireReferenceSet(setId) {
+    const set = referenceSetById(setId);
+    if (!set) throw new DirectError('VALIDATION_FAILED', '找不到这组参考图', 400, false, '找不到这组参考图，可能已经删掉了');
+    return set;
+  }
+
+  function planReferences(input, set) {
     const explicit = [];
     for (const item of Array.isArray(input.references) ? input.references : []) {
       if (item?.resultId) {
@@ -798,12 +908,12 @@ export function createDirectApiClient({
         explicit.push({ path: item.path, source: item.temporary ? 'temporary' : 'path' });
       }
     }
-    const fromPreset = preset?.useReferences !== false
-      ? (preset?.references || []).map(reference => ({ path: reference.path, source: 'preset' }))
+    const fromSet = set?.useReferences !== false
+      ? (set?.references || []).map(reference => ({ path: reference.path, source: 'set' }))
       : [];
     const seen = new Set();
     const planned = [];
-    for (const item of [...explicit, ...fromPreset]) {
+    for (const item of [...explicit, ...fromSet]) {
       if (!item.path || seen.has(item.path)) continue;
       seen.add(item.path);
       planned.push(item);
@@ -984,8 +1094,11 @@ export function createDirectApiClient({
     const requestedSize = provider === 'novelai'
       ? (novelAi.ratioMap?.[input.parameters?.ratio] || novelAi.defaultSize)
       : (preset.ratioMap?.[input.parameters?.ratio] || preset.defaultSize);
-    /* 参考图只有 GPT 这边有：明确指定的加预设里的角色参考图。记在生成记录和画廊记录上的只是路径。 */
-    const references = provider === 'novelai' ? [] : planReferences(input, preset);
+    /* 参考图只有 GPT 这边有：明确指定的加这个角色用的那组。记在生成记录和画廊记录上的只是路径。
+       高保真开关记在组上，带图请求读的是 preset.referenceFidelity，抄到这份预设副本上。 */
+    const referenceSet = provider === 'novelai' ? null : resolveReferenceSet();
+    if (preset) preset.referenceFidelity = referenceSet?.referenceFidelity === 'high' ? 'high' : '';
+    const references = provider === 'novelai' ? [] : planReferences(input, referenceSet);
 
     const attempt = {
       attemptId: input.attemptId,
@@ -1689,50 +1802,123 @@ export function createDirectApiClient({
       return { cleared: true };
     },
     uploadReferenceImage,
-    /* 给预设加一张角色参考图：先存进酒馆，再把路径记在预设上。 */
-    addReference: async (presetId, file) => {
-      const preset = presetById(presetId || namespace.activePresetId);
-      if (!preset) throw new DirectError('VALIDATION_FAILED', '找不到所选 API 预设');
-      if (preset.references.length >= MAX_PRESET_REFERENCES) {
-        throw new DirectError('VALIDATION_FAILED', `每个预设最多 ${MAX_PRESET_REFERENCES} 张参考图`, 400, false, `每个预设最多 ${MAX_PRESET_REFERENCES} 张参考图，先删一张再加`);
+    /* ---------- 参考图组 ---------- */
+    getReferenceSets: async () => referenceOverview(),
+    /* 新建一组。第一组自动成为默认组；打开着角色卡、它还跟着默认组时，新建的这组直接给它用——换卡建新组就是这个意思。 */
+    createReferenceSet: async ({ name = '', bindCurrentCharacter = true } = {}) => {
+      const set = normalizeReferenceSet({ name: name || '新参考图组', createdAt: now(), updatedAt: now() });
+      namespace.referenceSets.push(set);
+      let becameDefault = false;
+      let boundCharacter = false;
+      if (!namespace.defaultReferenceSetId) {
+        namespace.defaultReferenceSetId = set.id;
+        becameDefault = true;
+      } else if (bindCurrentCharacter) {
+        const key = characterKey();
+        if (key && boundSetId(key) === null) {
+          namespace.referenceBindings[key] = set.id;
+          boundCharacter = true;
+        }
+      }
+      await savePreferences({ immediate: true });
+      return referenceOverview({ created: { setId: set.id, becameDefault, boundCharacter } });
+    },
+    renameReferenceSet: async (setId, name) => {
+      const set = requireReferenceSet(setId);
+      set.name = String(name || '').trim().slice(0, 60) || set.name;
+      set.updatedAt = now();
+      await savePreferences({ immediate: true });
+      return referenceOverview();
+    },
+    /* 「每张图自动带上」「高保真」跟着组走。 */
+    updateReferenceSet: async (setId, patch = {}) => {
+      const set = requireReferenceSet(setId);
+      if ('useReferences' in patch) set.useReferences = patch.useReferences !== false;
+      if ('referenceFidelity' in patch) set.referenceFidelity = patch.referenceFidelity === 'high' ? 'high' : '';
+      set.updatedAt = now();
+      await savePreferences({ immediate: true });
+      return referenceOverview();
+    },
+    /* 删掉一组：图片文件一起删；用这组的角色改回跟默认；它是默认组时默认换成剩下的第一组。 */
+    deleteReferenceSet: async setId => {
+      const set = requireReferenceSet(setId);
+      namespace.referenceSets = namespace.referenceSets.filter(item => item.id !== setId);
+      for (const [key, value] of Object.entries(namespace.referenceBindings)) {
+        if (value === setId) delete namespace.referenceBindings[key];
+      }
+      if (namespace.defaultReferenceSetId === setId) {
+        namespace.defaultReferenceSetId = namespace.referenceSets[0]?.id || '';
+      }
+      await savePreferences({ immediate: true });
+      for (const reference of set.references) {
+        await removeFile({ localRelativePath: reference.path })
+          .catch(error => console.warn('[画笺] 删除参考图文件失败', error));
+      }
+      return referenceOverview();
+    },
+    /* 没单独设置的角色用默认组；'' = 默认不带参考图。 */
+    setDefaultReferenceSet: async setId => {
+      if (setId) requireReferenceSet(setId);
+      namespace.defaultReferenceSetId = setId || '';
+      await savePreferences({ immediate: true });
+      return referenceOverview();
+    },
+    /* 当前角色出图用哪组：组 id、''（不带参考图）、null（跟默认组）。 */
+    bindReferenceSet: async setId => {
+      const key = characterKey();
+      if (!key) {
+        throw new DirectError('VALIDATION_FAILED', '当前没有打开角色卡', 400, false, '当前没有打开角色卡：先打开一个角色卡的聊天，再设置它用哪组参考图');
+      }
+      if (setId === null || setId === undefined) {
+        delete namespace.referenceBindings[key];
+      } else {
+        if (setId) requireReferenceSet(setId);
+        namespace.referenceBindings[key] = setId || '';
+      }
+      await savePreferences({ immediate: true });
+      return referenceOverview();
+    },
+    /* 给一组加一张参考图：先存进酒馆，再把路径记在组上。 */
+    addReference: async (setId, file) => {
+      const set = requireReferenceSet(setId);
+      if (set.references.length >= MAX_PRESET_REFERENCES) {
+        throw new DirectError('VALIDATION_FAILED', `每组最多 ${MAX_PRESET_REFERENCES} 张参考图`, 400, false, `每组最多 ${MAX_PRESET_REFERENCES} 张参考图，先删一张再加`);
       }
       const uploaded = await uploadReferenceImage(file);
-      preset.references = normalizeReferences([
-        ...preset.references,
+      set.references = normalizeReferences([
+        ...set.references,
         { id: uploaded.id, path: uploaded.path, name: uploaded.name, addedAt: now() },
       ]);
-      preset.updatedAt = now();
+      set.updatedAt = now();
       await savePreferences({ immediate: true });
-      return publicPreset(preset, getApiKey(preset.id));
+      return referenceOverview();
     },
-    /* 删掉一张参考图：预设里去掉，文件也删（硬删除）。 */
-    removeReference: async (presetId, referenceId) => {
-      const preset = presetById(presetId || namespace.activePresetId);
-      if (!preset) throw new DirectError('VALIDATION_FAILED', '找不到所选 API 预设');
-      const target = preset.references.find(item => item.id === referenceId);
+    /* 删掉一张参考图：组里去掉，文件也删（硬删除）。 */
+    removeReference: async (setId, referenceId) => {
+      const set = requireReferenceSet(setId);
+      const target = set.references.find(item => item.id === referenceId);
       if (!target) throw new DirectError('VALIDATION_FAILED', '找不到这张参考图', 400, false, '找不到这张参考图');
-      preset.references = preset.references.filter(item => item.id !== referenceId);
-      preset.updatedAt = now();
+      set.references = set.references.filter(item => item.id !== referenceId);
+      set.updatedAt = now();
       await savePreferences({ immediate: true });
       await removeFile({ localRelativePath: target.path }).catch(error => console.warn('[画笺] 删除参考图文件失败', error));
-      return publicPreset(preset, getApiKey(preset.id));
+      return referenceOverview();
     },
     /* 换一张参考图：原位替换，顺序不变（顺序决定出图时谁排前面），满 4 张也能换，不用先删再加。
        新图传好、设置写盘之后才删旧文件；新图格式不对时原图原样留着。 */
-    replaceReference: async (presetId, referenceId, file) => {
-      const preset = presetById(presetId || namespace.activePresetId);
-      if (!preset) throw new DirectError('VALIDATION_FAILED', '找不到所选 API 预设');
-      const index = preset.references.findIndex(item => item.id === referenceId);
+    replaceReference: async (setId, referenceId, file) => {
+      const set = requireReferenceSet(setId);
+      const index = set.references.findIndex(item => item.id === referenceId);
       if (index < 0) throw new DirectError('VALIDATION_FAILED', '找不到这张参考图', 400, false, '找不到这张参考图');
-      const previous = preset.references[index];
+      const previous = set.references[index];
       const uploaded = await uploadReferenceImage(file);
-      const next = [...preset.references];
+      const next = [...set.references];
       next[index] = { id: uploaded.id, path: uploaded.path, name: uploaded.name, addedAt: now() };
-      preset.references = normalizeReferences(next);
-      preset.updatedAt = now();
+      set.references = normalizeReferences(next);
+      set.updatedAt = now();
       await savePreferences({ immediate: true });
       await removeFile({ localRelativePath: previous.path }).catch(error => console.warn('[画笺] 删除旧参考图文件失败', error));
-      return publicPreset(preset, getApiKey(preset.id));
+      return referenceOverview();
     },
     listModels: async presetId => {
       const preset = presetById(presetId || namespace.activePresetId);

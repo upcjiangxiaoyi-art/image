@@ -1,5 +1,5 @@
 /* 唯一的前端版本号；用 npm run version:set 统一修改，测试会检查各处一致。 */
-export const VERSION = '1.9.0';
+export const VERSION = '1.10.0';
 export const MODULE_NAME = 'stImageAtelier';
 export const DISPLAY_NAME = '画笺';
 export const API_ROOT = '/api/plugins/st-image-atelier';
@@ -129,11 +129,7 @@ export const DEFAULT_PRESET = Object.freeze({
   timeoutMs: 3_600_000,
   timeoutVersion: 2,
   extraBody: {},
-  /* 角色参考图：[{ id, path, name, addedAt }]，最多 MAX_PRESET_REFERENCES 张；useReferences 开着时每张图自动带上；
-     referenceFidelity 'high' 发 input_fidelity: high（只有 gpt-image 系列认）。 */
-  references: [],
-  useReferences: true,
-  referenceFidelity: '',
+  /* 1.10.0 起参考图不记在预设上：见参考图组 referenceSets（每组最多 MAX_PRESET_REFERENCES 张）。 */
   ratioMap: {
     square: '1024x1024',
     portrait: '1024x1536',

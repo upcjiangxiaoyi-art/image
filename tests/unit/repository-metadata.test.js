@@ -156,13 +156,16 @@ test('npm run version:set 一次改齐所有版本号', async t => {
 
 test('设置页有参考图入口，画质说明包含 2.6', async () => {
   const source = await fs.readFile(path.join(root, 'src/ui/pages/settings/settings.js'), 'utf8');
-  assert.match(source, /参考图（图生图，每个预设最多 4 张）/);
+  assert.match(source, /参考图组（垫图）/, '参考图是独立的组，不跟预设走');
+  assert.match(source, /api\.bindReferenceSet\(/, '每个角色卡记住自己用哪组');
+  assert.match(source, /api\.createReferenceSet\(/);
+  assert.match(source, /api\.setDefaultReferenceSet\(/);
   assert.match(source, /api\.addReference\(/);
   assert.match(source, /api\.removeReference\(/);
   assert.match(source, /每张图自动带上参考图/);
   assert.match(source, /input_fidelity: high/);
   assert.match(source, /gpt-image-2\.5 \/ 2\.6/);
-  assert.match(source, /这个预设的，最多 4 张/, '参考图标题写明是哪个预设的');
+  assert.match(source, /里的参考图（最多 4 张）/, '标题写明是哪一组的');
   assert.match(source, /api\.replaceReference\(/, '缩略图下面能原位换一张');
   assert.match(source, /action\('换一张'/, '「换一张」是写着字的按钮，不是角上的小 ×');
   assert.match(source, /action\('删除', async \(\) => run\(remove/, '「删除」也是写着字的按钮');

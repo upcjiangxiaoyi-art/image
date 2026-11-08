@@ -629,7 +629,6 @@ export function createToolPanel({ api, store, onError = () => {} }) {
     updateModelList(preset.cachedModels, preset.selectedModel);
     normalizePreview();
     setGenerationParametersDirty(false);
-    renderReferences(preset);
   }
 
   function updatePresetSelector(activeId = activePresetId) {
@@ -1037,13 +1036,28 @@ export function createToolPanel({ api, store, onError = () => {} }) {
   autoDescription.textContent = '新消息完成后自动生成图片';
   autoField.querySelector('span')?.append(autoDescription);
 
-  /* 参考图（图生图）：每个 API 预设最多 4 张角色参考图，走 /v1/images/edits，人脸、服装跟着参考走。 */
-  const referenceHeading = document.createElement('h4');
-  referenceHeading.className = 'stia-subheading';
-  referenceHeading.textContent = '参考图（图生图，每个预设最多 4 张）';
+  /* 参考图组（垫图）：参考图不跟 API 预设走。组是全局的，换渠道不用重传；每个角色卡可以记住自己用哪一组，
+     换卡自动换脸；没单独设置的角色用默认组。 */
+  const referenceSection = document.createElement('section');
+  referenceSection.className = 'stia-section';
+  const referenceTitle = document.createElement('h3');
+  referenceTitle.innerHTML = '<span aria-hidden="true">◫</span> 参考图组（垫图）';
   const referenceHint = document.createElement('small');
   referenceHint.className = 'stia-muted';
-  referenceHint.textContent = '传几张角色的脸和服装，这个预设出的图就跟着参考走；每张缩略图下面可以「换一张」或「删除」。走 OpenAI 的 /v1/images/edits 接口，中转站要支持。只有免服务端直连的 GPT 有，NovelAI 和增强模式暂不支持。';
+  referenceHint.textContent = '传几张角色的脸和服装，出图就跟着参考走。参考图组不跟 API 预设走：换渠道不用重传；每个角色卡可以记住自己用哪一组，换卡自动换脸，没单独设置的角色用默认组。走 OpenAI 的 /v1/images/edits 接口，中转站要支持；只有免服务端直连的 GPT 有，NovelAI 和增强模式暂不支持。';
+
+  const characterSelect = select([['__default__', '跟默认组']]);
+  characterSelect.setAttribute('aria-label', '当前角色出图用哪组参考图');
+  const characterField = field('当前角色出图用', characterSelect);
+  const characterLabel = characterField.querySelector('span');
+
+  const editSelect = select([['', '还没有参考图组']]);
+  editSelect.setAttribute('aria-label', '编辑哪一组参考图');
+  const editField = field('编辑哪一组', editSelect);
+
+  const referenceHeading = document.createElement('h4');
+  referenceHeading.className = 'stia-subheading';
+  referenceHeading.textContent = '参考图（最多 4 张）';
   const referenceList = document.createElement('div');
   referenceList.className = 'stia-reference-list';
   const referenceInput = input('file');
@@ -1058,16 +1072,16 @@ export function createToolPanel({ api, store, onError = () => {} }) {
   let replacingReferenceId = '';
   let replacingControl = null;
   const useReferences = input('checkbox');
-  const useReferencesField = field('每张图自动带上参考图', useReferences);
+  const useReferencesField = field('每张图自动带上参考图（这一组）', useReferences);
   useReferencesField.classList.add('stia-switch-field', 'stia-switch-field--row');
   const useReferencesDescription = document.createElement('small');
-  useReferencesDescription.textContent = '开着时这个预设出的每张图都带上面的参考图；关掉只在卡片上点「参考重画」时才带。';
+  useReferencesDescription.textContent = '开着时用这组的角色出的每张图都带上面的参考图；关掉只在卡片上点「参考重画」时才带。';
   useReferencesField.querySelector('span')?.append(useReferencesDescription);
   const referenceFidelity = input('checkbox');
   const referenceFidelityField = field('高保真参考（input_fidelity: high）', referenceFidelity);
   referenceFidelityField.classList.add('stia-switch-field', 'stia-switch-field--row');
   const referenceFidelityDescription = document.createElement('small');
-  referenceFidelityDescription.textContent = '更贴近参考图的脸和细节，多花一点；只有 gpt-image 系列认，别的模型可能报参数不支持。';
+  referenceFidelityDescription.textContent = '更贴近参考图的脸和细节，多花一点；只有 gpt-image 系列认，别的模型可能报参数不支持。跟着这一组走。';
   referenceFidelityField.querySelector('span')?.append(referenceFidelityDescription);
   const referenceActions = document.createElement('div');
   referenceActions.className = 'stia-actions stia-actions--fill';
@@ -1078,13 +1092,15 @@ export function createToolPanel({ api, store, onError = () => {} }) {
     return !value || value.startsWith('/') || /^(?:https?:|data:|blob:)/i.test(value) ? value : `/${value}`;
   }
 
-  function renderReferences(preset) {
+  let referenceOverview = { sets: [], defaultSetId: '', character: { key: '', name: '', setId: null, follows: true }, activeSetId: '' };
+  let editingSetId = '';
+  const editingSet = () => referenceOverview.sets.find(set => set.id === editingSetId) || null;
+  const setName = setId => referenceOverview.sets.find(set => set.id === setId)?.name || '';
+
+  function renderReferences(set) {
     referenceList.replaceChildren();
-    const items = Array.isArray(preset?.references) ? preset.references : [];
-    /* 标题里写明是哪个预设的参考图：换了预设列表跟着换，别对着另一个预设纳闷「参考图怎么没了」。 */
-    referenceHeading.textContent = preset?.name
-      ? `参考图（图生图，「${preset.name}」这个预设的，最多 4 张）`
-      : '参考图（图生图，每个预设最多 4 张）';
+    const items = Array.isArray(set?.references) ? set.references : [];
+    referenceHeading.textContent = set ? `「${set.name}」里的参考图（最多 4 张）` : '参考图（最多 4 张）';
     items.forEach((reference, position) => {
       const item = document.createElement('figure');
       item.className = 'stia-reference-item';
@@ -1094,7 +1110,7 @@ export function createToolPanel({ api, store, onError = () => {} }) {
       image.title = reference.name || '';
       image.loading = 'lazy';
       image.decoding = 'async';
-      /* 缩略图下面两个写着字的按钮，手机上手指点得到；之前只有角上一个 24px 的小「×」，iPhone 上找不到。 */
+      /* 缩略图下面两个写着字的按钮，手机上手指点得到。 */
       const replace = action('换一张', () => {
         replacingReferenceId = reference.id;
         replacingControl = replace;
@@ -1103,11 +1119,8 @@ export function createToolPanel({ api, store, onError = () => {} }) {
       replace.className = 'stia-button stia-reference-item__button';
       replace.setAttribute('aria-label', `换掉第 ${position + 1} 张参考图`);
       const remove = action('删除', async () => run(remove, async () => {
-        const next = await api.removeReference(activePresetId, reference.id);
-        const index = presets.findIndex(entry => entry.id === next.id);
-        if (index >= 0) presets[index] = next;
-        renderReferences(next);
-        status.textContent = `已删除参考图${reference.name ? `「${reference.name}」` : ''}，现在共 ${next.references.length} 张`;
+        applyReferenceOverview(await api.removeReference(set.id, reference.id));
+        status.textContent = `已删除参考图${reference.name ? `「${reference.name}」` : ''}，「${set.name}」现在共 ${editingSet()?.references.length || 0} 张`;
       }));
       remove.className = 'stia-button stia-button--danger stia-reference-item__button';
       remove.setAttribute('aria-label', `删除第 ${position + 1} 张参考图`);
@@ -1120,34 +1133,162 @@ export function createToolPanel({ api, store, onError = () => {} }) {
     if (!items.length) {
       const empty = document.createElement('p');
       empty.className = 'stia-reference-empty';
-      empty.textContent = '还没有参考图。';
+      empty.textContent = set ? '这一组还没有参考图。' : '还没有参考图组：先点上面的「新建」建一组，再传几张角色的脸和服装。';
       referenceList.append(empty);
     }
-    addReference.disabled = items.length >= 4;
-    addReference.textContent = items.length >= 4 ? '⊕  已满 4 张' : `⊕  添加参考图（${items.length} / 4）`;
-    useReferences.checked = preset?.useReferences !== false;
-    referenceFidelity.checked = preset?.referenceFidelity === 'high';
+    addReference.disabled = !set || items.length >= 4;
+    addReference.textContent = !set
+      ? '⊕  添加参考图'
+      : (items.length >= 4 ? '⊕  已满 4 张' : `⊕  添加参考图（${items.length} / 4）`);
+    useReferences.disabled = !set;
+    referenceFidelity.disabled = !set;
+    useReferences.checked = Boolean(set) && set.useReferences !== false;
+    referenceFidelity.checked = set?.referenceFidelity === 'high';
   }
+
+  function renderReferenceSets() {
+    const { sets, defaultSetId, character } = referenceOverview;
+    const defaultName = setName(defaultSetId);
+    characterSelect.replaceChildren();
+    for (const [value, label] of [
+      ['__default__', defaultName ? `跟默认组（${defaultName}）` : '跟默认组（现在没有默认组，不带参考图）'],
+      ['', '不带参考图'],
+      ...sets.map(set => [set.id, set.name]),
+    ]) {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = label;
+      characterSelect.append(option);
+    }
+    characterSelect.value = character.follows ? '__default__' : (character.setId || '');
+    characterSelect.disabled = !character.key;
+    characterLabel.textContent = character.key
+      ? `「${character.name || '当前角色'}」出图用`
+      : '当前没有打开角色卡（打开聊天后再设置它用哪组）';
+
+    editSelect.replaceChildren();
+    if (!sets.length) {
+      const option = document.createElement('option');
+      option.value = '';
+      option.textContent = '还没有参考图组';
+      editSelect.append(option);
+    }
+    for (const set of sets) {
+      const option = document.createElement('option');
+      option.value = set.id;
+      option.textContent = `${set.name}${set.id === defaultSetId ? '（默认组）' : ''}${set.references.length ? ` · ${set.references.length} 张` : ''}`;
+      editSelect.append(option);
+    }
+    editSelect.value = editingSetId;
+    editSelect.disabled = !sets.length;
+    renameSet.disabled = !editingSetId;
+    deleteSet.disabled = !editingSetId;
+    makeDefault.disabled = !editingSetId || editingSetId === defaultSetId;
+    makeDefault.textContent = editingSetId && editingSetId === defaultSetId ? '✓ 默认组' : '设为默认';
+    renderReferences(editingSet());
+  }
+
+  function applyReferenceOverview(overview, { keepEditing = true, editSetId = '' } = {}) {
+    referenceOverview = overview;
+    const known = id => overview.sets.some(set => set.id === id);
+    if (editSetId && known(editSetId)) {
+      editingSetId = editSetId;
+    } else if (!keepEditing || !known(editingSetId)) {
+      editingSetId = known(overview.activeSetId) ? overview.activeSetId : (overview.sets[0]?.id || '');
+    }
+    renderReferenceSets();
+  }
+
+  async function loadReferenceSets() {
+    if (typeof api.getReferenceSets !== 'function') return;
+    try {
+      applyReferenceOverview(await api.getReferenceSets(), { keepEditing: false });
+    } catch (error) {
+      console.warn('[画笺] 读取参考图组失败', error);
+    }
+  }
+
+  characterSelect.addEventListener('change', async () => {
+    const value = characterSelect.value;
+    await run(characterSelect, async () => {
+      const overview = await api.bindReferenceSet(value === '__default__' ? null : value);
+      applyReferenceOverview(overview);
+      const who = `「${overview.character.name || '当前角色'}」`;
+      const defaultName = setName(overview.defaultSetId);
+      status.textContent = value === '__default__'
+        ? `${who}出图跟默认组${defaultName ? `（${defaultName}）` : '（现在没有默认组，不带参考图）'}`
+        : (value === '' ? `${who}出图不带参考图` : `${who}出图用「${setName(value)}」`);
+    });
+  });
+  editSelect.addEventListener('change', () => {
+    editingSetId = editSelect.value;
+    renderReferenceSets();
+  });
+  const createSet = action('新建', async () => {
+    const name = window.prompt('给这组参考图起个名字', referenceOverview.character.name || '新参考图组');
+    if (name == null) return;
+    await run(createSet, async () => {
+      const overview = await api.createReferenceSet({ name: name.trim() || '新参考图组' });
+      applyReferenceOverview(overview, { editSetId: overview.created?.setId });
+      const created = overview.created || {};
+      const tail = created.becameDefault
+        ? '，已设为默认组'
+        : (created.boundCharacter ? `，「${overview.character.name || '当前角色'}」出图改用这组` : '');
+      status.textContent = `已新建「${setName(created.setId)}」${tail}；在下面添加参考图`;
+    });
+  });
+  const renameSet = action('重命名', async () => {
+    const set = editingSet();
+    if (!set) return;
+    const name = window.prompt('这组参考图改叫什么', set.name);
+    if (name == null || !name.trim() || name.trim() === set.name) return;
+    await run(renameSet, async () => {
+      applyReferenceOverview(await api.renameReferenceSet(set.id, name.trim()));
+      status.textContent = `已改名为「${name.trim()}」`;
+    });
+  });
+  const deleteSet = action('删除', async () => {
+    const set = editingSet();
+    if (!set) return;
+    const count = set.references.length;
+    if (!confirm(`确定删除参考图组「${set.name}」吗？${count ? `里面的 ${count} 张参考图文件会一起删除；` : ''}用这组的角色会改回跟默认组。`)) return;
+    await run(deleteSet, async () => {
+      applyReferenceOverview(await api.deleteReferenceSet(set.id), { keepEditing: false });
+      status.textContent = `已删除参考图组「${set.name}」`;
+    });
+  });
+  deleteSet.classList.add('stia-button--danger');
+  const makeDefault = action('设为默认', async () => {
+    const set = editingSet();
+    if (!set) return;
+    await run(makeDefault, async () => {
+      applyReferenceOverview(await api.setDefaultReferenceSet(set.id));
+      status.textContent = `默认组改为「${set.name}」：没单独设置的角色出图都用它`;
+    });
+  });
+  const setActions = document.createElement('div');
+  setActions.className = 'stia-actions stia-actions--fill';
+  setActions.append(createSet, renameSet, deleteSet, makeDefault);
 
   referenceInput.addEventListener('change', async () => {
     const files = [...(referenceInput.files || [])];
     referenceInput.value = '';
-    if (!files.length || !activePresetId) return;
+    const set = editingSet();
+    if (!files.length || !set) return;
     await run(addReference, async () => {
-      let preset = presets.find(entry => entry.id === activePresetId);
+      let overview = referenceOverview;
       let added = 0;
       for (const file of files) {
-        if ((preset?.references?.length || 0) >= 4) break;
+        if ((overview.sets.find(item => item.id === set.id)?.references.length || 0) >= 4) break;
         const bytes = new Uint8Array(await file.arrayBuffer());
-        preset = await api.addReference(activePresetId, { bytes, filename: file.name });
+        overview = await api.addReference(set.id, { bytes, filename: file.name });
         added += 1;
       }
-      const index = presets.findIndex(entry => entry.id === preset.id);
-      if (index >= 0) presets[index] = preset;
-      renderReferences(preset);
+      applyReferenceOverview(overview);
+      const total = editingSet()?.references.length || 0;
       status.textContent = added
-        ? `已添加 ${added} 张参考图，现在共 ${preset.references.length} 张`
-        : '这个预设已经有 4 张参考图了，先删一张再加';
+        ? `「${set.name}」已添加 ${added} 张参考图，现在共 ${total} 张`
+        : `「${set.name}」已经有 4 张参考图了，先删一张再加`;
     });
   });
   replaceInput.addEventListener('change', async () => {
@@ -1157,44 +1298,53 @@ export function createToolPanel({ api, store, onError = () => {} }) {
     const control = replacingControl || addReference;
     replacingReferenceId = '';
     replacingControl = null;
-    if (!file || !referenceId || !activePresetId) return;
+    const set = editingSet();
+    if (!file || !referenceId || !set) return;
     await run(control, async () => {
       const bytes = new Uint8Array(await file.arrayBuffer());
-      const preset = await api.replaceReference(activePresetId, referenceId, { bytes, filename: file.name });
-      const index = presets.findIndex(entry => entry.id === preset.id);
-      if (index >= 0) presets[index] = preset;
-      renderReferences(preset);
+      applyReferenceOverview(await api.replaceReference(set.id, referenceId, { bytes, filename: file.name }));
       status.textContent = `已换成「${file.name}」，位置和顺序不变`;
     });
   });
   useReferences.addEventListener('change', async () => {
+    const set = editingSet();
+    if (!set) return;
     await run(useReferences, async () => {
-      const preset = await api.updatePreset(activePresetId, { useReferences: useReferences.checked });
-      const index = presets.findIndex(entry => entry.id === preset.id);
-      if (index >= 0) presets[index] = preset;
-      status.textContent = useReferences.checked ? '这个预设出的每张图都会带上参考图' : '只在卡片上点「参考重画」时才带参考图';
+      applyReferenceOverview(await api.updateReferenceSet(set.id, { useReferences: useReferences.checked }));
+      status.textContent = useReferences.checked
+        ? `用「${set.name}」的角色出的每张图都会带上参考图`
+        : `「${set.name}」只在卡片上点「参考重画」时才带参考图`;
     });
   });
   referenceFidelity.addEventListener('change', async () => {
+    const set = editingSet();
+    if (!set) return;
     await run(referenceFidelity, async () => {
-      const preset = await api.updatePreset(activePresetId, { referenceFidelity: referenceFidelity.checked ? 'high' : '' });
-      const index = presets.findIndex(entry => entry.id === preset.id);
-      if (index >= 0) presets[index] = preset;
-      status.textContent = referenceFidelity.checked ? '参考图改为高保真（input_fidelity: high）' : '参考图改回默认保真度';
+      applyReferenceOverview(await api.updateReferenceSet(set.id, { referenceFidelity: referenceFidelity.checked ? 'high' : '' }));
+      status.textContent = referenceFidelity.checked
+        ? `「${set.name}」改为高保真参考（input_fidelity: high）`
+        : `「${set.name}」改回默认保真度`;
     });
   });
+
+  referenceSection.append(
+    referenceTitle,
+    referenceHint,
+    characterField,
+    editField,
+    setActions,
+    referenceHeading,
+    referenceList,
+    referenceActions,
+    useReferencesField,
+    referenceFidelityField,
+  );
 
   generationSection.append(
     generationTitle,
     generationGrid,
     generationSaveHint,
     generationActions,
-    referenceHeading,
-    referenceHint,
-    referenceList,
-    referenceActions,
-    useReferencesField,
-    referenceFidelityField,
   );
 
   const novelAiSection = document.createElement('section');
@@ -1517,6 +1667,7 @@ export function createToolPanel({ api, store, onError = () => {} }) {
     generationProvider.value = isNovelAi ? 'novelai' : 'openai';
     apiSection.hidden = isNovelAi;
     generationSection.hidden = isNovelAi;
+    referenceSection.hidden = isNovelAi;
     advanced.hidden = isNovelAi;
     novelAiSection.hidden = !isNovelAi;
     openAiEngine.classList.toggle('stia-button--primary', !isNovelAi);
@@ -1573,6 +1724,7 @@ export function createToolPanel({ api, store, onError = () => {} }) {
     engineSwitch,
     apiSection,
     generationSection,
+    referenceSection,
     novelAiSection,
     automationSection,
     appearanceSection,
@@ -1656,6 +1808,7 @@ export function createToolPanel({ api, store, onError = () => {} }) {
       activeArtistPresetId = artistPreset.id;
       updatePresetSelector(preset.id);
       updateArtistSelector(artistPreset.id);
+      void loadReferenceSets();
       const provider = settings.generationProvider === 'novelai' ? 'novelai' : 'openai';
       health.textContent = provider === 'novelai'
         ? '● NovelAI 兼容接口已就绪'
@@ -1730,6 +1883,8 @@ export function createToolPanel({ api, store, onError = () => {} }) {
     overlay.hidden = false;
     document.body.classList.add('stia-modal-open');
     showTab(tabName);
+    /* 打开面板时重读参考图组：换了聊天，「当前角色出图用」要跟着换。 */
+    void loadReferenceSets();
     close.focus();
   }
 

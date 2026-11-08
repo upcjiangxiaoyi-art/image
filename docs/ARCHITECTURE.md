@@ -41,7 +41,7 @@ MESSAGE_RECEIVED (live)
   - 每张卡最多 20 条、整份最多 2000 条，超过删最早结束的；写入合并，发上游请求前先落盘，进度更新只改内存
 - `extension_settings.stImageAtelier`
   - 当前生图引擎、普通设置和 GPT API 预设
-  - 预设上的角色参考图 `references`（最多 4 张，只记酒馆里的路径，文件在 `st-image-atelier-refs/`）、`useReferences`、`referenceFidelity`
+  - 参考图组 `referenceSets`（每组最多 4 张，只记酒馆里的路径，文件在 `st-image-atelier-refs/`；`useReferences`、`referenceFidelity` 跟着组）、默认组 `defaultReferenceSetId`（'' = 默认不带）、按角色卡的绑定 `referenceBindings`（键 `char:<头像文件名>` / `group:<群 id>`，值 '' = 这个角色不带）。1.10.0 之前记在预设上的由 `migrateReferenceSets` 迁成组（同样几张只留一组），预设上不再带
   - NovelAI 非敏感参数与画师串预设
 - SillyTavern 当前用户文件 `st-image-atelier-gallery.json`
   - 独立画廊索引；提示词只保留 `prompt` / `negativePrompt` 各一份；另记画质、尺寸、开始时间，生成记录清掉后卡片信息照样显示
@@ -110,7 +110,7 @@ NovelAI 当前固定走直连模式；官方 `POST /ai/generate-image` 返回的
 
 ## 参考图（图生图）
 
-`direct-client.js` 的 `planReferences` 决定这次带哪几张：卡片上指定的（`input.references`，`{ resultId }` 或 `{ path, temporary }`）排前面，再带预设里的（`useReferences` 开着时），同一张不重复，最多 `MAX_PRESET_REFERENCES` 张；`loadReference` 从酒馆同源读回文件。带图时 `openai-images-core.js` 的 `generateImages` 改走 `editsPath`（multipart：一张 `image`、多张 `image[]`，字段由 `buildEditFields` 算，gpt-image 不发 `response_format`，`referenceFidelity: 'high'` 发 `input_fidelity`），智能重试按字段名重建表单。临时参考图用完由 `generate` 的 finally 删掉。预设上的参考图由 `addReference` / `replaceReference`（原位替换，顺序不变，满 4 张也能换；新图传好、设置写盘之后才删旧文件）/ `removeReference` 维护，三个都当场写盘。Server Plugin 这条还没接。
+`direct-client.js` 的 `planReferences` 决定这次带哪几张：卡片上指定的（`input.references`，`{ resultId }` 或 `{ path, temporary }`）排前面，再带这个角色用的那组里的（`resolveReferenceSet`：角色绑定 → 默认组；组的 `useReferences` 开着时；组的 `referenceFidelity` 抄到这次用的预设副本上），同一张不重复，最多 `MAX_PRESET_REFERENCES` 张；`loadReference` 从酒馆同源读回文件。带图时 `openai-images-core.js` 的 `generateImages` 改走 `editsPath`（multipart：一张 `image`、多张 `image[]`，字段由 `buildEditFields` 算，gpt-image 不发 `response_format`，`referenceFidelity: 'high'` 发 `input_fidelity`），智能重试按字段名重建表单。临时参考图用完由 `generate` 的 finally 删掉。参考图组由 `createReferenceSet`（第一组成默认组；打开着别的角色卡时新组直接绑给它）/ `renameReferenceSet` / `updateReferenceSet` / `deleteReferenceSet`（文件一起删，绑定退回默认）/ `setDefaultReferenceSet` / `bindReferenceSet`（当前角色：组 id、'' 不带、null 跟默认）和 `addReference` / `replaceReference`（原位替换，顺序不变，满 4 张也能换；新图传好、设置写盘之后才删旧文件）/ `removeReference` 维护，都当场写盘。Server Plugin 这条还没接。
 
 ## 请求逻辑只有一份
 
