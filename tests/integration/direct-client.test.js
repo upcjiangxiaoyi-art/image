@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import { createDirectApiClient } from '../../src/ui/api/direct-client.js';
 import { createMemoryGalleryMetadataStore } from '../../src/ui/api/gallery-metadata-store.js';
 import { createMemoryAttemptStore } from '../../src/ui/api/attempt-store.js';
-import { createMemoryChatTagStore } from '../../src/ui/api/chat-tag-store.js';
+import { createChatTagStore, createMemoryChatTagStore } from '../../src/ui/api/chat-tag-store.js';
 import { PNG_BASE64, startMockUpstream } from '../mocks/mock-upstream.js';
 import { byteLength } from '../../src/ui/state/tag-footprint.js';
 
@@ -2267,4 +2267,30 @@ test('侧文件按聊天分：换聊天换文件、记录不串；切回来照�
   assert.equal(client.chatTagFile(), fileA);
   assert.deepEqual(client.tagRecord(tagId).resultRefs.map(ref => ref.resultId), attempt.resultIds, '切回来照样在');
   assert.equal(tagStores.size, 2);
+});
+
+/* 2.0.1：侧文件写不进去（酒馆 400 拒掉文件名、网络抖）不能拦着出图——防重复靠的是独立存储那条当拍落盘的记录。 */
+test('侧文件写失败：自动生图照样发请求、出图，记录留在内存里；弹窗的原因带着真正的细节', async t => {
+  const tagId = crypto.randomUUID();
+  const messageUuid = crypto.randomUUID();
+  const message = { is_user: false, mes: '<draw>base64</draw>', extra: { stImageAtelier: { messageUuid, tagIds: [tagId] } } };
+  let writeAttempts = 0;
+  const { client, release, requests } = await gatedClient(t, [message], {
+    compatExtra: { currentChatId: () => '钟由时 - 2026-11-01@20h59m56s197ms', currentCharacterKey: () => 'char:a.png' },
+    chatTagStore: identity => createChatTagStore({
+      ...identity,
+      readDocument: async () => null,
+      writeDocument: async () => { writeAttempts += 1; throw new Error("Illegal character in filename; only alphanumeric, '_', '-' are accepted."); },
+    }),
+  });
+  release();
+  const attempt = await client.generate({ ...generationInput(tagId, messageUuid), attemptId: `auto:${tagId}`, requestMode: 'auto' });
+  assert.equal(attempt.status, 'succeeded', '侧文件写不进去也照样出图');
+  assert.equal(requests.length, 1);
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.ok(writeAttempts >= 1, '写是试过的');
+  const record = client.tagRecord(tagId);
+  assert.equal(record.autoAttempted, true, '标记留在内存里');
+  assert.deepEqual(record.resultRefs.map(ref => ref.resultId), attempt.resultIds);
+  assert.match(client.chatTagFile(), /^st-image-atelier-chat-2026-11-01_20h59m56s197ms-[0-9a-z]+\.json$/, '文件名只剩酒馆收的字符');
 });

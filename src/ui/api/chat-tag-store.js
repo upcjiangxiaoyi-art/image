@@ -39,12 +39,13 @@ export function promptHash(text) {
   return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
 }
 
-/* 侧文件名：聊天名（截短、去掉文件名里不能用的字符）+ 角色和聊天名一起算的指纹。
-   同名聊天（不同角色）不会撞车；酒馆的 /api/files/upload 不认子目录，只能平铺一层。 */
+/* 侧文件名：聊天名（截短、只留字母数字和 _ -）+ 角色和聊天名一起算的指纹。
+   酒馆的 /api/files/upload 只收 [A-Za-z0-9_.-] 的文件名（中文、空格、@ 都会被 400 拒掉），也不认子目录，
+   所以中文聊天名只剩时间戳那段，靠指纹区分；同名聊天（不同角色）也不会撞车。 */
 export function chatTagFileName({ chatId = '', characterKey = '' } = {}) {
   const id = String(chatId || '');
   if (!id) return '';
-  const slug = id.replace(/[^\w㐀-鿿-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40) || 'chat';
+  const slug = id.replace(/[^A-Za-z0-9_-]+/g, '_').replace(/^[_-]+|[_-]+$/g, '').slice(0, 40) || 'chat';
   return `${CHAT_TAG_FILE_PREFIX}${slug}-${promptHash(`${characterKey}|${id}`)}.json`;
 }
 

@@ -26,7 +26,11 @@ test('侧文件名：带聊天名、角色和聊天一起算指纹；同名聊�
   assert.match(a, new RegExp(`^${CHAT_TAG_FILE_PREFIX}2026-11-05_12h_30m_15s_123ms-[0-9a-z]+\\.json$`));
   assert.notEqual(a, b);
   assert.equal(chatTagFileName({ chatId: '', characterKey: 'x' }), '');
-  assert.match(chatTagFileName({ chatId: '港哥/的聊天?', characterKey: '' }), /^st-image-atelier-chat-港哥_的聊天-[0-9a-z]+\.json$/, '中文留着，文件名里不能用的换掉');
+  assert.match(chatTagFileName({ chatId: '港哥/的聊天?', characterKey: '' }), /^st-image-atelier-chat-chat-[0-9a-z]+\.json$/, '酒馆只收字母数字，纯中文名只剩指纹');
+  assert.match(chatTagFileName({ chatId: '钟由时 - 2026-11-01@20h59m56s197ms', characterKey: 'char:a.png' }), /^st-image-atelier-chat-2026-11-01_20h59m56s197ms-[0-9a-z]+\.json$/, '中文去掉，时间戳留着');
+  for (const name of [chatTagFileName({ chatId: '钟由时 - 2026-11-01@20h59m56s197ms' }), chatTagFileName({ chatId: 'a b/c' })]) {
+    assert.match(name, /^[A-Za-z0-9_.-]+$/, '酒馆 /api/files/upload 的文件名规则');
+  }
   assert.ok(chatTagFileName({ chatId: 'x'.repeat(200) }).length < 80, '截短');
 });
 
