@@ -1335,6 +1335,7 @@ test('出图不保存聊天、楼里只有一百来字节的引用：没有生�
   assert.equal('artistPromptSnapshot' in stored[0], false);
   assert.equal('resolvedPrompt' in stored[0], false);
   assert.ok(byteLength(stored[0]) < 1024, `一条生成记录 ${byteLength(stored[0])} 字节`);
+  await attemptStore.flush();
   assert.ok(attemptStore.writes >= 3, '记录真的写进了独立文件');
 
   const [state] = await client.resolveTags([tagId]);
@@ -1654,7 +1655,8 @@ test('发上游请求前防重复记录当拍落盘；画完的终态记录和�
   const { client, release, started } = await gatedClient(t, [message], { attemptStore, galleryStore });
   const pending = client.generate(generationInput(tagId, messageUuid));
   await started;
-  assert.equal(attemptStore.writes, 1, '上游请求发出之前，记录已经写进文件（不等 2 秒）');
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(attemptStore.writes, 1, '上游请求发出时记录已经在写进文件（不等 2 秒，也不等它写完）');
   assert.equal(attemptStore.get(generationInputId(pending)).status, 'generating');
   release();
   const attempt = await pending;

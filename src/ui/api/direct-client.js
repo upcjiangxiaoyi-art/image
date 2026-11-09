@@ -1270,13 +1270,12 @@ export function createDirectApiClient({
 
     const controller = new AbortController();
     controllers.set(attempt.attemptId, controller);
-    try {
-      /* 发上游请求前先把记录写进独立文件（防重复，这一次当拍就写）。 */
-      await persist({ immediate: true });
-    } catch (error) {
-      controllers.delete(attempt.attemptId);
-      throw new DirectError('LOCAL_SAVE_FAILED', `无法在扣费前保存防重复记录：${error.details || error.message}`);
-    }
+    /* 发上游请求前把记录写进独立文件（防重复，这一次当拍就写），但不等它、写失败也不拦着出图：
+       内存里的记录照样防重复，终态记录稍后还会再写一次。手机 5G 上等一个几百 KB 的上传再发请求，
+       既慢，抖一下就整次出图作废。 */
+    persist({ immediate: true }).catch(error => {
+      console.warn('[画笺] 发请求前写防重复记录失败，继续出图，稍后再写', error?.details || error?.message || error);
+    });
     /* 自动生图再在侧文件里记一笔 autoAttempted：独立存储的记录满了被清掉，也不会再自动画一次。
        内存里当场改、文件马上写，但不等它、写失败也不拦着出图——防重复靠的是上面那条记录。 */
     if (input.requestMode === 'auto' && tagStore.get(input.tagId)?.autoAttempted !== true) {
