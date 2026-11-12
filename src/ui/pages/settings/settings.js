@@ -9,6 +9,8 @@ import {
 /* 三个生图参数下拉都带一个「不发送」：选中后无论 <draw> 标签写了什么都不发这个字段，
    交给上游用自己的默认值。对应预设里的 sendSize / sendQuality / sendN。 */
 export const SKIP_PARAM_OPTION = Object.freeze(['', '不发送（由上游决定）']);
+/* 成功的状态提示挂这么久自己收起。 */
+const STATUS_LINGER_MS = 6000;
 
 export const IMAGE_SIZE_OPTIONS = Object.freeze([
   ['auto', 'auto（由模型决定）'],
@@ -299,6 +301,21 @@ export function createToolPanel({ api, store, onError = () => {} }) {
   const status = document.createElement('p');
   status.className = 'stia-status';
   status.setAttribute('role', 'status');
+  /* 状态条贴在面板底边（见 atelier.css），在长页面的哪一段操作都看得到结果。成功的提示过几秒自己收起，
+     免得一直挡着内容；报错和「处理中」留着，直到下一次操作。 */
+  let statusTimer = null;
+  const StatusObserver = status.ownerDocument?.defaultView?.MutationObserver;
+  if (typeof StatusObserver === 'function') {
+    new StatusObserver(() => {
+      clearTimeout(statusTimer);
+      const text = status.textContent;
+      if (!text || status.classList.contains('stia-error') || /…$/.test(text)) return;
+      statusTimer = setTimeout(() => {
+        if (status.textContent === text) status.textContent = '';
+      }, STATUS_LINGER_MS);
+      statusTimer.unref?.();
+    }).observe(status, { childList: true, characterData: true, subtree: true, attributes: true, attributeFilter: ['class'] });
+  }
   const urlPreview = document.createElement('code');
   urlPreview.className = 'stia-url-preview';
   const novelAiUrlPreview = document.createElement('code');
@@ -364,6 +381,7 @@ export function createToolPanel({ api, store, onError = () => {} }) {
       onError(error, actionTitle(control));
     } finally {
       control.disabled = false;
+      syncQuick();
     }
   }
 
@@ -407,6 +425,7 @@ export function createToolPanel({ api, store, onError = () => {} }) {
       onError(error, '设置保存失败');
     } finally {
       control.disabled = false;
+      syncQuick();
     }
   }
 
@@ -486,6 +505,7 @@ export function createToolPanel({ api, store, onError = () => {} }) {
       artistSelector.append(option);
     }
     artistSelector.value = activeId;
+    syncQuick();
   }
 
   function loadArtistFields(preset) {
@@ -641,6 +661,7 @@ export function createToolPanel({ api, store, onError = () => {} }) {
     }
     presetSelector.value = activeId;
     updateBackupSelector();
+    syncQuick();
   }
 
   /* 备用线路：从已有的 API 预设里挑一个，或者不用。预设增删改名时跟着更新。 */
@@ -955,6 +976,70 @@ export function createToolPanel({ api, store, onError = () => {} }) {
   enabledField.classList.add('stia-switch-field');
   pageHeading.append(pageTitle, enabledField);
 
+  /* 快捷开关：最常动的三样放在页面最上面，不用在长页面里翻。它们不另存一份状态，改这里等于改下面各区块里的
+     原控件（把值写过去、替它发一次 change），所以保存、报错、回滚都是原来那一套；原控件变了这里跟着变（syncQuick）。 */
+  const quickSection = document.createElement('section');
+  quickSection.className = 'stia-section stia-section--compact stia-quick';
+  quickSection.setAttribute('aria-label', '快捷开关');
+  const quickAuto = input('checkbox');
+  const quickAutoField = field('自动生图', quickAuto);
+  quickAutoField.classList.add('stia-switch-field', 'stia-switch-field--row');
+  const quickAutoDescription = document.createElement('small');
+  quickAutoDescription.textContent = '新回复写完后自动画；已经在聊天里的旧楼不会自己画';
+  quickAutoField.querySelector('span')?.append(quickAutoDescription);
+  const quickPreset = select();
+  const quickPresetField = field('当前预设', quickPreset);
+  const quickPresetLabel = quickPresetField.querySelector('span');
+  const quickReference = select();
+  const quickReferenceField = field('参考图组', quickReference);
+  const quickReferenceLabel = quickReferenceField.querySelector('span');
+  const quickGrid = document.createElement('div');
+  quickGrid.className = 'stia-quick__grid';
+  quickGrid.append(quickPresetField, quickReferenceField);
+  quickSection.append(quickAutoField, quickGrid);
+
+  function mirrorSelect(source, target) {
+    const options = [...source.options].map(option => {
+      const copy = document.createElement('option');
+      copy.value = option.value;
+      copy.textContent = option.textContent;
+      return copy;
+    });
+    target.replaceChildren(...options);
+    target.value = source.value;
+    target.disabled = source.disabled || !options.length;
+  }
+
+  function syncQuick() {
+    const isNovelAi = generationProvider.value === 'novelai';
+    quickAuto.checked = autoGenerate.checked;
+    quickAuto.disabled = autoGenerate.disabled;
+    mirrorSelect(isNovelAi ? artistSelector : presetSelector, quickPreset);
+    quickPresetLabel.textContent = isNovelAi ? '当前画师串' : '当前预设';
+    quickPreset.setAttribute('aria-label', isNovelAi ? '快捷切换画师串预设' : '快捷切换 API 预设');
+    /* 参考图只有 GPT 这边有。 */
+    quickReferenceField.hidden = isNovelAi;
+    mirrorSelect(characterSelect, quickReference);
+    const { character } = referenceOverview;
+    quickReferenceLabel.textContent = character.key
+      ? `「${character.name || '当前角色'}」的参考图组`
+      : '参考图组（先打开一个角色卡的聊天）';
+    quickReference.setAttribute('aria-label', '快捷切换当前角色的参考图组');
+  }
+
+  /* 把值写到原控件上，再替它发一次 change：走的就是原控件自己的保存逻辑。 */
+  function forward(source, value) {
+    const EventClass = source.ownerDocument?.defaultView?.Event || globalThis.Event;
+    if (source.type === 'checkbox') source.checked = value;
+    else source.value = value;
+    source.dispatchEvent(new EventClass('change', { bubbles: true }));
+  }
+  quickAuto.addEventListener('change', () => forward(autoGenerate, quickAuto.checked));
+  quickPreset.addEventListener('change', () => {
+    forward(generationProvider.value === 'novelai' ? artistSelector : presetSelector, quickPreset.value);
+  });
+  quickReference.addEventListener('change', () => forward(characterSelect, quickReference.value));
+
   const engineSwitch = document.createElement('div');
   engineSwitch.className = 'stia-engine-switch';
   const openAiEngine = action('GPT / OpenAI', async () => run(openAiEngine, () => changeProvider('openai')));
@@ -1181,6 +1266,7 @@ export function createToolPanel({ api, store, onError = () => {} }) {
     }
     editSelect.value = editingSetId;
     editSelect.disabled = !sets.length;
+    syncQuick();
     renameSet.disabled = !editingSetId;
     deleteSet.disabled = !editingSetId;
     makeDefault.disabled = !editingSetId || editingSetId === defaultSetId;
@@ -1677,6 +1763,7 @@ export function createToolPanel({ api, store, onError = () => {} }) {
     referenceSection.hidden = isNovelAi;
     advanced.hidden = isNovelAi;
     novelAiSection.hidden = !isNovelAi;
+    syncQuick();
     openAiEngine.classList.toggle('stia-button--primary', !isNovelAi);
     novelAiEngine.classList.toggle('stia-button--primary', isNovelAi);
     openAiEngine.setAttribute('aria-pressed', String(!isNovelAi));
@@ -1728,6 +1815,7 @@ export function createToolPanel({ api, store, onError = () => {} }) {
 
   settingsPage.append(
     pageHeading,
+    quickSection,
     engineSwitch,
     apiSection,
     generationSection,
@@ -1848,6 +1936,7 @@ export function createToolPanel({ api, store, onError = () => {} }) {
       loadNovelAiFields(novelAiData.config);
       loadArtistFields(artistPreset);
       syncNovelAiModelControls();
+      syncQuick();
       store.set({
         health: healthData,
         settings,

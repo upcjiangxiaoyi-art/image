@@ -230,3 +230,15 @@ test('2.0.3 刷新不重画：自动生图只认这次打开页面后才出现�
   const pkg = await fs.readFile(path.join(root, 'package.json'), 'utf8');
   assert.match(pkg, /tests\/integration\/refresh-regenerate\.test\.js/, '刷新测试在集成套里');
 });
+
+test('2.1.0 设置页：状态条贴在面板底边，触屏上顶栏不透明', async () => {
+  const css = await fs.readFile(path.join(root, 'src/ui/styles/atelier.css'), 'utf8');
+  const sticky = /\.stia-settings-page > \.stia-status \{([\s\S]*?)\n\}/.exec(css)?.[1] || '';
+  assert.match(sticky, /position: sticky/);
+  assert.match(sticky, /bottom: /);
+  const touch = /@media \(hover: none\) and \(pointer: coarse\) \{([\s\S]*?)\n\}/.exec(css)?.[1] || '';
+  assert.match(touch, /\.stia-panel > header \{\s*background: var\(--stia-bg\);/, '没有模糊时顶栏不透明');
+  const settings = await fs.readFile(path.join(root, 'src/ui/pages/settings/settings.js'), 'utf8');
+  assert.match(settings, /stia-quick/);
+  assert.match(settings, /STATUS_LINGER_MS/);
+});

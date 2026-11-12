@@ -588,6 +588,37 @@
   display: none;
 }
 
+/* 设置页的状态条贴在面板底边：页面很长，在哪一段点了保存、切了开关，结果都在眼前，不用翻到最底下找。 */
+.stia-settings-page > .stia-status {
+  position: sticky;
+  bottom: 10px;
+  z-index: 2;
+  /* 底下垫一层不透明的面板底色，再叠原来的淡色：浮在内容上面时字不会透出来。 */
+  background: linear-gradient(var(--stia-success-muted), var(--stia-success-muted)), var(--stia-bg);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 28%);
+}
+
+.stia-settings-page > .stia-status.stia-error {
+  background: linear-gradient(var(--stia-danger-muted), var(--stia-danger-muted)), var(--stia-bg);
+}
+
+/* 快捷开关：自动生图、当前预设、当前角色的参考图组。 */
+.stia-quick {
+  gap: 10px;
+}
+
+.stia-quick__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+.stia-quick__grid .stia-field > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .stia-status::before {
   content: "✓ ";
 }
@@ -1736,5 +1767,14 @@
   .stia-prompt-override,
   .stia-image-viewer__toolbar {
     backdrop-filter: none;
+  }
+
+  /* 没有模糊垫着，94% 不透明的顶栏会把底下滚过去的字透出来：触屏上干脆不透明。 */
+  .stia-panel > header {
+    background: var(--stia-bg);
+  }
+
+  .stia-image-viewer__toolbar {
+    background: var(--stia-elevated);
   }
 }
