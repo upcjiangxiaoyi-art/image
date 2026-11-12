@@ -33,6 +33,7 @@ import { normalizeThemeMode } from '../theme/theme.js';
 import {
   isLegacyMetadata,
   locateTag,
+  metadataTagIds,
   reconcileMessage as reconcileMessageIdentity,
 } from '../state/tag-identity.js';
 import { parseDrawTags, shouldProcessMessage } from '../parser/draw-parser.js';
@@ -466,9 +467,10 @@ export function createDirectApiClient({
     if (entries.length) store.putMany(entries);
   }
   const controllers = new Map();
-  /* 画廊记录的内存索引：按 resultId 直接取，按 tagId 找属于这张卡的图。 */
+  /* 画廊记录的内存索引：按 resultId 直接取，按 tagId 找属于这张卡的图，按 messageUuid 找这一楼出过的图。 */
   const resultIndex = new Map();
   const resultsByTag = new Map();
+  const resultsByMessage = new Map();
   const memoryKeys = new Map();
   const legacyMigrations = new Map();
   let cleanupPromise = null;
@@ -476,10 +478,21 @@ export function createDirectApiClient({
 
   function rememberResult(record) {
     const previous = resultIndex.get(record.resultId);
-    if (previous && previous.tagId !== record.tagId) resultsByTag.get(previous.tagId)?.delete(record.resultId);
+    if (previous && previous.tagId !== record.tagId) {
+      const owned = resultsByTag.get(previous.tagId);
+      owned?.delete(record.resultId);
+      if (owned && !owned.size) resultsByTag.delete(previous.tagId);
+    }
+    if (previous?.messageUuid && previous.messageUuid !== record.messageUuid) {
+      resultsByMessage.get(previous.messageUuid)?.delete(record.resultId);
+    }
     resultIndex.set(record.resultId, record);
     if (!resultsByTag.has(record.tagId)) resultsByTag.set(record.tagId, new Set());
     resultsByTag.get(record.tagId).add(record.resultId);
+    if (record.messageUuid) {
+      if (!resultsByMessage.has(record.messageUuid)) resultsByMessage.set(record.messageUuid, new Set());
+      resultsByMessage.get(record.messageUuid).add(record.resultId);
+    }
   }
 
   function forgetResult(resultId) {
@@ -489,11 +502,15 @@ export function createDirectApiClient({
     const owned = resultsByTag.get(record.tagId);
     owned?.delete(resultId);
     if (owned && !owned.size) resultsByTag.delete(record.tagId);
+    const sameMessage = resultsByMessage.get(record.messageUuid);
+    sameMessage?.delete(resultId);
+    if (sameMessage && !sameMessage.size) resultsByMessage.delete(record.messageUuid);
   }
 
   function resetResults() {
     resultIndex.clear();
     resultsByTag.clear();
+    resultsByMessage.clear();
   }
 
   function lookup(resultId) {
@@ -1128,7 +1145,46 @@ export function createDirectApiClient({
     return { removed, record: updated };
   }
 
-  async function resolveTags(tagIds) {
+  /* 认领：这张卡一张图都没有，画廊里却有「同一楼（messageUuid）、同一段提示词」的图，挂在一个这个聊天里
+     已经没人用的旧 ID 上。2.0.0～2.0.2 在侧文件读不到时会给整楼换新 ID，图就这样从卡片上掉了（还在画廊里）。
+     把那个旧 ID 名下的图全部改挂到现在的 ID 上：只改画廊记录，不动聊天、不动图片文件。返回认领到的记录。 */
+  let adoptedCount = 0;
+  async function adoptOrphanResults(tagId, found) {
+    const messageUuid = found.metadata?.messageUuid;
+    if (!messageUuid || !found.prompt) return [];
+    const sameMessage = [...(resultsByMessage.get(messageUuid) || [])]
+      .map(resultId => resultIndex.get(resultId))
+      .filter(record => record?.tagId && record.tagId !== tagId);
+    if (!sameMessage.length) return [];
+    const hash = promptHash(found.prompt);
+    const chat = compat.chat();
+    const inUse = new Map();
+    const staleTagIds = new Set();
+    for (const record of sameMessage) {
+      if (promptHash(record.prompt) !== hash) continue;
+      if (!inUse.has(record.tagId)) {
+        inUse.set(record.tagId, Boolean(locateTag(chat, record.tagId, { isStreaming: compat.isStreaming })));
+      }
+      if (!inUse.get(record.tagId)) staleTagIds.add(record.tagId);
+    }
+    const adopted = [];
+    for (const staleTagId of staleTagIds) {
+      for (const record of ownedResults(staleTagId)) {
+        const updated = await metadataStore.update(record.resultId, { tagId });
+        if (!updated) continue;
+        rememberResult(updated);
+        adopted.push(updated);
+      }
+    }
+    if (adopted.length) {
+      adoptedCount += adopted.length;
+      console.info(`[画笺] 认领回 ${adopted.length} 张挂在旧标签上的图`, tagId);
+    }
+    return adopted;
+  }
+
+  /* adoptOrphans：加载聊天时（不是新消息）顺手认领挂在旧 ID 上的图，见 adoptOrphanResults。 */
+  async function resolveTags(tagIds, { adoptOrphans = false } = {}) {
     await ensureReady();
     const store = await ensureTagStore();
     for (const tagId of tagIds) {
@@ -1157,6 +1213,11 @@ export function createDirectApiClient({
          记录本身一样就不会写；侧文件里还没有这条（换过聊天名、分支出来的聊天）时补一条。 */
       const { record } = found;
       const ids = tagResultIds(record);
+      let adoptedAuto = false;
+      if (adoptOrphans && !ids.length && !ownedResults(tagId).length) {
+        const adopted = await adoptOrphanResults(tagId, found);
+        adoptedAuto = adopted.some(result => String(result.attemptId || '').startsWith('auto:'));
+      }
       const known = new Set(ids);
       const missing = ownedResults(tagId)
         .filter(result => !known.has(result.resultId))
@@ -1165,6 +1226,7 @@ export function createDirectApiClient({
         ? { ...record, resultRefs: buildResultRefs(record, [...ids, ...missing], lookup) }
         : { ...record };
       next.latestResultId = normalizeLatestResultId(next, lookup);
+      if (adoptedAuto) next.autoAttempted = true;
       store.update(tagId, next);
     }
     return tagIds.map(stateOf);
@@ -1172,13 +1234,16 @@ export function createDirectApiClient({
 
   /* 识别一楼：正文里的 <draw> 对上 tagId，记录放进侧文件，楼里只放引用 { messageUuid, tagIds }。
      返回给卡片用的标签视图和「聊天有没有改」：只有出现新标签、标签变了才改；旧格式楼层原样不动
-     （它的状态已经搬进侧文件），除非它的标签变了才升级成引用。 */
+     （它的状态已经搬进侧文件），除非它的标签变了才升级成引用。created 是这一次才拿到新 ID 的标签。 */
   async function reconcileMessage(messageId) {
     const message = compat.chat()[Number(messageId)];
-    if (!shouldProcessMessage(message)) return { tags: [], changed: false, messageUuid: null };
+    if (!shouldProcessMessage(message)) return { tags: [], changed: false, messageUuid: null, created: [] };
     const parsed = parseDrawTags(message.mes);
-    if (!parsed.length) return { tags: [], changed: false, messageUuid: message.extra?.stImageAtelier?.messageUuid || null };
+    if (!parsed.length) {
+      return { tags: [], changed: false, messageUuid: message.extra?.stImageAtelier?.messageUuid || null, created: [] };
+    }
     const store = await ensureTagStore();
+    const previousIds = metadataTagIds(message.extra?.stImageAtelier);
     const result = reconcileMessageIdentity(message, parsed, { records: tagId => store.get(tagId) });
     store.putMany(Object.entries(result.records));
     let changed = false;
@@ -1186,8 +1251,27 @@ export function createDirectApiClient({
       message.extra ??= {};
       message.extra.stImageAtelier = result.ref;
       changed = true;
+      /* 这一楼里被换掉的旧 ID（提示词改了、流式输出时写到一半的）：没出过图、没生成过、聊天里别处（另一个
+         滑动版本的存档）也不再用它的，记录不留，免得侧文件越攒越多。 */
+      for (const tagId of previousIds) {
+        if (result.ref.tagIds.includes(tagId)) continue;
+        const record = store.get(tagId);
+        if (!record || record.resultRefs.length || ownedResults(tagId).length || attemptStore.forTag(tagId).length) continue;
+        if (locateTag(compat.chat(), tagId, { isStreaming: compat.isStreaming })) continue;
+        store.remove(tagId);
+      }
     }
-    return { tags: result.tags, messageUuid: result.ref.messageUuid, changed };
+    return { tags: result.tags, messageUuid: result.ref.messageUuid, changed, created: result.created };
+  }
+
+  /* 页面转入后台、要关掉之前：把还在等合并写的（画廊、生成记录、各聊天的侧文件）立刻写掉。
+     手机上切走页面后定时器会被冻住，页面再被系统回收，没写完的就丢了——图明明画好了，回来却显示「生成被中断」。 */
+  function flushPending() {
+    return Promise.allSettled([
+      metadataStore.flush(),
+      attemptStore.flush(),
+      ...[...tagStores.values()].filter(entry => entry.initialized).map(entry => entry.store.flush()),
+    ]);
   }
 
   async function generate(input) {
@@ -2129,6 +2213,13 @@ export function createDirectApiClient({
     reconcileMessage,
     ensureTagStore: () => ensureTagStore(),
     tagRecord: tagId => currentTagStore()?.get(tagId) || null,
+    flushPending,
+    /* 上次问过之后又认领回了几张图（问完清零）：加载完聊天用来提示一声。 */
+    takeAdoptedCount: () => {
+      const count = adoptedCount;
+      adoptedCount = 0;
+      return count;
+    },
     chatTagFile: () => chatTagFileName(chatIdentity()),
     /* 一键删除标签后，它的生成记录和侧文件里的记录也一起清掉（硬删除）。 */
     forgetTag: async tagId => {

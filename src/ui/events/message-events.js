@@ -35,6 +35,10 @@ export function createMessageEvents({
   let pollTimer = null;
   let hydrated = false;
   let cachedChatId = '';
+  /* 自动生图只给「这次打开页面之后才出现」的标签：酒馆刚收到的新回复那一楼的标签，和之后才拿到新 ID 的标签
+     （IPE 事后贴进来的生图段、改过提示词的）。打开页面时聊天里已经有的标签一律不自动画，不管它的标记还在不在：
+     刷新网页、翻旧楼、酒馆和别的扩展重画楼层，都不该让旧楼自己再花一次钱。 */
+  const freshTagIds = new Set();
 
   function reportFailure(title) {
     return error => {
@@ -55,17 +59,24 @@ export function createMessageEvents({
       message.extra.stImageAtelier = result.ref;
       changed = true;
     }
-    return { tags: result.tags, messageUuid: result.ref.messageUuid, changed };
+    return { tags: result.tags, messageUuid: result.ref.messageUuid, changed, created: result.created };
   }
 
-  async function processMessage(messageId, { live = false, generationType = '' } = {}) {
+  /* received：酒馆刚收到这一楼（MESSAGE_RECEIVED）。 */
+  async function processMessage(messageId, { live = false, generationType = '', received = false } = {}) {
     const message = compat.chat()[Number(messageId)];
     if (!shouldProcessMessage(message)) return;
     sourceCache.set(String(messageId), message.mes);
     const parsed = parseDrawTags(message.mes);
     if (!parsed.length) return;
 
-    const { tags: identified, changed, messageUuid } = await reconcile(messageId, message, parsed);
+    const { tags: identified, changed, messageUuid, created = [] } = await reconcile(messageId, message, parsed);
+    /* 只在「它出现的那一刻自动生图开着」才算：之后才打开开关，不会回头把这段时间收到的楼补画。开场白不算。 */
+    const autoOn = Boolean(store.state.settings.enabled && store.state.settings.autoGenerate);
+    if (autoOn && generationType !== 'first_message') {
+      if (received) for (const tag of identified) freshTagIds.add(tag.tagId);
+      else if (live) for (const tagId of created) freshTagIds.add(tagId);
+    }
     if (changed) {
       /* 写入前检查：这一楼的标签数据超过 20 KB 就在控制台警告并列出各字段大小。 */
       warnIfHeavy(message, messageId);
@@ -87,7 +98,8 @@ export function createMessageEvents({
     }));
     renderer.mount(messageId, tags);
     try {
-      const resolved = await api.resolveTags(tags.map(tag => tag.tagId));
+      /* 加载聊天时（不是新消息）顺手把挂在旧 ID 上的图认领回来。 */
+      const resolved = await api.resolveTags(tags.map(tag => tag.tagId), { adoptOrphans: !live });
       for (const value of resolved) store.applyResolvedTag(value.tagId, value);
     } catch (error) {
       store.set({ serviceError: error });
@@ -103,8 +115,11 @@ export function createMessageEvents({
       && !compat.isStreaming?.(messageId);
     if (eligibleLiveMessage) {
       for (const tag of tags.slice(0, 3)) {
+        if (!freshTagIds.has(tag.tagId)) continue;
         const current = store.state.tagStates.get(tag.tagId);
-        if (!current?.tag?.autoAttempted && !current?.tag?.autoSuppressed && !tag.autoSuppressed) {
+        /* 状态没读到就不画；已经有图、有过任何一次生成（手动的也算）的不画。 */
+        if (!current || current.results?.length || current.attempts?.length) continue;
+        if (!current.tag?.autoAttempted && !current.tag?.autoSuppressed && !tag.autoSuppressed) {
           autoQueue.enqueue(tag);
         }
       }
@@ -239,7 +254,7 @@ export function createMessageEvents({
     compat.on(['GENERATION_ENDED', 'GENERATION_STOPPED'], () => resumeObserver({ catchUp: true }));
     compat.on(['MESSAGE_RECEIVED'], (messageId, generationType) => {
       resumeObserver();
-      return processMessage(messageId, { live: true, generationType })
+      return processMessage(messageId, { live: true, generationType, received: true })
         .catch(reportFailure('识别生图标签失败'));
     });
     /* 画完一楼的事件紧跟在 MESSAGE_RECEIVED 后面，同一楼刚处理过；走防抖和 DOM 监听合成一次，

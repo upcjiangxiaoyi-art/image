@@ -130,8 +130,13 @@ export function createChatTagStore({ readDocument, writeDocument, flushDelayMs =
       entry.reject = reject;
     });
     pending = entry;
-    entry.timer = setTimeout(() => fire(entry), immediate ? 0 : flushDelayMs);
-    entry.timer.unref?.();
+    /* immediate 当场排进写队列，不绕定时器：页面转入后台时定时器可能再也不跑。 */
+    if (immediate) {
+      fire(entry);
+    } else {
+      entry.timer = setTimeout(() => fire(entry), flushDelayMs);
+      entry.timer.unref?.();
+    }
     return entry.promise;
   }
 
@@ -235,8 +240,16 @@ export function createChatTagStore({ readDocument, writeDocument, flushDelayMs =
       if (changed) touch(options);
       return changed;
     },
+    /* 等写完。还在等合并写的立刻写；没有在等、但内存里的和文件里的不一样（上一次写失败了）也再写一次，
+       写不进去就抛出来——「整理旧数据」要靠它确认侧文件真的存上了，才敢动聊天。 */
     flush() {
-      return pending ? scheduleFlush({ immediate: true }) : writeChain;
+      if (pending) return scheduleFlush({ immediate: true });
+      if (document) {
+        const serialized = serializeDocument(document);
+        const dirty = serialized !== lastWritten && Boolean(lastWritten || Object.keys(document.tags).length);
+        if (dirty) return scheduleFlush({ immediate: true });
+      }
+      return writeChain;
     },
   };
   return api;

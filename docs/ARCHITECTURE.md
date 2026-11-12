@@ -65,7 +65,10 @@ MESSAGE_RECEIVED (live)
 
 - 手动生成每次创建新 UUID。
 - 自动生成固定使用 `auto:<tagId>`。
-- 发起上游请求前，先把 attempt 写进独立文件（`attempt-store.js`）并等它落盘；自动生图再在聊天里记一笔 `autoAttempted`。
+- 自动生图只给「这次打开页面之后才出现」的标签（`message-events.js` 的 `freshTagIds`）：`MESSAGE_RECEIVED` 那一楼的标签，和之后在 live 这一轮里才拿到新 ID 的标签（`reconcileMessage` 返回的 `created`：IPE 事后贴的生图段、改过的提示词），而且出现那一刻自动生图开着、不是开场白。再加三条：状态读到了、没有图、没有任何生成记录。打开页面时已经在聊天里的标签不管标记在不在都不自动画——刷新、翻旧楼、别的扩展重画楼层都会触发 live 这一轮，不能靠标记兜底。
+- 发起上游请求前，把 attempt 写进独立文件（`attempt-store.js`，当场排进写队列，不等它、写失败不拦着出图）；自动生图再在侧文件里记一笔 `autoAttempted`。
+- 标签身份不依赖侧文件：`tag-identity.js` 的 `reconcileMessage` 先按提示词指纹认，楼里有 ID、侧文件里没有记录的按位置认回原 ID，绝不因为侧文件读不到就换 ID。`resolveTags(..., { adoptOrphans })` 在加载聊天时给一张图都没有的卡按「同一楼 messageUuid + 同一段提示词」认领画廊里挂在旧 ID（聊天里已经没人用）上的图，只改画廊记录的 `tagId`。
+- 页面 `visibilitychange`（hidden）/ `pagehide` 时 `api.flushPending()` 把还在等合并写的画廊、生成记录、侧文件立刻写掉；各存储的 `flush()` 会把在等的当场写，侧文件的 `flush()` 在内存和文件不一样（上次写失败）时重写、写不进就抛出来。
 - 防双击：卡片上最近开始的那次还在画时，普通的「生成 / 重新生成」不再发请求；已有 attemptId 会直接返回原记录。
 - 同一张卡可以同时画好几张：生成中点「再画一张」（`alongside`，可换 API 预设）时，正在画的那次留在后台接着画。结果按 attemptId 各自写入、合并进这张卡的历史；后台那张晚到时，如果之后开始的那次已经出图，不改 `latestResultId`，只进历史。增强模式在事务里就地合并标签，不再用开始时那份旧拷贝整个写回。
 - 卡片状态只往前走：异步读回来的状态（识别消息、生图结束后刷新）用 `store.applyResolvedTag`，同一个 attemptId 已经结束的不会被旧读数打回进行中；直连的 `resolveTags` 等聊天保存完再取快照。

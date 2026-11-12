@@ -63,13 +63,17 @@ function promptAt(text, ordinal, fallback = '') {
 /* 认标签：正文里的每个 <draw> 对上楼里原来的哪个 tagId。
    提示词一样（指纹一样）就是同一个：改了提示词就是新标签（新 tagId）。records(tagId) 取侧文件里的记录；
    旧格式楼层没有记录时拿楼里那份自己的字段顶上。
+   楼里有 ID、侧文件里却没有它的记录时（侧文件丢了、没写上、换过聊天名、分支出来的聊天），没有证据说明
+   提示词变过，就按位置认回原来的 ID。绝不能因为侧文件不在就给整楼换新 ID：图是按 ID 挂的，一换卡片上就空了，
+   还会被当成没画过的新标签（2.0.0～2.0.2 就是这么把图从卡片上弄掉的）。
    返回：
    - ref：这楼该有的引用 { messageUuid, tagIds }
    - refChanged：和楼里现在存的不一样（旧格式一律算不一样）
    - legacy：楼里现在是旧格式
    - identityChanged：tagId 的集合或顺序变了（旧格式楼层只有这时才升级成引用，否则不动聊天）
    - records：这些标签的记录（新的按默认值建；原来的保留）
-   - tags：给卡片和生图用的合并视图 */
+   - tags：给卡片和生图用的合并视图
+   - created：这一次才拿到新 ID 的标签（楼里原来没有它） */
 export function reconcileMessage(message, parsedTags, { records = () => null, uuid = createUuid } = {}) {
   const previous = message?.extra?.stImageAtelier ?? {};
   const legacy = isLegacyMetadata(previous);
@@ -80,12 +84,28 @@ export function reconcileMessage(message, parsedTags, { records = () => null, uu
     return { tagId, record, hash: record?.promptHash || '' };
   });
   const unused = new Set(candidates.keys());
+  const hashes = parsedTags.map(parsed => promptHash(parsed.prompt));
+  const assigned = new Array(parsedTags.length).fill(null);
+  /* 第一轮：提示词指纹一样的就是同一个。 */
+  hashes.forEach((hash, ordinal) => {
+    const index = candidates.findIndex((candidate, position) =>
+      unused.has(position) && candidate.hash && candidate.hash === hash);
+    if (index < 0) return;
+    unused.delete(index);
+    assigned[ordinal] = candidates[index];
+  });
+  /* 第二轮：剩下没对上的标签，按顺序认回那些「楼里有 ID、却没有记录」的。 */
+  const unrecorded = [...unused].filter(position => !candidates[position].hash).sort((left, right) => left - right);
+  assigned.forEach((value, ordinal) => {
+    if (value || !unrecorded.length) return;
+    const position = unrecorded.shift();
+    unused.delete(position);
+    assigned[ordinal] = candidates[position];
+  });
   const nextRecords = {};
   const tags = parsedTags.map((parsed, ordinal) => {
-    const hash = promptHash(parsed.prompt);
-    const index = candidates.findIndex((candidate, position) => unused.has(position) && candidate.hash === hash);
-    const matched = index >= 0 ? candidates[index] : null;
-    if (matched) unused.delete(index);
+    const hash = hashes[ordinal];
+    const matched = assigned[ordinal];
     const tagId = matched?.tagId || uuid();
     const record = normalizeTagRecord({ ...(matched?.record || {}), promptHash: hash });
     nextRecords[tagId] = record;
@@ -110,6 +130,7 @@ export function reconcileMessage(message, parsedTags, { records = () => null, uu
     identityChanged: previousIds.join('\n') !== ref.tagIds.join('\n'),
     records: nextRecords,
     tags,
+    created: ref.tagIds.filter(tagId => !previousIds.includes(tagId)),
   };
 }
 

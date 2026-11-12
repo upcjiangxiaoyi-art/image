@@ -191,3 +191,43 @@ test('正在生成新的滑动版本时，这一层的 extra 还是上一版留�
     '「继续」也在流式输出，但没有别的版本存着这张卡，还是当前这一版',
   );
 });
+
+const recordOf = prompt => ({ promptHash: promptHash(prompt), latestResultId: null, resultRefs: [], autoAttempted: false, autoSuppressed: false });
+
+test('侧文件里没有记录时按位置认回原来的 ID，不给整楼换新 ID；多出来的标签才拿新 ID', () => {
+  const uuid = counter();
+  const message = { extra: { stImageAtelier: { messageUuid: 'm', tagIds: ['keep-a', 'keep-b'] } } };
+  const result = reconcileMessage(message, [tag('A'), tag('B')], { records: () => null, uuid });
+  assert.deepEqual(result.ref, { messageUuid: 'm', tagIds: ['keep-a', 'keep-b'] });
+  assert.equal(result.refChanged, false, '引用不变，不写聊天');
+  assert.equal(result.identityChanged, false);
+  assert.deepEqual(result.created, []);
+  assert.equal(result.records['keep-a'].promptHash, promptHash('A'), '记录按现在的提示词补上');
+  assert.equal(result.records['keep-b'].promptHash, promptHash('B'));
+
+  const more = reconcileMessage(message, [tag('A'), tag('B'), tag('C')], { records: () => null, uuid });
+  assert.deepEqual(more.ref.tagIds.slice(0, 2), ['keep-a', 'keep-b']);
+  assert.deepEqual(more.created, [more.ref.tagIds[2]], '只有多出来的那个是新的');
+  const fewer = reconcileMessage(message, [tag('A')], { records: () => null, uuid });
+  assert.deepEqual(fewer.ref.tagIds, ['keep-a']);
+  assert.deepEqual(fewer.created, []);
+});
+
+test('一部分有记录、一部分没有：有记录的按指纹认，剩下的按顺序认回没有记录的；有记录而提示词真变了才是新标签', () => {
+  const uuid = counter();
+  const message = { extra: { stImageAtelier: { messageUuid: 'm', tagIds: ['keep-a', 'keep-b'] } } };
+  const partial = new Map([['keep-b', recordOf('B')]]);
+  const swapped = reconcileMessage(message, [tag('B'), tag('A')], { records: id => partial.get(id) || null, uuid });
+  assert.deepEqual(swapped.ref.tagIds, ['keep-b', 'keep-a'], 'B 按指纹认回 keep-b，剩下的 A 认回没有记录的 keep-a');
+  assert.deepEqual(swapped.created, []);
+
+  const full = new Map([['keep-a', recordOf('A')], ['keep-b', recordOf('B')]]);
+  const edited = reconcileMessage(message, [tag('A'), tag('B 改过')], { records: id => full.get(id) || null, uuid });
+  assert.equal(edited.ref.tagIds[0], 'keep-a');
+  assert.notEqual(edited.ref.tagIds[1], 'keep-b', '有记录、指纹对不上：提示词改过，是新标签');
+  assert.deepEqual(edited.created, [edited.ref.tagIds[1]]);
+  assert.equal(edited.identityChanged, true);
+
+  const fresh = reconcileMessage({ extra: {} }, [tag('A')], { records: () => null, uuid });
+  assert.deepEqual(fresh.created, fresh.ref.tagIds, '全新的一楼：都是新标签');
+});

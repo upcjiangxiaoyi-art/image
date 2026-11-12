@@ -216,3 +216,17 @@ test('2.0.0 聊天里只留引用：设置页有「整理旧数据」并提醒�
   const events = await fs.readFile(path.join(root, 'src/ui/events/message-events.js'), 'utf8');
   assert.doesNotMatch(events, /reconcileTagMetadata/, '识别走 reconcileMessage（侧文件）');
 });
+
+test('2.0.3 刷新不重画：自动生图只认这次打开页面后才出现的标签，转入后台先写盘，认领了图会提示', async () => {
+  const events = await fs.readFile(path.join(root, 'src/ui/events/message-events.js'), 'utf8');
+  assert.match(events, /freshTagIds\.has\(tag\.tagId\)/, '不是这次才出现的标签不自动画');
+  assert.match(events, /current\.results\?\.length \|\| current\.attempts\?\.length/, '有图、有过生成的不自动画');
+  assert.match(events, /received: true/, '收到新回复的那一楼才算新');
+  const index = await fs.readFile(path.join(root, 'index.js'), 'utf8');
+  assert.match(index, /visibilitychange/);
+  assert.match(index, /pagehide/);
+  assert.match(index, /api\.flushPending/);
+  assert.match(index, /takeAdoptedCount/);
+  const pkg = await fs.readFile(path.join(root, 'package.json'), 'utf8');
+  assert.match(pkg, /tests\/integration\/refresh-regenerate\.test\.js/, '刷新测试在集成套里');
+});

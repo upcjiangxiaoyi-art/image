@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   CHAT_TAG_FILE_PREFIX,
   chatTagFileName,
+  createChatTagStore,
   createMemoryChatTagStore,
   normalizeTagRecord,
   promptHash,
@@ -111,4 +112,49 @@ test('延后合并写：flushDelayMs 内几次改动只写一次；flush 立刻�
   store.put('c', { promptHash: '3' });
   await store.flush();
   assert.equal(store.writes, 2);
+});
+
+test('flush：上一次写失败过、内存和文件不一样，再 flush 会重写；写不进去就抛出来；能写了补写一次，之后不再写', async t => {
+  const originalWarn = console.warn;
+  console.warn = () => {};
+  t.after(() => { console.warn = originalWarn; });
+  let fail = true;
+  const written = [];
+  const store = createChatTagStore({
+    flushDelayMs: 10,
+    readDocument: async () => null,
+    writeDocument: async serialized => {
+      if (fail) throw new Error('HTTP 400');
+      written.push(serialized);
+    },
+  });
+  await store.initialize();
+  store.put('t1', { promptHash: 'h' });
+  await delay(40);
+  assert.equal(written.length, 0, '延后的那次写失败了（只记一条警告）');
+  await assert.rejects(store.flush(), /HTTP 400/, '还没存上就 flush：重写，失败就抛出来');
+  fail = false;
+  await store.flush();
+  assert.equal(written.length, 1, '能写了就补写上');
+  assert.deepEqual(Object.keys(JSON.parse(written[0]).tags), ['t1']);
+  await store.flush();
+  assert.equal(written.length, 1, '已经一样了不再写');
+});
+
+test('immediate 的写当场排进写队列，不等定时器（页面转入后台时定时器可能再也不跑）', async () => {
+  const written = [];
+  const store = createChatTagStore({
+    flushDelayMs: 60_000,
+    readDocument: async () => null,
+    writeDocument: async serialized => { written.push(serialized); },
+  });
+  await store.initialize();
+  store.put('t1', { promptHash: 'h' });
+  assert.equal(written.length, 0, '普通改动等合并写');
+  await store.flush();
+  assert.equal(written.length, 1, 'flush 立刻写掉，不用等那一分钟');
+  store.put('t2', { promptHash: 'h2' }, { immediate: true });
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(written.length, 2, 'immediate 不绕定时器');
 });

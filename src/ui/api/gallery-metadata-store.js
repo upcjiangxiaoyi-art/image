@@ -105,7 +105,9 @@ export function createGalleryMetadataStore({ readDocument, writeDocument, flushD
       entry.reject = reject;
     });
     pending = entry;
-    entry.timer = setTimeout(() => fire(entry), immediate ? 0 : flushDelayMs);
+    /* immediate 当场排进写队列，不绕定时器：页面转入后台时定时器可能再也不跑。 */
+    if (immediate) fire(entry);
+    else entry.timer = setTimeout(() => fire(entry), flushDelayMs);
     return entry.promise;
   }
 
@@ -199,8 +201,9 @@ export function createGalleryMetadataStore({ readDocument, writeDocument, flushD
     remove(resultId) {
       return api.removeMany([resultId]);
     },
+    /* 等写完；还在等合并写的立刻写（页面转入后台前、整理聊天前都用它）。 */
     flush() {
-      return pending ? pending.promise : writeChain;
+      return pending ? scheduleFlush({ immediate: true }) : writeChain;
     },
   };
   return api;

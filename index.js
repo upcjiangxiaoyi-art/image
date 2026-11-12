@@ -152,6 +152,15 @@ async function noticeLegacyChat() {
   }
 }
 
+/* 2.0.3：加载聊天时把挂在旧标签上的图认领回卡片（2.0.0～2.0.2 会把图从卡片上弄掉），认领到了就说一声。 */
+function noticeAdopted() {
+  const count = api.takeAdoptedCount?.() || 0;
+  if (!count) return;
+  const text = `已把 ${count} 张之前从卡片上掉下来的图接回原来的楼层。图一直在画廊里，没有重画。`;
+  if (typeof globalThis.toastr?.success === 'function') globalThis.toastr.success(text, '画笺', { timeOut: 12000 });
+  else console.info(`[画笺] ${text}`);
+}
+
 const events = createMessageEvents({
   compat,
   api,
@@ -159,7 +168,10 @@ const events = createMessageEvents({
   renderer,
   autoQueue,
   onError: reportError,
-  onHydrated: () => void noticeLegacyChat(),
+  onHydrated: () => {
+    noticeAdopted();
+    void noticeLegacyChat();
+  },
 });
 
 /* 一键删除：卡片 + 消息里的 <draw> 注入词 + 标签元数据一起清掉，落盘后不留痕迹。 */
@@ -214,6 +226,13 @@ function initialize() {
   });
   void runGalleryCleanup();
   setInterval(() => void runGalleryCleanup(), GALLERY_CLEANUP_INTERVAL_MS);
+  /* 页面转入后台（手机切 App、切标签页）或要关掉时，把还在等合并写的记录立刻写掉：切走后定时器会被冻住，
+     页面再被系统回收，没写完的就丢了，回来图明明画好了却显示「生成被中断」。 */
+  const flushPending = () => void Promise.resolve(api.flushPending?.()).catch(() => {});
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') flushPending();
+  });
+  window.addEventListener('pagehide', flushPending);
 }
 
 if (document.readyState === 'loading') {

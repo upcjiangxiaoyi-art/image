@@ -173,7 +173,7 @@ export function createApiClient({
     clearSecret: presetId => selected().clearSecret(presetId),
     listModels: presetId => selected().listModels(presetId),
     testPreset: presetId => selected().testPreset(presetId),
-    resolveTags: tagIds => selected().resolveTags(tagIds),
+    resolveTags: (tagIds, options) => selected().resolveTags(tagIds, options),
     /* 参考图组（图生图）：组是全局的、按角色卡记，和 API 预设无关；出图带参考图目前只有免服务端直连的 GPT 有。 */
     uploadReferenceImage: file => direct.uploadReferenceImage(file),
     getReferenceSets: () => direct.getReferenceSets(),
@@ -231,6 +231,8 @@ export function createApiClient({
     reconcileMessage: messageId => direct.reconcileMessage(messageId),
     ensureTagStore: () => direct.ensureTagStore(),
     tagRecord: tagId => direct.tagRecord(tagId),
+    flushPending: () => direct.flushPending(),
+    takeAdoptedCount: () => direct.takeAdoptedCount(),
     chatTagFile: () => direct.chatTagFile(),
     mode: () => direct.mode(),
   };
