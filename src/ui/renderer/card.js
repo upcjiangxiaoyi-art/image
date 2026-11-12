@@ -454,9 +454,10 @@ export function createCard({
     return box;
   }
 
-  /* 出图后那排按钮里的「换预设」：当前的生图预设（NovelAI 时是当前画师串），不用进设置页就能换。
+  /* 出图后、失败后那排按钮里的「换预设」：当前的生图预设（NovelAI 时是当前画师串），不用进设置页就能换。
      画成按钮的样子，上面盖一个透明的系统选择框：点哪儿都是打开系统自己的选择器，手机上最顺手。
-     换的是全局的当前预设，之后新出的图都用它；这张图是哪个预设画的看上面的信息栏。 */
+     换的是全局的当前预设，之后新出的图都用它；这张图是哪个预设画的看上面的信息栏。
+     只换预设，不替人点「重试」：重试要花钱，得自己点。 */
   function presetSwitch(choices) {
     const artist = choices.kind === 'artist';
     const current = choices.items.find(item => item.id === choices.activeId);
@@ -466,7 +467,8 @@ export function createCard({
     const icon = document.createElement('span');
     icon.className = 'stia-button__icon';
     icon.setAttribute('aria-hidden', 'true');
-    icon.textContent = '⇄';
+    /* 和设置页「API 配置」一个图标；「换备用线路」已经用了 ⇄，两个挨着不能长一样。 */
+    icon.textContent = '▤';
     const name = document.createElement('span');
     name.className = 'stia-card__preset-name';
     name.textContent = switching ? '正在切换…' : `${artist ? '画师串' : '预设'}：${current?.name || '未选择'}`;
@@ -566,8 +568,9 @@ export function createCard({
       && settings.executionMode !== 'server'
       && settings.generationProvider !== 'novelai'
       && (shown?.provider || attempt?.provider || 'openai') !== 'novelai';
-    /* 「换预设」：可选的不止一个才有意义。 */
-    const choices = shown && typeof getPresetChoices === 'function' && typeof onSwitchPreset === 'function'
+    /* 「换预设」：出了图的卡片和失败（含被中断、已取消）的卡片上有；可选的不止一个才有意义。 */
+    const failed = !shown && ['failed', 'interrupted', 'cancelled'].includes(attempt?.status);
+    const choices = (shown || failed) && typeof getPresetChoices === 'function' && typeof onSwitchPreset === 'function'
       ? getPresetChoices()
       : null;
     const canSwitch = Array.isArray(choices?.items) && choices.items.length > 1;
@@ -759,6 +762,8 @@ export function createCard({
           void Promise.resolve(onFallback(tag)).catch(() => {});
         }, '⇄'));
       }
+      /* 这条线路不行就在这儿换一个，再点「重试」：重试用的是当前预设。 */
+      if (canSwitch) actions.append(presetSwitch(choices));
       if (canAdjust) actions.append(button('调整后重绘', '', () => onAdjustRegenerate(tag, {
         prompt: actualPrompt,
         negativePrompt: actualNegativePrompt,

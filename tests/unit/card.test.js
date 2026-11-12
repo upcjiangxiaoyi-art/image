@@ -899,7 +899,7 @@ test('出图后的卡片上「参考重画」旁边有「换预设」：写着�
   const { actions, control, select } = await presetSwitchSetup(t);
   assert.deepEqual(
     actions().map(node => node.textContent),
-    ['↻重新生成', '⌕查看 / 保存', '▦画廊', '◫参考重画', '⇄预设：纯爱二号走十六方纯爱二号稳定组'],
+    ['↻重新生成', '⌕查看 / 保存', '▦画廊', '◫参考重画', '▤预设：纯爱二号走十六方纯爱二号稳定组'],
     '紧跟在「参考重画」后面',
   );
   assert.equal(control().tagName, 'LABEL', '整块都是选择框的标签：点哪儿都打开系统的选择器');
@@ -982,7 +982,7 @@ test('设置面板正忙着（正在保存、正在切）：卡片上的「换�
   assert.equal(context.control().querySelector('.stia-card__preset-name').textContent, '预设：纯爱二号');
 });
 
-test('只有一个预设、没接上切换、还没出图的卡片：不显示「换预设」', async t => {
+test('只有一个预设、没接上切换、等待生成和正在画的卡片：不显示「换预设」', async t => {
   const context = await presetSwitchSetup(t);
   const { card, control, actions } = context;
   context.choices = { ...context.choices, items: [{ id: 'cheap', name: '纯爱二号' }] };
@@ -995,9 +995,6 @@ test('只有一个预设、没接上切换、还没出图的卡片：不显示�
   assert.equal(control(), null, '面板还没准备好');
 
   context.choices = { kind: 'api', activeId: 'cheap', busy: false, items: [{ id: 'old', name: '走十六方' }, { id: 'cheap', name: '纯爱二号' }] };
-  context.state = { tag: {}, attempts: [{ attemptId: 'a2', status: 'failed', provider: 'openai', errorMessage: 'x' }], results: [] };
-  card.render();
-  assert.equal(control(), null, '失败的卡片上没有');
   context.state = { tag: {}, attempts: [], results: [] };
   card.render();
   assert.equal(control(), null, '等待生成的卡片上没有');
@@ -1025,8 +1022,74 @@ test('NovelAI：没有「参考重画」，「换预设」换的是画师串，�
   const { actions, control, select } = await presetSwitchSetup(t, { provider: 'novelai' });
   assert.deepEqual(
     actions().map(node => node.textContent.replace(/走十六方纯爱二号稳定组$/, '')),
-    ['↻重新生成', '⌕查看 / 保存', '▦画廊', '⇄画师串：纯爱二号'],
+    ['↻重新生成', '⌕查看 / 保存', '▦画廊', '▤画师串：纯爱二号'],
   );
   assert.equal(select().getAttribute('aria-label'), '切换当前画师串预设');
   assert.ok(control().parentElement.classList.contains('stia-actions--pairs'));
+});
+
+/* 2.5.1 失败的卡片上也有「换预设」。 */
+test('失败、被中断、已取消的卡片上也有「换预设」：只换预设，不替人重试；换完点「重试」才画', async t => {
+  const context = await presetSwitchSetup(t);
+  const { tag, settle } = context;
+  const generated = [];
+  const removed = [];
+  const failing = createCard({
+    tag,
+    api: { fileUrl: id => `/user/images/${id}.png` },
+    getState: () => context.state,
+    getSettings: () => context.settings,
+    onGenerate: (...args) => { generated.push(args); },
+    onOpenGallery() {},
+    onCancel() {},
+    onRemove: item => removed.push(item),
+    onFallback() {},
+    onAdjustRegenerate() {},
+    listPresets: async () => [],
+    getPresetChoices: () => context.choices,
+    onSwitchPreset: async id => {
+      context.switched.push(id);
+      context.choices = { ...context.choices, activeId: id };
+      return true;
+    },
+  });
+  const row = () => [...failing.root.querySelector('.stia-actions').children];
+  const labels = () => row().map(node => node.textContent.replace(/走十六方纯爱二号稳定组$/, ''));
+  const failedControl = () => failing.root.querySelector('.stia-card__preset');
+  const pick = id => {
+    const element = failing.root.querySelector('.stia-card__preset-select');
+    element.value = id;
+    element.dispatchEvent(new context.dom.window.Event('change', { bubbles: true }));
+  };
+
+  for (const [status, title] of [['failed', '生成失败'], ['interrupted', '生成被中断'], ['cancelled', '已取消']]) {
+    context.state = { tag: {}, attempts: [{ attemptId: `a-${status}`, status, provider: 'openai', presetId: 'cheap', errorMessage: '上游超时' }], results: [] };
+    failing.render();
+    assert.match(failing.root.textContent, new RegExp(title));
+    assert.deepEqual(labels(), ['↻重试', '▤预设：纯爱二号', '×删除'], `${title}的卡片上有`);
+    assert.equal(row()[1], failedControl());
+    assert.equal(failedControl().parentElement.classList.contains('stia-actions--pairs'), false, '三个按钮排一行');
+  }
+
+  pick('stable');
+  await settle();
+  assert.deepEqual(context.switched, ['stable']);
+  assert.deepEqual(generated, [], '换预设不会自己去重试：重试要花钱，得自己点');
+  assert.deepEqual(labels(), ['↻重试', '▤预设：稳定组', '×删除'], '按钮写上新的预设');
+
+  [...failing.root.querySelectorAll('button')].find(button => button.textContent === '↻重试').click();
+  assert.deepEqual(generated, [[tag, 'manual']], '点「重试」才画，用的是当前预设');
+
+  /* 设了备用线路、开了「调整后重绘」：换备用线路在前，换预设跟在后面，两个一行。 */
+  context.settings = { generationProvider: 'openai', executionMode: 'direct', backupPresetId: 'old', enablePromptOverrideRegenerate: true };
+  context.state = { tag: {}, attempts: [{ attemptId: 'a-again', status: 'failed', provider: 'openai', presetId: 'stable', errorMessage: '上游超时' }], results: [] };
+  failing.render();
+  assert.deepEqual(labels(), ['↻重试', '⇄换备用线路', '▤预设：稳定组', '✎调整后重绘', '×删除']);
+  assert.ok(failedControl().parentElement.classList.contains('stia-actions--pairs'));
+
+  /* 只有一个预设：没有。 */
+  context.choices = { ...context.choices, items: [{ id: 'stable', name: '稳定组' }] };
+  failing.render();
+  assert.equal(failedControl(), null);
+  assert.equal(removed.length, 0);
 });

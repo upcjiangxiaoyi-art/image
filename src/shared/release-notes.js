@@ -2,6 +2,7 @@
    设置页最下面的「最近更新」也能展开看。
    每发一版在最前面加一条；测试会检查第一条的版本号等于当前版本，忘了加就过不了。只留最近十来条。 */
 export const RELEASE_NOTES = Object.freeze([
+  { version: '2.5.1', date: '2026-11-12', summary: '失败的卡片上也能「换预设」，换完点「重试」就用新预设' },
   { version: '2.5.0', date: '2026-11-12', summary: '出图后的卡片上「参考重画」旁边加「换预设」，不用进设置页' },
   { version: '2.4.0', date: '2026-11-12', summary: '画廊索引拆成小文件：出一张图只上传一小份，不再整份重传' },
   { version: '2.3.0', date: '2026-11-12', summary: '面板标题旁显示版本号；更新后第一次打开会提示这次改了什么' },
@@ -12,7 +13,6 @@ export const RELEASE_NOTES = Object.freeze([
   { version: '2.0.0', date: '2026-11-08', summary: '聊天里每一楼只留引用，出图不再保存聊天；旧聊天可「整理旧数据」' },
   { version: '1.10.0', date: '2026-11-08', summary: '参考图组不跟 API 预设走，每个角色卡记住自己用哪一组' },
   { version: '1.9.0', date: '2026-11-07', summary: '画廊格子用缩略图，点开、下载还是原图' },
-  { version: '1.8.0', date: '2026-11-05', summary: '参考图（图生图）：角色参考图、卡片上「参考重画」' },
 ]);
 
 function parts(version) {
