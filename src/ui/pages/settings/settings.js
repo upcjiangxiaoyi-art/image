@@ -2,6 +2,7 @@ import { createGalleryPage } from '../gallery/gallery.js';
 import { VERSION } from '../../../shared/constants.js';
 import { RELEASE_NOTES } from '../../../shared/release-notes.js';
 import { describeBytes } from '../../state/tag-footprint.js';
+import { describeStorage } from './storage-status.js';
 import {
   NOVELAI_MODELS,
   NOVELAI_SAMPLERS,
@@ -1719,6 +1720,23 @@ export function createToolPanel({ api, store, onError = () => {} }) {
     }
   });
   backfillThumbnails.classList.add('stia-button--full');
+  /* 2.4.0 画廊索引、生成记录拆成小文件存：这里写着现在是拆开的还是整份的，拆分没成功也能看到原因。 */
+  const storageHeading = document.createElement('h4');
+  storageHeading.className = 'stia-subheading';
+  storageHeading.textContent = '数据文件';
+  const storageNotice = document.createElement('p');
+  storageNotice.className = 'stia-muted stia-storage-status';
+  storageNotice.textContent = '画廊索引和生成记录拆成小文件存在酒馆里，出一张图只重写其中一小份。';
+  /* 只是给人看一眼的状态：读不到就留着上面那句说明，不弹错。 */
+  async function loadStorageStatus() {
+    if (typeof api.storageStatus !== 'function') return;
+    try {
+      const lines = describeStorage(await api.storageStatus());
+      if (lines.length) storageNotice.textContent = lines.join('\n');
+    } catch {
+      /* 留着默认的说明。 */
+    }
+  }
   appearanceSection.append(
     appearanceTitle,
     themeField,
@@ -1732,6 +1750,8 @@ export function createToolPanel({ api, store, onError = () => {} }) {
     thumbnailHeading,
     thumbnailNotice,
     backfillThumbnails,
+    storageHeading,
+    storageNotice,
   );
 
   const warning = document.createElement('p');
@@ -2011,6 +2031,7 @@ export function createToolPanel({ api, store, onError = () => {} }) {
     showTab(tabName);
     /* 打开面板时重读参考图组：换了聊天，「当前角色出图用」要跟着换。 */
     void loadReferenceSets();
+    void loadStorageStatus();
     close.focus();
   }
 

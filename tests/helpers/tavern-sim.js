@@ -27,6 +27,20 @@ const json = (status, payload) => new Response(JSON.stringify(payload), {
   headers: { 'Content-Type': 'application/json' },
 });
 
+/* 酒馆用 res.sendFile 发用户文件，ETag 是 W/"大小-修改时间"。这里按内容算，效果一样：内容变了 ETag 就变。 */
+function etagOf(text) {
+  let hash = 0;
+  for (let index = 0; index < text.length; index += 1) hash = (Math.imul(hash, 31) + text.charCodeAt(index)) >>> 0;
+  return `W/"${Buffer.byteLength(text).toString(16)}-${hash.toString(16)}"`;
+}
+
+function headerOf(headers, name) {
+  if (!headers) return null;
+  if (typeof headers.get === 'function') return headers.get(name);
+  const key = Object.keys(headers).find(item => item.toLowerCase() === name.toLowerCase());
+  return key ? headers[key] : null;
+}
+
 export function createTavern({
   chatId = '钟由时 - 2026-11-01@20h59m56s197ms',
   characterKey = 'char:zhong.png',
@@ -46,6 +60,11 @@ export function createTavern({
     upstreamGate: null,
     chatSaves: 0,
     fileWrites: [],
+    /* 每次用户文件上传：{ name, bytes（文件本身多大）, bodyBytes（请求体多大，base64 之后） }。 */
+    uploads: [],
+    /* 每次读用户文件：{ name, method, status, bytes（回了多少正文） }。 */
+    fileReads: [],
+    fileDeletes: [],
     rejectedFileNames: [],
     /* 用户文件上传要这么久才到服务器；页面在这之前没了，这次写就丢了。 */
     fileUploadLatencyMs: 0,
@@ -72,15 +91,47 @@ export function createTavern({
       if (tavern.failFilePrefixes.some(prefix => body.name.startsWith(prefix))) {
         return new Response('', { status: 500 });
       }
-      tavern.files.set(body.name, Buffer.from(body.data, 'base64').toString('utf8'));
+      const content = Buffer.from(body.data, 'base64');
+      tavern.files.set(body.name, content.toString('utf8'));
       tavern.fileWrites.push(body.name);
+      tavern.uploads.push({ name: body.name, bytes: content.length, bodyBytes: Buffer.byteLength(options.body) });
       return json(200, { path: `user/files/${body.name}` });
+    }
+    if (target === '/api/files/verify') {
+      const urls = JSON.parse(options.body).urls;
+      return json(200, Object.fromEntries(urls.map(item => [item, tavern.files.has(item.replace(/^user\/files\//, ''))])));
+    }
+    if (target === '/api/files/delete') {
+      const name = String(JSON.parse(options.body).path || '').replace(/^user\/files\//, '');
+      if (!tavern.files.has(name)) return new Response('File not found', { status: 404 });
+      tavern.files.delete(name);
+      tavern.fileDeletes.push(name);
+      return new Response('OK', { status: 200 });
     }
     if (target.startsWith('/user/files/')) {
       const name = decodeURIComponent(target.slice('/user/files/'.length).split('?')[0]);
-      return tavern.files.has(name)
-        ? new Response(tavern.files.get(name), { status: 200, headers: { 'Content-Type': 'application/json' } })
-        : new Response('Not Found', { status: 404 });
+      const method = options.method || 'GET';
+      const log = (status, bytes = 0) => tavern.fileReads.push({ name, method, status, bytes });
+      if (!tavern.files.has(name)) {
+        log(404);
+        return new Response('Not Found', { status: 404 });
+      }
+      const text = tavern.files.get(name);
+      const etag = etagOf(text);
+      if (method === 'HEAD') {
+        log(200);
+        return new Response(null, { status: 200, headers: { ETag: etag } });
+      }
+      /* express（fresh 模块）见到请求里有 Cache-Control: no-cache 就不比 ETag、直接回整份。浏览器会给
+         cache: 'no-store' 的请求自动补上这个头，除非请求自己带了 Cache-Control——所以没带的一律当成有 no-cache。 */
+      const cacheControl = headerOf(options.headers, 'Cache-Control');
+      const forcedReload = cacheControl === null || /(?:^|,)\s*no-cache\s*(?:,|$)/.test(cacheControl);
+      if (!forcedReload && headerOf(options.headers, 'If-None-Match') === etag) {
+        log(304);
+        return new Response(null, { status: 304, headers: { ETag: etag } });
+      }
+      log(200, Buffer.byteLength(text));
+      return new Response(text, { status: 200, headers: { 'Content-Type': 'application/json', ETag: etag } });
     }
     if (target === '/api/images/upload') {
       const body = JSON.parse(options.body);
@@ -116,13 +167,41 @@ export function createTavern({
   tavern.fileNames = prefix => [...tavern.files.keys()].filter(name => name.startsWith(prefix));
   tavern.readFile = name => JSON.parse(tavern.files.get(name));
   tavern.writeFile = (name, value) => tavern.files.set(name, JSON.stringify(value));
+  /* 服务器上现在算数的画廊记录 / 生成记录：有清单就按清单把各个分片合起来，没有就是旧的整份文件。
+     kind：'gallery'（记录在 results 里）或 'attempts'（在 attempts 里）。 */
+  const layout = kind => ({
+    manifest: `st-image-atelier-${kind}-index.json`,
+    segment: id => `st-image-atelier-${kind}-${id}.json`,
+    legacy: `st-image-atelier-${kind}.json`,
+    key: kind === 'gallery' ? 'results' : 'attempts',
+  });
+  tavern.segmentFiles = kind => {
+    const { manifest, segment } = layout(kind);
+    if (!tavern.files.has(manifest)) return [];
+    return tavern.readFile(manifest).segments.map(segment).filter(name => tavern.files.has(name));
+  };
+  tavern.records = kind => {
+    const { manifest, legacy, key } = layout(kind);
+    if (!tavern.files.has(manifest)) {
+      return tavern.files.has(legacy) ? Object.values(tavern.readFile(legacy)[key] || {}) : [];
+    }
+    return tavern.segmentFiles(kind).flatMap(name => Object.values(tavern.readFile(name)[key] || {}));
+  };
+  /* 把服务器上的这类记录全清空（模拟被上限清掉、文件丢了）。 */
+  tavern.clearRecords = kind => {
+    const { legacy, key } = layout(kind);
+    for (const name of [...tavern.segmentFiles(kind), ...(tavern.files.has(legacy) ? [legacy] : [])]) {
+      tavern.writeFile(name, { ...tavern.readFile(name), [key]: {} });
+    }
+  };
   tavern.readChat = () => JSON.parse(tavern.chatFile);
   return tavern;
 }
 
 /* 打开一次页面。flushDelayMs：各个文件延后合并写的时间（默认压到 20ms，测试跑得快）；
-   传 'production' 用线上的 1.5～2 秒，测「图刚画好就刷新」。 */
-export async function openPage(tavern, { flushDelayMs = 20 } = {}) {
+   传 'production' 用线上的 1.5～2 秒，测「图刚画好就刷新」。
+   thumbnailer：画廊缩略图用的假实现（默认不做缩略图）；thumbnailDelayMs：出图后多久做。 */
+export async function openPage(tavern, { flushDelayMs = 20, thumbnailer = null, thumbnailDelayMs } = {}) {
   if (tavern.current) throw new Error('上一个页面还开着：先 close() 再 openPage()');
   /* 让上一个页面剩下的微任务跑完（它们发的请求会落在「没有页面」上，再也回不来）。 */
   await sleep(5);
@@ -187,7 +266,8 @@ export async function openPage(tavern, { flushDelayMs = 20 } = {}) {
     galleryStore: createSillyTavernGalleryMetadataStore(compat, tavern.fetch, storeOptions),
     attemptStore: createSillyTavernAttemptStore(compat, tavern.fetch, storeOptions),
     chatTagStore: identity => createSillyTavernChatTagStore(compat, identity, tavern.fetch, storeOptions),
-    thumbnailer: null,
+    thumbnailer,
+    ...(thumbnailDelayMs === undefined ? {} : { thumbnailDelayMs }),
   });
   const store = createStore();
   const controller = createGenerationController({

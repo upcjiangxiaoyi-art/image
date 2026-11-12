@@ -1,15 +1,25 @@
-import { DirectError, bytesToBase64 } from './openai-direct.js';
+import { createSegmentedBackend } from './segmented-backend.js';
+import { sharedSegmentCache } from './segment-cache.js';
+import { createTavernFiles } from './tavern-files.js';
 
 /* 生成记录（attempt）的独立存储：和画廊元数据一样放在当前 ST 用户文件里，不再写进聊天。
    聊天里每一楼只留标签本身和图片引用；谁画过、画了多久、报了什么错都在这份文件里，按 tagId 关联。
    - 写入会合并：同一拍里的多次 put 只落一次盘；put() 返回的 promise 在这份记录真正写进文件后才 resolve，
      发上游请求之前要等它（防重复记录）。进度更新（下载中、保存中）只改内存，不落盘。
-   - 有上限：每个标签最多留 MAX_ATTEMPTS_PER_TAG 条、整份文件最多 MAX_ATTEMPTS_TOTAL 条，超过就删最早结束的；
-     还在画的不删。 */
+   - 有上限：每个标签最多留 MAX_ATTEMPTS_PER_TAG 条、总共最多 MAX_ATTEMPTS_TOTAL 条，超过就删最早结束的；
+     还在画的不删。
+   - 2.4.0 起和画廊索引一样拆成「一份清单 + 若干小文件」：记一笔只重写它所在的那一小份。
+     ATTEMPT_STORE_FILE 是 2.4.0 之前的整份文件，第一次打开时拆开，之后留在原地不再读写。 */
 export const ATTEMPT_STORE_FILE = 'st-image-atelier-attempts.json';
-export const ATTEMPT_STORE_URL = `/user/files/${ATTEMPT_STORE_FILE}`;
+export const ATTEMPT_INDEX_FILE = 'st-image-atelier-attempts-index.json';
+export const ATTEMPT_SEGMENT_PREFIX = 'st-image-atelier-attempts-';
+export const ATTEMPT_SEGMENT_BYTES = 96_000;
+export const ATTEMPT_SEGMENT_RECORDS = 80;
 export const MAX_ATTEMPTS_PER_TAG = 20;
 export const MAX_ATTEMPTS_TOTAL = 2000;
+/* 总数超出上限这么多条才清一次、一次清回上限：不然满了以后每记一笔都要删一条最早的，
+   最早那个分片也就每次都要跟着重写。 */
+export const ATTEMPT_PRUNE_SLACK = 100;
 const DOCUMENT_SCHEMA_VERSION = 1;
 const ACTIVE_STATUSES = new Set(['queued', 'generating', 'downloading', 'saving']);
 
@@ -45,13 +55,20 @@ export function createAttemptStore({
   writeDocument,
   perTagLimit = MAX_ATTEMPTS_PER_TAG,
   totalLimit = MAX_ATTEMPTS_TOTAL,
+  /* 总数超过 totalLimit + totalSlack 才清，一次清回 totalLimit。 */
+  totalSlack = 0,
   flushDelayMs = 0,
+  /* 给分片存储用：哪条记录变了、内存里那份活的文档是哪个。 */
+  noteChange,
+  attach,
+  expedite,
 }) {
   let document = null;
   let initializePromise = null;
   let writeChain = Promise.resolve();
   let pending = null;
   const byTag = new Map();
+  const mark = typeof noteChange === 'function' ? noteChange : () => {};
 
   function index(attempt) {
     if (!byTag.has(attempt.tagId)) byTag.set(attempt.tagId, new Set());
@@ -89,6 +106,7 @@ export function createAttemptStore({
       document = normalizeDocument(raw);
       byTag.clear();
       for (const attempt of Object.values(document.attempts)) index(attempt);
+      attach?.(document);
       return api;
     })();
     try {
@@ -139,6 +157,7 @@ export function createAttemptStore({
     if (!attempt) return false;
     unindex(attempt);
     delete document.attempts[attemptId];
+    mark(attemptId);
     return true;
   }
 
@@ -162,7 +181,7 @@ export function createAttemptStore({
       if (list.length > perTagLimit) dropFrom(list, perTagLimit);
     }
     const all = Object.values(document.attempts);
-    if (all.length > totalLimit) dropFrom(all, totalLimit);
+    if (all.length > totalLimit + totalSlack) dropFrom(all, totalLimit);
     return removed;
   }
 
@@ -172,6 +191,7 @@ export function createAttemptStore({
     if (previous && previous.tagId !== attempt.tagId) unindex(previous);
     document.attempts[attempt.attemptId] = clone(attempt);
     index(document.attempts[attempt.attemptId]);
+    mark(attempt.attemptId);
   }
 
   const api = {
@@ -224,6 +244,7 @@ export function createAttemptStore({
     },
     /* 等写完；还在等合并写的立刻写。 */
     flush() {
+      expedite?.();
       return pending ? scheduleFlush({ immediate: true }) : writeChain;
     },
   };
@@ -233,47 +254,46 @@ export function createAttemptStore({
 /* 终态记录（画完、失败）不急：2 秒内的几次写合成一次，也错开出图返回那一瞬间；发请求前的那次用 immediate。 */
 export const ATTEMPT_FLUSH_DELAY_MS = 2000;
 
+/* 酒馆用户文件里的生成记录。options 和画廊索引那边一样：flushDelayMs、cache、segmentBytes、segmentRecords，
+   再加 createAttemptStore 的上限参数。返回的存储多一个 storage（status()、whenIdle()）。 */
 export function createSillyTavernAttemptStore(compat, fetchImpl = globalThis.fetch, options = {}) {
-  return createAttemptStore({
-    flushDelayMs: ATTEMPT_FLUSH_DELAY_MS,
-    ...options,
-    async readDocument() {
-      const response = await fetchImpl(`${ATTEMPT_STORE_URL}?t=${Date.now()}`, {
-        method: 'GET',
-        credentials: 'same-origin',
-        cache: 'no-store',
-      });
-      if (response.status === 404) return emptyDocument();
-      if (!response.ok) {
-        throw new DirectError('LOCAL_SAVE_FAILED', `读取生成记录失败（HTTP ${response.status}）`, response.status);
-      }
-      try {
-        return await response.json();
-      } catch {
-        throw new DirectError('LOCAL_SAVE_FAILED', '生成记录文件不是有效 JSON');
-      }
-    },
-    async writeDocument(document) {
-      const bytes = new TextEncoder().encode(JSON.stringify(document));
-      const response = await fetchImpl('/api/files/upload', {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: compat.headers(),
-        body: JSON.stringify({
-          name: ATTEMPT_STORE_FILE,
-          data: bytesToBase64(bytes),
-        }),
-      });
-      const payload = await response.json().catch(() => null);
-      if (!response.ok) {
-        throw new DirectError(
-          'LOCAL_SAVE_FAILED',
-          payload?.error || `写入生成记录失败（HTTP ${response.status}）`,
-          response.status,
-        );
-      }
-    },
+  const {
+    cache = sharedSegmentCache(),
+    segmentBytes = ATTEMPT_SEGMENT_BYTES,
+    segmentRecords = ATTEMPT_SEGMENT_RECORDS,
+    backend: backendOptions = {},
+    ...storeOptions
+  } = options;
+  const backend = createSegmentedBackend({
+    files: createTavernFiles(compat, fetchImpl, { cache, label: '生成记录' }),
+    label: '生成记录',
+    manifestFile: ATTEMPT_INDEX_FILE,
+    segmentPrefix: ATTEMPT_SEGMENT_PREFIX,
+    legacyFile: ATTEMPT_STORE_FILE,
+    recordsKey: 'attempts',
+    legacyRecords: value => (value?.attempts && typeof value.attempts === 'object' && !Array.isArray(value.attempts)
+      ? Object.values(value.attempts)
+      : []),
+    idOf: attempt => attempt?.attemptId,
+    orderOf: attempt => attempt?.createdAt,
+    maxSegmentBytes: segmentBytes,
+    maxSegmentRecords: segmentRecords,
+    /* 手机网络抖一下就整个初始化失败太亏：读分片失败先重试两次。 */
+    retryDelaysMs: [300, 1200],
+    ...backendOptions,
   });
+  const store = createAttemptStore({
+    flushDelayMs: ATTEMPT_FLUSH_DELAY_MS,
+    totalSlack: ATTEMPT_PRUNE_SLACK,
+    ...storeOptions,
+    readDocument: backend.readDocument,
+    writeDocument: backend.writeDocument,
+    noteChange: backend.noteChange,
+    attach: backend.attach,
+    expedite: backend.expedite,
+  });
+  store.storage = backend;
+  return store;
 }
 
 export function createMemoryAttemptStore(initialDocument = null, options = {}) {

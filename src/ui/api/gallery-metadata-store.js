@@ -1,8 +1,17 @@
 import { SCHEMA_VERSION } from '../../shared/constants.js';
-import { DirectError, bytesToBase64 } from './openai-direct.js';
+import { createSegmentedBackend } from './segmented-backend.js';
+import { sharedSegmentCache } from './segment-cache.js';
+import { createTavernFiles } from './tavern-files.js';
 
+/* 2.4.0 起画廊索引拆成「一份清单 + 若干小文件」：改一张图的记录只重写它所在的那一小份。
+   GALLERY_METADATA_FILE 是 2.4.0 之前的整份文件，第一次打开时拆开，之后留在原地当备份，不再读写。 */
 export const GALLERY_METADATA_FILE = 'st-image-atelier-gallery.json';
-export const GALLERY_METADATA_URL = `/user/files/${GALLERY_METADATA_FILE}`;
+export const GALLERY_INDEX_FILE = 'st-image-atelier-gallery-index.json';
+export const GALLERY_SEGMENT_PREFIX = 'st-image-atelier-gallery-';
+/* 一个分片最多这么多字节、这么多条：提示词长的时候十几张图一份，短的时候一百来张一份。
+   上限小，出一张图要上传的就少；上限大，分片个数少，打开页面时要问服务器的次数就少。 */
+export const GALLERY_SEGMENT_BYTES = 160_000;
+export const GALLERY_SEGMENT_RECORDS = 150;
 const DOCUMENT_SCHEMA_VERSION = 1;
 /* 出图返回那一瞬间酒馆自己要存聊天、要重画，画廊文件晚 1.5 秒再写，几张图连着出也只写一次。 */
 export const GALLERY_FLUSH_DELAY_MS = 1500;
@@ -73,12 +82,15 @@ function normalizeDocument(value) {
 }
 
 /* 改动先落在内存里，文件延后合并写：flushDelayMs 内的几次改动只写一次盘，写的时候直接序列化内存里的
-   文档，不再整份深拷贝。写失败内存照旧是最新的，下一次写一起带上；要等写完就 flush()。 */
-export function createGalleryMetadataStore({ readDocument, writeDocument, flushDelayMs = 0 }) {
+   文档，不再整份深拷贝。写失败内存照旧是最新的，下一次写一起带上；要等写完就 flush()。
+   noteChange(resultId)、attach(document)、expedite() 是给分片存储用的：哪条记录变了、内存里那份活的文档
+   是哪个、接下来的写入要当场发出去（页面要转入后台了）。 */
+export function createGalleryMetadataStore({ readDocument, writeDocument, flushDelayMs = 0, noteChange, attach, expedite }) {
   let document = null;
   let initializePromise = null;
   let writeChain = Promise.resolve();
   let pending = null;
+  const mark = typeof noteChange === 'function' ? noteChange : () => {};
 
   function fire(entry) {
     if (pending === entry) pending = null;
@@ -123,18 +135,19 @@ export function createGalleryMetadataStore({ readDocument, writeDocument, flushD
     initializePromise = (async () => {
       const raw = await readDocument();
       document = normalizeDocument(raw);
+      attach?.(document);
       /* 读到的是别的格式（fork 1.6.2 的 items 数组）就立刻按本格式改写一遍，
          免得文件一直停在旧格式上。 */
       const foreignFormat = documentRecords(raw).length > 0
         && !(raw?.results && typeof raw.results === 'object' && !Array.isArray(raw.results));
-      const before = JSON.stringify(document.results);
       for (const item of legacyItems || []) {
         if (!item?.resultId || item.status !== 'available') continue;
         if (!document.results[item.resultId]) {
           document.results[item.resultId] = normalizeGalleryRecord(item);
+          mark(item.resultId);
         }
       }
-      if (foreignFormat || before !== JSON.stringify(document.results) || (legacyItems || []).length) {
+      if (foreignFormat || (legacyItems || []).length) {
         await touch({ immediate: true });
       }
       return api;
@@ -178,6 +191,7 @@ export function createGalleryMetadataStore({ readDocument, writeDocument, flushD
       for (const item of items || []) {
         if (!item?.resultId || item.status !== 'available') continue;
         document.results[item.resultId] = normalizeGalleryRecord(item);
+        mark(item.resultId);
         changed = true;
       }
       if (changed) touch();
@@ -188,6 +202,7 @@ export function createGalleryMetadataStore({ readDocument, writeDocument, flushD
       const current = document.results[resultId];
       if (!current) return null;
       document.results[resultId] = normalizeGalleryRecord({ ...current, ...patch, resultId });
+      mark(resultId);
       touch();
       return api.get(resultId);
     },
@@ -195,7 +210,10 @@ export function createGalleryMetadataStore({ readDocument, writeDocument, flushD
       ready();
       const existingIds = (resultIds || []).filter(resultId => document.results[resultId]);
       if (!existingIds.length) return;
-      for (const resultId of existingIds) delete document.results[resultId];
+      for (const resultId of existingIds) {
+        delete document.results[resultId];
+        mark(resultId);
+      }
       touch();
     },
     remove(resultId) {
@@ -203,53 +221,55 @@ export function createGalleryMetadataStore({ readDocument, writeDocument, flushD
     },
     /* 等写完；还在等合并写的立刻写（页面转入后台前、整理聊天前都用它）。 */
     flush() {
+      expedite?.();
       return pending ? scheduleFlush({ immediate: true }) : writeChain;
     },
   };
   return api;
 }
 
+/* 酒馆用户文件里的画廊索引。options：
+   - flushDelayMs：合并写的间隔；
+   - cache：分片的本机缓存（默认浏览器的 IndexedDB；传 null 不用缓存）；
+   - segmentBytes / segmentRecords：一个分片的上限（测试里调小）。
+   返回的存储多一个 storage：status() 给设置页显示现在是拆开的还是整份的，whenIdle() 等后台的活做完。 */
 export function createSillyTavernGalleryMetadataStore(compat, fetchImpl = globalThis.fetch, options = {}) {
-  return createGalleryMetadataStore({
-    flushDelayMs: GALLERY_FLUSH_DELAY_MS,
-    ...options,
-    async readDocument() {
-      const response = await fetchImpl(`${GALLERY_METADATA_URL}?t=${Date.now()}`, {
-        method: 'GET',
-        credentials: 'same-origin',
-        cache: 'no-store',
-      });
-      if (response.status === 404) return emptyDocument();
-      if (!response.ok) {
-        throw new DirectError('LOCAL_SAVE_FAILED', `读取画廊元数据失败（HTTP ${response.status}）`, response.status);
-      }
-      try {
-        return await response.json();
-      } catch {
-        throw new DirectError('LOCAL_SAVE_FAILED', '画廊元数据文件不是有效 JSON');
-      }
-    },
-    async writeDocument(document) {
-      const bytes = new TextEncoder().encode(JSON.stringify(document));
-      const response = await fetchImpl('/api/files/upload', {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: compat.headers(),
-        body: JSON.stringify({
-          name: GALLERY_METADATA_FILE,
-          data: bytesToBase64(bytes),
-        }),
-      });
-      const payload = await response.json().catch(() => null);
-      if (!response.ok) {
-        throw new DirectError(
-          'LOCAL_SAVE_FAILED',
-          payload?.error || `写入画廊元数据失败（HTTP ${response.status}）`,
-          response.status,
-        );
-      }
-    },
+  const {
+    cache = sharedSegmentCache(),
+    segmentBytes = GALLERY_SEGMENT_BYTES,
+    segmentRecords = GALLERY_SEGMENT_RECORDS,
+    backend: backendOptions = {},
+    ...storeOptions
+  } = options;
+  const backend = createSegmentedBackend({
+    files: createTavernFiles(compat, fetchImpl, { cache, label: '画廊元数据' }),
+    label: '画廊元数据',
+    manifestFile: GALLERY_INDEX_FILE,
+    segmentPrefix: GALLERY_SEGMENT_PREFIX,
+    legacyFile: GALLERY_METADATA_FILE,
+    recordsKey: 'results',
+    legacyRecords: documentRecords,
+    idOf: record => record?.resultId,
+    orderOf: record => record?.createdAt,
+    maxSegmentBytes: segmentBytes,
+    maxSegmentRecords: segmentRecords,
+    /* 手机网络抖一下就整个初始化失败太亏：读分片失败先重试两次。 */
+    retryDelaysMs: [300, 1200],
+    /* 画廊记录丢了图就从画廊里消失：写分片之前先看一眼别的设备有没有往里加过，加过的原样带上。 */
+    passThroughForeign: true,
+    ...backendOptions,
   });
+  const store = createGalleryMetadataStore({
+    flushDelayMs: GALLERY_FLUSH_DELAY_MS,
+    ...storeOptions,
+    readDocument: backend.readDocument,
+    writeDocument: backend.writeDocument,
+    noteChange: backend.noteChange,
+    attach: backend.attach,
+    expedite: backend.expedite,
+  });
+  store.storage = backend;
+  return store;
 }
 
 export function createMemoryGalleryMetadataStore(initialDocument = null, options = {}) {

@@ -1021,6 +1021,12 @@
   font-size: 11px;
 }
 
+/* 设置页「数据文件」：画廊索引、生成记录各一行。 */
+.stia-storage-status {
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
 .stia-prompt {
   margin: 0;
 }

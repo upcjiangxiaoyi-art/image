@@ -14,8 +14,8 @@ MESSAGE_RECEIVED (live)
   -> magic bytes + 64 MB 大小校验（4K 的 PNG 装得下）
   -> POST /api/images/upload
   -> 图片进入当前 ST 用户图片目录
-  -> 画廊元数据写入当前用户文件 st-image-atelier-gallery.json
-  -> 生成记录（attempt）写入当前用户文件 st-image-atelier-attempts.json
+  -> 画廊元数据写入当前用户文件里它所在的那个分片 st-image-atelier-gallery-<分片>.json
+  -> 生成记录（attempt）写入它所在的那个分片 st-image-atelier-attempts-<分片>.json
   -> 出图后把图片引用（resultId、路径、时间）写进侧文件；聊天不保存
 ```
 
@@ -25,7 +25,7 @@ MESSAGE_RECEIVED (live)
 
 - 聊天：只在出现新标签（`reconcileMessage` 写引用）和用户删标签时才动，走 `compat.saveSoon()`（并进酒馆的 `saveChatDebounced`，没有就自己拖 1 秒）；`MESSAGE_RECEIVED` 时引用已经同步写进内存里的 `message.extra`，酒馆紧跟着的保存会带上。出图、读状态、删图、清理都不保存聊天。只有「整理旧数据」用 `compat.save()` 当场写完。酒馆的 `saveChatConditional` 自带互斥。
 - 侧文件（`chat-tag-store.js`，`CHAT_TAG_FLUSH_DELAY_MS` 1.5 秒）延后合并写；序列化时 tagId 排序、没有时间戳，和上次写进文件的一样就不写，空文档不建文件。每个聊天一份，切过的聊天在内存里留几个。
-- 文件：画廊元数据（`GALLERY_FLUSH_DELAY_MS` 1.5 秒）和生成记录（`ATTEMPT_FLUSH_DELAY_MS` 2 秒）延后合并写，写时直接序列化内存文档；发上游请求前的防重复记录用 `immediate` 当拍落盘。写失败内存不回退，下一次写一起带上；要等写完就 `flush()`。
+- 文件：画廊元数据（`GALLERY_FLUSH_DELAY_MS` 1.5 秒）和生成记录（`ATTEMPT_FLUSH_DELAY_MS` 2 秒）延后合并写，写时直接序列化内存文档；发上游请求前的防重复记录用 `immediate` 当拍落盘。写失败内存不回退，下一次写一起带上；要等写完就 `flush()`。2.4.0 起两者都拆成分片存，一次写只序列化、上传改过的分片（见下面「分片存储」）。
 - 重绘：`store` 的通知带 `change.tagId`，渲染器只重画那一张卡；`change.all`（设置、健康状态）才全部重画。画完一楼的事件走 `scheduleMessage` 防抖，与 DOM 监听合成一次。生成期间（`GENERATION_STARTED` 到结束 / 中止 / 新楼 / 换聊天）撤掉 `#chat` 的 MutationObserver，接回时补查最后一楼和撤哨期间渲染出来、还露着 `<draw>` 的楼，最多撤 5 分钟自动接回。
 - 图片：上游 base64 原样上传（只解开头几十个字节认格式、按长度算大小），`fetchJson` 成功时直接 `response.json()`，上传完释放引用。自动清理在出图后 3 秒再查，两条规则都关着时不读画廊。出图后 2 秒在后台做画廊缩略图（`media/thumbnail.js`：createImageBitmap + canvas，长边 768 的 JPEG，存 `st-image-atelier-thumbs/`，记录上 `thumbnailPath`），画廊格子用 `thumbnailUrl`，看图器、下载、参考重画、卡片用原图；`removeFile` 连带删缩略图；`backfillThumbnails` 给旧图补，画廊页翻到缺的也会一张张补。
 
@@ -37,9 +37,10 @@ MESSAGE_RECEIVED (live)
   - `resultRefs`：每张图只记 `resultId`、服务器上的路径、时间；每张卡最多 10 张（收藏的不计入删除）
   - 自动生成与删除抑制标记
   - 一张卡除提示词外不到 2 KB；旧版的 `attempts` / `results` / `resultIds` 只在旧数据里还有时带着，读状态或「瘦身当前聊天」时搬走
-- SillyTavern 当前用户文件 `st-image-atelier-attempts.json`（`src/ui/api/attempt-store.js`）
+- SillyTavern 当前用户文件 `st-image-atelier-attempts-index.json`（清单）+ `st-image-atelier-attempts-<分片>.json`（`src/ui/api/attempt-store.js`）
   - 生成记录按 `attemptId` 存、按 `tagId` 关联；存之前精简（不存画师串整段、拼好的提示词，和标签一样的基础提示词也不存）
-  - 每张卡最多 20 条、整份最多 2000 条，超过删最早结束的；写入合并，发上游请求前先落盘，进度更新只改内存
+  - 每张卡最多 20 条、总共最多 2000 条（超出 100 条才清一次），超过删最早结束的；写入合并，发上游请求前先落盘，进度更新只改内存
+  - 一个分片最多 96 KB / 80 条；2.4.0 之前的整份文件 `st-image-atelier-attempts.json` 拆分后留在原地，不再读写
 - `extension_settings.stImageAtelier`
   - 当前生图引擎、普通设置和 GPT API 预设
   - 参考图组 `referenceSets`（每组最多 4 张，只记酒馆里的路径，文件在 `st-image-atelier-refs/`；`useReferences`、`referenceFidelity` 跟着组）、默认组 `defaultReferenceSetId`（'' = 默认不带）、按角色卡的绑定 `referenceBindings`（键 `char:<头像文件名>` / `group:<群 id>`，值 '' = 这个角色不带）。1.10.0 之前记在预设上的由 `migrateReferenceSets` 迁成组（同样几张只留一组），预设上不再带
@@ -47,15 +48,49 @@ MESSAGE_RECEIVED (live)
 - SillyTavern 当前用户文件 `st-image-atelier-chat-<聊天名>-<指纹>.json`（每个聊天一份，`chat-tag-store.js`）
   - 标签状态按 `tagId`：`promptHash`、`latestResultId`、`resultRefs`（每张图只记 id、路径、时间）、`autoAttempted`、`autoSuppressed`
   - 文件名 = 前缀 + 聊天名（截短、去掉文件名里不能用的字符）+ 角色和聊天名一起算的指纹；酒馆的 files 接口不认子目录，只能平铺一层
-- SillyTavern 当前用户文件 `st-image-atelier-gallery.json`
+- SillyTavern 当前用户文件 `st-image-atelier-gallery-index.json`（清单）+ `st-image-atelier-gallery-<分片>.json`（`src/ui/api/gallery-metadata-store.js`）
   - 独立画廊索引；提示词只保留 `prompt` / `negativePrompt` 各一份；另记画质、尺寸、开始时间，生成记录清掉后卡片信息照样显示
   - 删除时直接移除记录，不保留墓碑
+  - 一个分片最多 160 KB / 150 条；2.4.0 之前的整份文件 `st-image-atelier-gallery.json` 拆分后留在原地当备份，不再读写
+- 浏览器本机 IndexedDB `stImageAtelier.files`（`src/ui/api/segment-cache.js`）
+  - 分片正文的缓存：文件名 → `{ etag, text }`。只是缓存，每次打开都拿 ETag 去问酒馆，没变（304）才用
 - SillyTavern `accountStorage`
   - 彼此隔离的 GPT API Key 与 NovelAI Persistent API Token
 - SillyTavern 用户图片目录
   - `st-image-atelier/<resultId>.<ext>`
 
 聊天的每一楼只有 `extra.stImageAtelier = { messageUuid, tagIds }`（`tag-identity.js`：`reconcileMessage` 按提示词指纹对上 tagId，`locateTag` 在当前版本和滑动存档里找），图片 Base64、原始 API 响应、提示词的复制品都不写入聊天或扩展设置。保存聊天前 `src/ui/state/tag-footprint.js` 仍会检查，单楼超过 20 KB（只有还没整理的旧格式楼才会）就 `console.warn` 并列出各字段大小。
+
+## 分片存储（2.4.0）
+
+画廊索引和生成记录各是一大份 `{ [id]: 记录 }`。2.4.0 之前整份是一个文件，改一条就整份重新上传；现在拆成「一份清单 + 若干分片」，改哪条只重写它所在的分片。三个模块：
+
+- `src/ui/api/segmented-backend.js`：拆分引擎。两个存储原来的 `readDocument` / `writeDocument` 换成它的；存储本身（内存里的文档、合并写、`flush()`）没动，只多了两个钩子：`noteChange(id)`（哪条记录的内容变了）和 `attach(document)`（内存里那份活的文档）。记录的增删是每次写之前整份扫一遍对出来的，不依赖钩子有没有漏报。
+- `src/ui/api/tavern-files.js`：酒馆用户文件的读、写、删、看文件头。
+- `src/ui/api/segment-cache.js`：分片正文在浏览器本机（IndexedDB）的缓存，每个操作有超时，超时、出错一次这次页面里就不再用。
+
+文件：清单 `…-index.json` 是 `{ schemaVersion, segments: [分片 id…], legacy }`；分片 `…-<id>.json` 是 `{ schemaVersion, results | attempts: { [id]: 记录 } }`，都没有时间戳。从旧文件拆出来的分片叫 `m0001`、`m0002`…（按时间排好依次装，同一份旧文件每次拆出来都一样）；之后新开的叫 `s` + 时间 + 随机数。
+
+两种状态：
+
+- legacy：服务器上还没有清单，旧的整份文件说了算，读、写都照旧。同时在后台把分片一小批一小批传上去，全部传完才写清单，清单写上去那一刻换成 segmented。中途页面关了、哪一步失败了，下次打开从头再来（m 分片重来就是覆盖；开始前用 `/api/files/verify` 一次问完哪些文件已经在了，在的读回来和要写的一模一样就跳过）；失败后过一分钟、下一次有东西要写时也会接着拆。全新安装也走这条路，只是没有分片要传，直接写清单。
+- segmented：清单和分片说了算。旧文件留在原地不再读写（拆分后两周内每次打开看一眼它的文件头，被没刷新的旧版页面改过就把拆分之后新画的接过来）。
+
+保证和它们各自防的是什么：
+
+- 出图那条路上只有「上传改过的分片」一种请求，同一拍里发出（页面转入后台时不等定时器、不等别的请求回来）。清单只在后台改。
+- 新记录放尾巴分片。尾巴满了，先在清单上登记下一个，登记成功之后新记录才往里放；登记好之前还放在原来那个里（上限是软的）。所以页面在任何时候被杀掉，都不会有记录落在清单以外。清单上有、文件还不存在的分片当成空的。
+- 改清单是「读服务器上现在的清单 → 加上我新开的、去掉我清空的 → 写回」，不是拿手里的清单盖上去：别的设备新开的分片不会被开了很久的页面挤掉。
+- 写分片之前（一轮改动一次）先看服务器上那份的文件头：酒馆的 ETag 是「大小-修改时间」，大小和我上次读到、写上去的不一样就是别的设备动过，把它读回来，里面我不认识的记录原样带上。平常的写入等这一眼的回音回来再发（最多等 3 秒，`REFRESH_WAIT_MS`）；存储的 `flush()` 会先调 `expedite()`，之后两秒内的写入不等（页面要转入后台了），回音比写还晚、又发现写已经把别人的记录盖掉了，就补写一次。
+- 隔了一阵（30 秒）才又往某个分片写，写完回头确认它还在清单上，不在就补回去（开了很久的页面手里的尾巴可能已经被别的设备清空、摘掉了）。
+- 清空了、空的那版已经写上去、又不是尾巴的分片从清单上摘掉，再删文件（没有删除接口就只摘不删）。摘之前把服务器上那份读回来确认真的是空的。清单上有、文件不存在的不摘：那可能是别的页面刚登记、还没用的。
+- 两台设备同时第一次打开新版、都动手拆：m 分片的内容只由旧文件决定，两台写出来一模一样；拆的过程中和拆完以后新来的记录一律进各自新开的分片，不往 m 分片里加；每传一批之前看一眼，服务器上已经有清单就不再拆，把自己内存里的记录和现成的分片对一遍后改用它们。
+- 分片读失败（不是 404）、不是合法 JSON：整个初始化失败并报错。宁可读失败，也不把读不到当成空的，再把真的数据覆盖掉。网络断了、5xx 先重试两次；4xx 和不是 JSON 的不重试。
+- 分片多大一律按正文的字节数算。ETag 里的大小只在和正文对得上时才信（`sizeEtags`），信了才靠看文件头判断有没有被别人动过；对不上就退回到隔 30 秒才整份读一次。
+- 读分片带本机缓存的 ETag（`If-None-Match`，`cache: 'no-store'` 加 `?t=` 照旧，不靠浏览器的 HTTP 缓存），没变回 304 不传正文。条件请求必须自己带 `Cache-Control: max-age=0`：不带的话浏览器会补上 `Cache-Control: no-cache`，express 的 `fresh` 见了就不比 ETag。
+- 修改时间只精确到秒的文件系统上，连着两次写大小又一样时 ETag 分不出新旧，所以新的一版和上一版一样大时在末尾多垫一个空格。
+
+还留着的局限：开了很久的页面内存里的记录是旧的，它往分片里写的是自己那一版（别的设备加的会带上，但别的设备删掉、改过的那几条会被它写回旧样子）；两台设备在一两秒内同时往同一个分片写，后写的可能盖掉先写的那一条，要等先写的那台再写一次才补回来。
 
 ## 整理旧数据
 

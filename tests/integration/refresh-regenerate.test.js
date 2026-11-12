@@ -124,9 +124,8 @@ test('侧文件丢了（2.0.0 中文聊天名的侧文件根本写不进酒馆�
 
   /* 侧文件没了，自动那条生成记录也被上限清掉了：标记全丢。 */
   tavern.files.delete(sideFiles[0]);
-  const attempts = tavern.readFile('st-image-atelier-attempts.json');
-  attempts.attempts = {};
-  tavern.writeFile('st-image-atelier-attempts.json', attempts);
+  assert.equal(tavern.records('attempts').length, 1, '生成记录写上了');
+  tavern.clearRecords('attempts');
   const savesBefore = tavern.chatSaves;
 
   for (let round = 1; round <= 2; round += 1) {
@@ -184,8 +183,7 @@ test('已经被 2.0.0～2.0.2 换过 ID 的聊天（图在画廊里、卡片上�
   }
   assert.equal(tavern.chatSaves, savesBefore, '认领不动聊天');
   await page.settle(200);
-  const gallery = Object.values(tavern.readFile('st-image-atelier-gallery.json').results);
-  assert.deepEqual(gallery.map(record => record.tagId).sort(), [...reminted].sort(), '画廊记录改挂到现在的 ID 上');
+  assert.deepEqual(tavern.records('gallery').map(record => record.tagId).sort(), [...reminted].sort(), '画廊记录改挂到现在的 ID 上');
 
   page = await refresh(tavern, page);
   await page.churn();
@@ -222,12 +220,12 @@ test('图刚画好就刷新（各文件还在等 1.5～2 秒的合并写）：�
   await page.waitFor(() => tavern.upstreamCalls === 1);
   const [tagId] = page.tagIds(index);
   await page.waitFor(() => page.state(tagId)?.results?.length === 1, { label: '图上卡片' });
-  assert.equal(tavern.files.has('st-image-atelier-gallery.json'), false, '画廊文件还没到合并写的时间');
+  assert.equal(tavern.records('gallery').length, 0, '画廊记录还没到合并写的时间');
 
   /* 手机切到后台：页面发 visibilitychange（index.js 接着调 api.flushPending），然后被系统杀掉。 */
   await page.api.flushPending();
   page.close();
-  assert.equal(tavern.files.has('st-image-atelier-gallery.json'), true, '转入后台时画廊记录写掉了');
+  assert.equal(tavern.records('gallery').length, 1, '转入后台时画廊记录写掉了');
 
   page = await openPage(tavern);
   await page.churn();
@@ -244,7 +242,7 @@ test('图刚画好页面就被硬杀（连后台事件都没有）：记录丢�
   tavern.upstreamGate = new Promise(resolve => { release = resolve; });
   const index = await page.receive(draw(PROMPT_A));
   await page.waitFor(() => tavern.upstreamCalls === 1);
-  await page.waitFor(() => tavern.files.has('st-image-atelier-attempts.json'), { label: '防重复记录写上了' });
+  await page.waitFor(() => tavern.records('attempts').length === 1, { label: '防重复记录写上了' });
   release();
   tavern.upstreamGate = null;
   const [tagId] = page.tagIds(index);

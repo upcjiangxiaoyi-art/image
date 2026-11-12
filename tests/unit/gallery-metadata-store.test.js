@@ -1,23 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  GALLERY_INDEX_FILE,
   GALLERY_METADATA_FILE,
+  GALLERY_SEGMENT_PREFIX,
   createMemoryGalleryMetadataStore,
   createSillyTavernGalleryMetadataStore,
 } from '../../src/ui/api/gallery-metadata-store.js';
+import { createFileServer } from '../helpers/file-server.js';
 
-test('直连画廊通过 SillyTavern 用户文件接口读写独立 JSON', async () => {
-  const calls = [];
+test('直连画廊通过 SillyTavern 用户文件接口读写：全新安装时聊天里带着的旧图记录写进分片，字段归一', async () => {
+  const server = createFileServer();
   const store = createSillyTavernGalleryMetadataStore({
     headers: () => ({ 'Content-Type': 'application/json', 'X-CSRF-Token': 'test' }),
-  }, async (url, options = {}) => {
-    calls.push({ url, options });
-    if (String(url).startsWith('/user/files/st-image-atelier-gallery.json?')) {
-      return new Response('', { status: 404 });
-    }
-    if (url === '/api/files/upload') return new Response(JSON.stringify({ path: 'user/files/file.json' }));
-    throw new Error(`Unexpected URL: ${url}`);
-  });
+  }, server.fetch, { cache: null, backend: { warn: () => {} } });
 
   await store.initialize({
     legacyItems: [{
@@ -28,13 +24,15 @@ test('直连画廊通过 SillyTavern 用户文件接口读写独立 JSON', async
       resolvedPrompt: 'resolved',
     }],
   });
-  const upload = calls.find(call => call.url === '/api/files/upload');
-  const body = JSON.parse(upload.options.body);
-  assert.equal(body.name, GALLERY_METADATA_FILE);
-  const written = JSON.parse(Buffer.from(body.data, 'base64').toString('utf8'));
-  assert.equal(written.results.legacy.prompt, 'actual');
-  assert.equal('promptSnapshot' in written.results.legacy, false);
-  assert.equal('resolvedPrompt' in written.results.legacy, false);
+  await store.storage.whenIdle();
+  const manifest = server.json(GALLERY_INDEX_FILE);
+  const written = Object.assign({}, ...manifest.segments
+    .filter(id => server.files.has(`${GALLERY_SEGMENT_PREFIX}${id}.json`))
+    .map(id => server.json(`${GALLERY_SEGMENT_PREFIX}${id}.json`).results));
+  assert.equal(written.legacy.prompt, 'actual');
+  assert.equal('promptSnapshot' in written.legacy, false);
+  assert.equal('resolvedPrompt' in written.legacy, false);
+  assert.ok(server.uploads.every(upload => /^[A-Za-z0-9_.-]+$/.test(upload.name)), '文件名都是酒馆收的');
 });
 
 /* 合流兼容（1.6.5）：本仓库 1.6.2 写出的索引文件是 { version, items: [...] }，
@@ -49,17 +47,9 @@ test('读入 fork 1.6.2 格式的索引文件：items 数组与 promptSnapshot �
       { resultId: 'gone', status: 'deleted', promptSnapshot: 'x' },
     ],
   };
-  const writes = [];
-  const store = createSillyTavernGalleryMetadataStore({ headers: () => ({}) }, async (url, options = {}) => {
-    if (String(url).startsWith('/user/files/st-image-atelier-gallery.json?')) {
-      return new Response(JSON.stringify(forkDocument), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    }
-    if (url === '/api/files/upload') {
-      writes.push(JSON.parse(Buffer.from(JSON.parse(options.body).data, 'base64').toString('utf8')));
-      return new Response(JSON.stringify({ path: 'user/files/st-image-atelier-gallery.json' }));
-    }
-    throw new Error(`Unexpected URL: ${url}`);
-  });
+  const server = createFileServer();
+  server.put(GALLERY_METADATA_FILE, forkDocument);
+  const store = createSillyTavernGalleryMetadataStore({ headers: () => ({}) }, server.fetch, { cache: null, backend: { warn: () => {} } });
   await store.initialize();
   const values = store.values();
   assert.deepEqual(values.map(item => item.resultId).sort(), ['a', 'b'], 'deleted 的丢掉，可用的一条不少');
@@ -69,8 +59,16 @@ test('读入 fork 1.6.2 格式的索引文件：items 数组与 promptSnapshot �
   assert.equal(a.favorite, true);
   assert.equal('promptSnapshot' in a, false);
   assert.equal(store.get('b').provider, 'novelai');
-  assert.ok(writes.length >= 1, '格式转换后应改写成本实现的格式');
-  assert.deepEqual(Object.keys(writes.at(-1).results).sort(), ['a', 'b']);
+
+  await store.storage.whenIdle();
+  assert.equal(store.storage.status().mode, 'segmented', '拆成分片了');
+  const written = Object.assign({}, ...server.json(GALLERY_INDEX_FILE).segments
+    .filter(id => server.files.has(`${GALLERY_SEGMENT_PREFIX}${id}.json`))
+    .map(id => server.json(`${GALLERY_SEGMENT_PREFIX}${id}.json`).results));
+  assert.deepEqual(Object.keys(written).sort(), ['a', 'b'], '分片里是本实现的格式，只有可用的两条');
+  assert.equal(written.a.prompt, 'cat');
+  assert.equal('promptSnapshot' in written.a, false);
+  assert.deepEqual(server.json(GALLERY_METADATA_FILE), forkDocument, '旧文件原样留着');
 });
 
 test('改动先落内存、文件延后合并写；写失败内存照旧是最新的，下一次写一起带上', async () => {

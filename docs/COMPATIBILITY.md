@@ -14,7 +14,7 @@
 | `saveChatConditional()` | ✓ | ✓ | ✓ | ✓ | ✓ | 保存 `message.extra` |
 | `getRequestHeaders()` | ✓ | ✓ | ✓ | ✓ | ✓ | 酒馆图片写操作携带 CSRF |
 | `extension_settings` | ✓ | ✓ | ✓ | ✓ | ✓ | 只保存设置与预设 |
-| `/api/files` 用户文件 | ✓ | ✓ | ✓ | ✓ | ✓ | 独立画廊元数据 JSON |
+| `/api/files` 用户文件 | ✓ | ✓ | ✓ | ✓ | ✓ | 画廊索引、生成记录的清单和分片，聊天侧文件（上传、读取必需；删除接口没有也行，只是清空的分片文件留着） |
 | `accountStorage` | ✓ | ✓ | ✓ | ✓ | ✓ | 账户隔离的前端 Key 存储 |
 | NovelAI ZIP 解包 | ✓ | ✓ | ✓ | ✓ | ✓ | Store ZIP 直接读取，Deflate 使用浏览器 `DecompressionStream` |
 | `/api/images/upload` | ✓ | ✓ | ✓ | ✓ | ✓ | Base64 图片落盘 |

@@ -33,13 +33,15 @@
 
 升级到 1.6.2 或更高版本时，首次加载会先把旧 `extension_settings.stImageAtelier.gallery` 中的可用记录写入当前用户的 `st-image-atelier-gallery.json`，写入成功后再移除旧画廊与删除墓碑。提示词三份重复字段会合并为一份；已有图片与收藏不受影响。
 
+升级到 2.4.0 时不用做任何事：第一次打开页面会在后台把画廊索引（`st-image-atelier-gallery.json`）和生成记录（`st-image-atelier-attempts.json`）拆成小文件，拆完之前、拆不成都照旧工作。旧的两份文件留在原地当备份，确认新版用着没问题后可以自己删。设置页「外观与维护 → 数据文件」能看到拆好了没有。回退到 2.3.0 会看不到升级之后出的图的画廊记录（图片文件都在）；两周内再升回来，回退期间出的图会接回来。
+
 ## 免服务端模式说明
 
 - 生成：浏览器直接调用 OpenAI Images 兼容端点。
 - 存图：使用 SillyTavern 自带的 `/api/images/upload`。
 - 删除：使用 SillyTavern 自带的 `/api/images/delete`。
 - 卡片状态：保存在 `message.extra.stImageAtelier`。
-- 画廊索引：通过 SillyTavern `/api/files` 保存在当前用户的独立 `st-image-atelier-gallery.json` 中。
+- 画廊索引：通过 SillyTavern `/api/files` 保存在当前用户的 `st-image-atelier-gallery-index.json`（清单）和 `st-image-atelier-gallery-<分片>.json` 中；生成记录是 `st-image-atelier-attempts-…`。2.4.0 之前是各一整份文件。
 - API Key：保存在当前 SillyTavern 账户的前端账户存储中。
 
 中转站必须支持 CORS。Base URL 是 HTTPS 时无需额外设置；HTTP 默认禁止，只应在可信本地网络中手动开启。

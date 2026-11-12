@@ -607,10 +607,11 @@ export function createDirectApiClient({
   async function ensureReady() {
     if (readyPromise) return readyPromise;
     readyPromise = (async () => {
-      await metadataStore.initialize({
-        legacyItems: legacyGallery,
-      });
-      await attemptStore.initialize();
+      /* 两份各读各的，同时进行：拆成小文件以后各自要问服务器几十次，排着队读就白等一轮。 */
+      await Promise.all([
+        metadataStore.initialize({ legacyItems: legacyGallery }),
+        attemptStore.initialize(),
+      ]);
       resetResults();
       for (const result of metadataStore.values()) rememberResult(result);
       for (const key of Object.keys(namespace)) {
@@ -2214,6 +2215,14 @@ export function createDirectApiClient({
     ensureTagStore: () => ensureTagStore(),
     tagRecord: tagId => currentTagStore()?.get(tagId) || null,
     flushPending,
+    /* 画廊索引、生成记录现在是拆开存的还是整份存的（设置页显示用）。内存版的存储没有这个，返回 null。 */
+    storageStatus: async () => {
+      await ensureReady().catch(() => {});
+      return {
+        gallery: metadataStore.storage?.status?.() || null,
+        attempts: attemptStore.storage?.status?.() || null,
+      };
+    },
     /* 上次问过之后又认领回了几张图（问完清零）：加载完聊天用来提示一声。 */
     takeAdoptedCount: () => {
       const count = adoptedCount;

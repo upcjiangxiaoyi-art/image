@@ -215,3 +215,26 @@ test('切到 NovelAI：快捷下拉换成画师串预设，参考图组那一项
   assert.deepEqual([...quickPreset.options].map(option => option.textContent), ['港', '备用站']);
   assert.equal(quickReference.closest('label').hidden, false);
 });
+
+test('设置页「数据文件」（2.4.0）：打开面板时写明画廊索引、生成记录是拆开存的还是整份存的；读不到就留着原来那句，不弹错', async t => {
+  const { api, panel, page, store } = setup(t);
+  await waitFor(() => store.state.preset?.id === 'p1', '设置面板未完成初始化');
+  const notice = () => page().querySelector('.stia-storage-status');
+  assert.match(notice().textContent, /拆成小文件存在酒馆里/, '没有状态可读时是一句说明');
+
+  api.storageStatus = async () => ({
+    gallery: { mode: 'segmented', segments: 82, records: 1012, migrating: false, error: '' },
+    attempts: { mode: 'legacy', segments: 0, records: 7, migrating: true, error: '' },
+  });
+  panel.show();
+  await waitFor(() => notice().textContent.includes('已拆成 82 份'), '状态没写出来');
+  assert.equal(
+    notice().textContent,
+    '画廊索引：已拆成 82 份小文件，共 1012 张图的记录\n生成记录：还是一整份文件，正在后台拆成小文件（共 7 条），拆完之前照旧能用',
+  );
+
+  api.storageStatus = async () => { throw new Error('boom'); };
+  panel.show();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.match(notice().textContent, /已拆成 82 份/, '读不到就保持原样');
+});
