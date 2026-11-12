@@ -144,6 +144,26 @@ export function openImageViewer(options, environment = {}) {
     });
     actions.append(share);
   }
+  /* onJump：跳到这张图所在的楼层。返回 true 就关掉看图器；返回一句话就留在这里把它写出来。 */
+  if (typeof options.onJump === 'function') {
+    const jump = createButton(documentRef, options.jumpLabel || '跳到所在楼层', 'stia-button', async () => {
+      jump.disabled = true;
+      status.textContent = '正在找这一楼…';
+      try {
+        const outcome = await options.onJump();
+        if (outcome === true) {
+          requestClose();
+          return;
+        }
+        status.textContent = typeof outcome === 'string' && outcome ? outcome : '没找到这张图所在的楼层';
+      } catch (error) {
+        status.textContent = error?.message || '跳转失败';
+      } finally {
+        jump.disabled = false;
+      }
+    });
+    actions.append(jump);
+  }
   if (typeof options.onDelete === 'function') {
     const remove = createButton(documentRef, '删除', 'stia-button stia-button--danger', async () => {
       remove.disabled = true;

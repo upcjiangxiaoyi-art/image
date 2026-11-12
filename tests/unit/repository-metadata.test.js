@@ -242,3 +242,14 @@ test('2.1.0 设置页：状态条贴在面板底边，触屏上顶栏不透明',
   assert.match(settings, /stia-quick/);
   assert.match(settings, /STATUS_LINGER_MS/);
 });
+
+test('2.2.0 画廊：只看这个聊天、跳到所在楼层的入口都在，跳转那一楼有高亮样式', async () => {
+  const gallery = await fs.readFile(path.join(root, 'src/ui/pages/gallery/gallery.js'), 'utf8');
+  assert.match(gallery, /只看这个聊天/);
+  assert.match(gallery, /api\.jumpToResult\(result\)/);
+  assert.match(gallery, /onJump: here/, '只有当前聊天的图才给跳转按钮');
+  const index = await fs.readFile(path.join(root, 'index.js'), 'utf8');
+  assert.match(index, /showMoreMessages: typeof tavern\.showMoreMessages === 'function'/, '把酒馆的加载更早楼层交给 compat');
+  const css = await fs.readFile(path.join(root, 'src/ui/styles/atelier.css'), 'utf8');
+  assert.match(css, /\.mes\.stia-jump-highlight \{/);
+});

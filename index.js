@@ -32,6 +32,8 @@ const compat = createStCompat({
   saveChatConditional,
   /* 酒馆的防抖保存（改楼、滑动走的就是它）：插件的保存并进同一个防抖，同一秒只写一次盘。老酒馆没有就退回自己防抖。 */
   saveChatDebounced: typeof tavern.saveChatDebounced === 'function' ? tavern.saveChatDebounced : undefined,
+  /* 画廊「跳到所在楼层」：目标楼还没画在页面上时，让酒馆把更早的楼层加载出来。 */
+  showMoreMessages: typeof tavern.showMoreMessages === 'function' ? tavern.showMoreMessages : undefined,
   getRequestHeaders,
 });
 const api = createApiClient({

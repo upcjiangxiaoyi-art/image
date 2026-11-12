@@ -8,6 +8,8 @@ export function createStCompat(dependencies) {
     getRequestHeaders,
     saveDelayMs = 1000,
     setTimer = (callback, delay) => setTimeout(callback, delay),
+    /* 酒馆的「加载更早的楼层」（script.js 的 showMoreMessages）；老酒馆没有就去点那个按钮。 */
+    showMoreMessages,
   } = dependencies;
 
   function context() {
@@ -117,6 +119,47 @@ export function createStCompat(dependencies) {
     return document.querySelector(`#chat .mes[mesid="${CSS.escape(String(messageId))}"]`);
   }
 
+  /* 滚到某一楼并闪一下。酒馆只把最近的一部分楼层画在页面上：目标楼还没画出来，就先让酒馆一批批把更早的
+     加载出来（和酒馆自己的 loadUntilMesId 一个做法），到头了还没有再试 /chat-jump。成功返回 true。 */
+  async function jumpToMessage(messageId, { maxBatches = 80 } = {}) {
+    const id = Number(messageId);
+    if (!Number.isInteger(id) || id < 0) return false;
+    const firstRendered = () => Number(document.querySelector('#chat .mes[mesid]')?.getAttribute('mesid'));
+    let element = messageElement(id);
+    for (let batch = 0; !element && batch < maxBatches; batch += 1) {
+      const before = firstRendered();
+      /* 最早画出来的那一楼已经不比目标晚：再往前加载也没用。 */
+      if (!(before > id)) break;
+      if (typeof showMoreMessages === 'function') {
+        await showMoreMessages();
+      } else {
+        const more = document.querySelector('#show_more_messages');
+        if (!more) break;
+        more.click();
+        await new Promise(resolve => setTimer(resolve, 80));
+      }
+      element = messageElement(id);
+      if (!element && firstRendered() === before) break;
+    }
+    if (!element) {
+      const current = context();
+      const run = current?.executeSlashCommandsWithOptions || current?.executeSlashCommands;
+      if (typeof run === 'function') {
+        try {
+          await run.call(current, `/chat-jump ${id}`);
+        } catch {
+          /* 这个酒馆没有这条命令。 */
+        }
+        element = messageElement(id);
+      }
+    }
+    if (!element) return false;
+    element.scrollIntoView?.({ block: 'center', behavior: 'auto' });
+    element.classList.add('stia-jump-highlight');
+    setTimer(() => element.classList.remove('stia-jump-highlight'), 2600);
+    return true;
+  }
+
   return {
     context,
     chat,
@@ -130,5 +173,6 @@ export function createStCompat(dependencies) {
     on,
     isStreaming,
     messageElement,
+    jumpToMessage,
   };
 }

@@ -1,5 +1,6 @@
 import { API_ROOT } from '../../shared/constants.js';
 import { createDirectApiClient } from './direct-client.js';
+import { chatScope, findMessageForRecord } from '../state/chat-scope.js';
 
 export class ApiError extends Error {
   constructor(error, status) {
@@ -232,6 +233,16 @@ export function createApiClient({
     ensureTagStore: () => direct.ensureTagStore(),
     tagRecord: tagId => direct.tagRecord(tagId),
     flushPending: () => direct.flushPending(),
+    /* 画廊「只看这个聊天」：当前聊天用到的 messageUuid / tagId 和聊天名。 */
+    chatScope: () => chatScope(compat.chat(), compat.currentChatId()),
+    /* 画廊「跳到所在楼层」：在当前聊天里找这张图所在的楼，滚过去。
+       找不到是 not-in-chat（那一楼删了、重新生成过，或者图是别的聊天的）；找到了但酒馆画不出来是 not-rendered。 */
+    jumpToResult: async record => {
+      const found = findMessageForRecord(compat.chat(), record);
+      if (!found) return { ok: false, reason: 'not-in-chat' };
+      const ok = typeof compat.jumpToMessage === 'function' ? await compat.jumpToMessage(found.messageId) : false;
+      return ok ? { ok: true, ...found } : { ok: false, reason: 'not-rendered', ...found };
+    },
     takeAdoptedCount: () => direct.takeAdoptedCount(),
     chatTagFile: () => direct.chatTagFile(),
     mode: () => direct.mode(),

@@ -1,6 +1,7 @@
 import { makeImageSaveable, openImageViewer } from '../../media/image-viewer.js';
 import { imageInfo } from '../../renderer/card.js';
 import { filterGalleryItems, galleryFilterOptions, normalizeGalleryItem } from './gallery-query.js';
+import { belongsToChat, hasChat } from '../../state/chat-scope.js';
 
 const PAGE_SIZE = 30;
 
@@ -65,7 +66,8 @@ export function galleryBadges(result) {
   return { info, badges };
 }
 
-export function createGalleryPage(api, { onError = () => {} } = {}) {
+/* onNavigate：从画廊跳去聊天里的某一楼时调用（设置面板用它把自己关掉）。 */
+export function createGalleryPage(api, { onError = () => {}, onNavigate = () => {} } = {}) {
   const root = document.createElement('section');
   root.className = 'stia-gallery-page';
   const heading = document.createElement('div');
@@ -84,7 +86,10 @@ export function createGalleryPage(api, { onError = () => {} } = {}) {
   search.setAttribute('aria-label', '搜索画廊');
   const clear = button('清除搜索 / 筛选');
   const batchToggle = button('批量选择');
-  tools.append(search, clear, batchToggle);
+  /* 只看这个聊天：按当前聊天里的引用认，聊天改过名也认得。 */
+  const scopeToggle = button('只看这个聊天');
+  scopeToggle.setAttribute('aria-pressed', 'false');
+  tools.append(search, scopeToggle, clear, batchToggle);
 
   const filtersPanel = document.createElement('details');
   filtersPanel.className = 'stia-gallery-filters';
@@ -147,10 +152,26 @@ export function createGalleryPage(api, { onError = () => {} } = {}) {
   let visibleCount = PAGE_SIZE;
   let loading = false;
   let batchMode = false;
+  let onlyThisChat = false;
   const selectedIds = new Set();
+
+  function currentScope() {
+    return typeof api.chatScope === 'function' ? api.chatScope() : null;
+  }
+
+  function syncScopeToggle() {
+    const available = hasChat(currentScope());
+    if (!available) onlyThisChat = false;
+    scopeToggle.disabled = !available;
+    scopeToggle.title = available ? '' : '先打开一个聊天';
+    scopeToggle.classList.toggle('stia-button--primary', onlyThisChat);
+    scopeToggle.setAttribute('aria-pressed', String(onlyThisChat));
+    scopeToggle.textContent = onlyThisChat ? '✓ 只看这个聊天' : '只看这个聊天';
+  }
 
   function currentFilters() {
     return {
+      scope: onlyThisChat ? currentScope() : null,
       query: search.value,
       favorite: favoriteFilter.value,
       provider: providerFilter.value,
@@ -191,8 +212,25 @@ export function createGalleryPage(api, { onError = () => {} } = {}) {
     return true;
   }
 
+  /* 跳到这张图所在的楼层：关掉看图器和面板，聊天滚到那一楼并闪一下。 */
+  async function jumpTo(result) {
+    const outcome = await api.jumpToResult(result);
+    if (!outcome?.ok) {
+      return outcome?.reason === 'not-rendered'
+        ? `这张图在第 ${outcome.messageId} 楼，但酒馆没能把这一楼加载出来；在聊天里往上翻到那一楼再试`
+        : '当前聊天里找不到这张图所在的楼层（那一楼可能删了或重新生成过）';
+    }
+    onNavigate(outcome);
+    if (outcome.placement === 'swipe') {
+      globalThis.toastr?.info?.('这张图在这一楼的另一个滑动版本里，左右滑一下能看到。', '画笺', { timeOut: 8000 });
+    }
+    return true;
+  }
+
   function detail(result) {
     const { info, badges } = galleryBadges(result);
+    const scope = currentScope();
+    const here = belongsToChat(scope, result);
     openImageViewer({
       src: api.fileUrl(result.resultId),
       alt: promptOf(result).slice(0, 120),
@@ -204,7 +242,10 @@ export function createGalleryPage(api, { onError = () => {} } = {}) {
         info.size && info.size !== '默认尺寸' ? info.size : '',
         formatDate(result.createdAt),
         `${Math.round((result.byteSize || 0) / 1024)} KB`,
+        /* 不是当前聊天的图：写明是哪个聊天里画的，要跳过去得先打开那个聊天。 */
+        scope && !here && result.chatId ? `画于聊天「${result.chatId}」` : '',
       ].filter(Boolean).join(' · '),
+      onJump: here && typeof api.jumpToResult === 'function' ? () => jumpTo(result) : undefined,
       onDelete: () => removeResult(result),
     });
   }
@@ -351,23 +392,27 @@ export function createGalleryPage(api, { onError = () => {} } = {}) {
     loadMore.hidden = visibleCount >= filteredItems.length;
     if (!filteredItems.length) {
       emptyText.textContent = allItems.length
-        ? '没有符合当前搜索和筛选条件的图片。'
+        ? (onlyThisChat ? '这个聊天里没有符合条件的图片。点下面的按钮看全部聊天的图。' : '没有符合当前搜索和筛选条件的图片。')
         : '还没有生成过图片。';
       emptyClear.hidden = !allItems.length;
       root.insertBefore(empty, loadMore);
     }
+    syncScopeToggle();
     syncBatchState();
     void backfillThumbnails();
   }
 
   function applyFilters({ preserveSelection = false } = {}) {
     if (!preserveSelection) selectedIds.clear();
+    /* 聊天关掉了（回到角色列表）：别卡在「只看这个聊天」上什么都看不到。 */
+    if (onlyThisChat && !hasChat(currentScope())) onlyThisChat = false;
     filteredItems = filterGalleryItems(allItems, currentFilters());
     visibleCount = PAGE_SIZE;
     render();
   }
 
   function clearFilters() {
+    onlyThisChat = false;
     search.value = '';
     favoriteFilter.value = 'all';
     providerFilter.value = 'all';
@@ -462,6 +507,11 @@ export function createGalleryPage(api, { onError = () => {} } = {}) {
   for (const control of [favoriteFilter, providerFilter, modelFilter, sourceFilter, dateFilter]) {
     control.addEventListener('change', () => applyFilters());
   }
+  scopeToggle.addEventListener('click', () => {
+    onlyThisChat = !onlyThisChat;
+    announce('');
+    applyFilters();
+  });
   clear.addEventListener('click', clearFilters);
   emptyClear.addEventListener('click', clearFilters);
   batchToggle.addEventListener('click', () => {

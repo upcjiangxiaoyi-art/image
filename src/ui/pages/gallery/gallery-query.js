@@ -1,3 +1,5 @@
+import { belongsToChat } from '../../state/chat-scope.js';
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 export function normalizeGalleryItem(value = {}) {
@@ -61,6 +63,8 @@ export function filterGalleryItems(items, filters = {}, currentTime = Date.now()
   const threshold = dateThreshold(filters.date, currentTime);
   return (Array.isArray(items) ? items : [])
     .map(normalizeGalleryItem)
+    /* scope：只看当前聊天的图（见 chat-scope.js）。 */
+    .filter(item => !filters.scope || belongsToChat(filters.scope, item))
     .filter(item => !query || gallerySearchText(item).includes(query))
     .filter(item => filters.favorite === 'favorite' ? item.favorite
       : filters.favorite === 'not-favorite' ? !item.favorite : true)

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { JSDOM } from 'jsdom';
 import { createStCompat } from '../../src/ui/compat/st-api.js';
 
 test('同时订阅所有存在的消息更新事件', () => {
@@ -93,4 +94,83 @@ test('currentCharacterKey / currentCharacterName：单人按头像文件名，�
   ctx = { characters: [] };
   assert.equal(compat.currentCharacterKey(), '');
   assert.equal(compat.currentCharacterName(), '');
+});
+
+/* 2.2.0 画廊「跳到所在楼层」。酒馆只把最近的一部分楼层画在页面上。 */
+function chatDom(t, rendered) {
+  const dom = new JSDOM('<!DOCTYPE html><div id="chat"></div><div id="show_more_messages"></div>', { url: 'http://localhost' });
+  const previous = { document: globalThis.document, CSS: globalThis.CSS };
+  globalThis.document = dom.window.document;
+  if (!globalThis.CSS?.escape) globalThis.CSS = { escape: value => String(value) };
+  t.after(() => {
+    globalThis.document = previous.document;
+    globalThis.CSS = previous.CSS;
+    dom.window.close();
+  });
+  const chat = dom.window.document.querySelector('#chat');
+  const scrolled = [];
+  const addRow = (id, { prepend = false } = {}) => {
+    const row = dom.window.document.createElement('div');
+    row.className = 'mes';
+    row.setAttribute('mesid', String(id));
+    row.scrollIntoView = options => scrolled.push([id, options]);
+    if (prepend) chat.prepend(row);
+    else chat.append(row);
+    return row;
+  };
+  for (const id of rendered) addRow(id);
+  return { dom, chat, addRow, scrolled };
+}
+
+test('jumpToMessage：这一楼已经画在页面上，直接滚过去并闪一下，过一会儿收掉', async t => {
+  const { chat, scrolled } = chatDom(t, [7, 8, 9]);
+  const timers = [];
+  const compat = createStCompat({ getContext: () => ({ chat: [] }), setTimer: (callback, delay) => timers.push([callback, delay]) });
+  assert.equal(await compat.jumpToMessage(8), true);
+  assert.deepEqual(scrolled, [[8, { block: 'center', behavior: 'auto' }]]);
+  const row = chat.querySelector('.mes[mesid="8"]');
+  assert.equal(row.classList.contains('stia-jump-highlight'), true);
+  timers.at(-1)[0]();
+  assert.equal(row.classList.contains('stia-jump-highlight'), false);
+  assert.equal(await compat.jumpToMessage(-1), false);
+  assert.equal(await compat.jumpToMessage('abc'), false);
+});
+
+test('jumpToMessage：这一楼还没画出来，就让酒馆一批批加载更早的，直到它出现', async t => {
+  const { addRow, scrolled } = chatDom(t, [40, 41]);
+  let batches = 0;
+  const compat = createStCompat({
+    getContext: () => ({ chat: [] }),
+    setTimer: () => {},
+    showMoreMessages: async () => {
+      batches += 1;
+      const first = batches === 1 ? 20 : 0;
+      for (let id = first + 19; id >= first; id -= 1) addRow(id, { prepend: true });
+    },
+  });
+  assert.equal(await compat.jumpToMessage(5), true);
+  assert.equal(batches, 2, '加载了两批才看到第 5 楼');
+  assert.equal(scrolled.at(-1)[0], 5);
+});
+
+test('jumpToMessage：没有 showMoreMessages 的老酒馆去点「加载更多」；到头了还没有就试 /chat-jump，再不行返回 false', async t => {
+  const { dom, addRow, scrolled } = chatDom(t, [10, 11]);
+  let clicks = 0;
+  dom.window.document.querySelector('#show_more_messages').addEventListener('click', () => {
+    clicks += 1;
+    if (clicks === 1) for (let id = 9; id >= 0; id -= 1) addRow(id, { prepend: true });
+  });
+  const commands = [];
+  const compat = createStCompat({
+    getContext: () => ({ chat: [], executeSlashCommandsWithOptions: async command => { commands.push(command); } }),
+    setTimer: callback => { callback(); },
+  });
+  assert.equal(await compat.jumpToMessage(3), true, '点一次「加载更多」就出来了');
+  assert.equal(clicks, 1);
+  assert.equal(scrolled.at(-1)[0], 3);
+
+  /* 第 30 楼比页面上最晚的还晚、又没画出来（酒馆状态不一致）：不乱加载，试一次 /chat-jump，还没有就算了。 */
+  assert.equal(await compat.jumpToMessage(30), false);
+  assert.deepEqual(commands, ['/chat-jump 30']);
+  assert.equal(clicks, 1, '不会白点「加载更多」');
 });

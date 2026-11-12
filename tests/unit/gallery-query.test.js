@@ -246,3 +246,98 @@ test('画廊格子用缩略图；没有的先放原图、后台补好后换成�
     globalThis.window = previous.window;
   }
 });
+
+test('filterGalleryItems：scope 只留当前聊天的图，和搜索、别的筛选叠加', async () => {
+  const { chatScope } = await import('../../src/ui/state/chat-scope.js');
+  const scope = chatScope([{ extra: { stImageAtelier: { messageUuid: 'm1', tagIds: ['t1'] } } }], '这个聊天');
+  const values = [
+    item({ resultId: 'here-by-tag', tagId: 't1', chatId: '改名前', prompt: 'cat' }),
+    item({ resultId: 'here-by-name', tagId: 'x', chatId: '这个聊天', prompt: 'dog' }),
+    item({ resultId: 'elsewhere', tagId: 'y', chatId: '别的聊天', prompt: 'cat' }),
+  ];
+  assert.deepEqual(filterGalleryItems(values, { scope }, NOW).map(value => value.resultId).sort(), ['here-by-name', 'here-by-tag']);
+  assert.deepEqual(filterGalleryItems(values, { scope, query: 'cat' }, NOW).map(value => value.resultId), ['here-by-tag']);
+  assert.equal(filterGalleryItems(values, {}, NOW).length, 3, '不给 scope 就是全部');
+});
+
+test('画廊「只看这个聊天」和看图器里的「跳到所在楼层」', async () => {
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'https://tavern.example/' });
+  const previous = { document: globalThis.document, window: globalThis.window, navigator: globalThis.navigator };
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: dom.window.navigator });
+  try {
+    const { chatScope } = await import('../../src/ui/state/chat-scope.js');
+    const values = [
+      item({ resultId: 'here', tagId: 't1', messageUuid: 'm1', chatId: '这个聊天', prompt: 'cat here' }),
+      item({ resultId: 'other', tagId: 't9', messageUuid: 'm9', chatId: '别的聊天', prompt: 'cat elsewhere' }),
+    ];
+    let scope = chatScope([{ extra: { stImageAtelier: { messageUuid: 'm1', tagIds: ['t1'] } } }], '这个聊天');
+    const jumps = [];
+    let outcome = { ok: true, messageId: 12, placement: 'active' };
+    const navigated = [];
+    const api = {
+      cleanupGallery: async () => ({}),
+      galleryMetadata: async () => ({ items: structuredClone(values), total: values.length }),
+      fileUrl: id => `/images/${id}.png`,
+      downloadUrl: id => `/download/${id}`,
+      chatScope: () => scope,
+      jumpToResult: async record => { jumps.push(record.resultId); return outcome; },
+      setFavorite: async () => ({}),
+      deleteResult: async () => {},
+    };
+    const page = createGalleryPage(api, { onNavigate: value => navigated.push(value) });
+    document.body.append(page.root);
+    await page.load();
+    const ids = () => [...page.root.querySelectorAll('[data-result-id]')].map(node => node.dataset.resultId);
+    const toggle = [...page.root.querySelectorAll('button')].find(node => node.textContent.includes('只看这个聊天'));
+    assert.deepEqual(ids().sort(), ['here', 'other'], '默认是全部聊天的图');
+    assert.equal(toggle.disabled, false);
+    assert.equal(toggle.getAttribute('aria-pressed'), 'false');
+
+    toggle.click();
+    assert.deepEqual(ids(), ['here'], '只剩这个聊天的图');
+    assert.equal(toggle.getAttribute('aria-pressed'), 'true');
+    assert.match(page.root.textContent, /1 \/ 2 张/);
+
+    /* 这个聊天的图：看图器里有「跳到所在楼层」。 */
+    page.root.querySelector('[data-result-id="here"] img').click();
+    const viewer = () => document.querySelector('.stia-image-viewer');
+    const jump = () => [...(viewer()?.querySelectorAll('button') || [])].find(node => node.textContent === '跳到所在楼层');
+    assert.ok(jump(), '有跳转按钮');
+    jump().click();
+    await new Promise(resolve => setTimeout(resolve, 10));
+    assert.deepEqual(jumps, ['here']);
+    assert.deepEqual(navigated, [outcome], '告诉面板该关了');
+    assert.equal(viewer(), null, '跳过去之后看图器关掉');
+
+    /* 那一楼已经不在了：留在看图器里把原因写出来。 */
+    outcome = { ok: false, reason: 'not-in-chat' };
+    page.root.querySelector('[data-result-id="here"] img').click();
+    jump().click();
+    await new Promise(resolve => setTimeout(resolve, 10));
+    assert.match(viewer().textContent, /找不到这张图所在的楼层/);
+    assert.equal(navigated.length, 1);
+    viewer().querySelector('.stia-image-viewer__close').click();
+
+    /* 别的聊天的图：没有跳转按钮，写明是哪个聊天里画的。 */
+    toggle.click();
+    assert.deepEqual(ids().sort(), ['here', 'other']);
+    page.root.querySelector('[data-result-id="other"] img').click();
+    assert.equal(jump(), undefined, '不是这个聊天的图不给跳');
+    assert.match(viewer().textContent, /画于聊天「别的聊天」/);
+    viewer().querySelector('.stia-image-viewer__close').click();
+
+    /* 没打开聊天：开关用不了，也不会卡在「只看这个聊天」上。 */
+    toggle.click();
+    scope = chatScope([], '');
+    await page.load();
+    assert.equal(toggle.disabled, true);
+    assert.equal(toggle.getAttribute('aria-pressed'), 'false');
+    assert.deepEqual(ids().sort(), ['here', 'other']);
+  } finally {
+    globalThis.document = previous.document;
+    globalThis.window = previous.window;
+    Object.defineProperty(globalThis, 'navigator', { configurable: true, value: previous.navigator });
+  }
+});

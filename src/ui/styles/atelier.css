@@ -1748,6 +1748,22 @@
     animation: none !important;
     transition: none !important;
   }
+
+  .mes.stia-jump-highlight {
+    animation: none !important;
+  }
+}
+
+/* 从画廊「跳到所在楼层」：那一楼描一圈边、闪两下，一眼找得到。 */
+@keyframes stia-jump-flash {
+  from { background-color: color-mix(in srgb, var(--stia-accent) 26%, transparent); }
+  to { background-color: transparent; }
+}
+
+.mes.stia-jump-highlight {
+  outline: 2px solid var(--stia-accent);
+  outline-offset: -2px;
+  animation: stia-jump-flash 1.2s ease-out 2;
 }
 
 .stia-actions--fill > .stia-card__remove {

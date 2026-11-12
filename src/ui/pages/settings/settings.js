@@ -159,7 +159,8 @@ export function createToolPanel({ api, store, onError = () => {} }) {
 
   const settingsPage = document.createElement('section');
   settingsPage.className = 'stia-settings-page';
-  const gallery = createGalleryPage(api, { onError });
+  /* 从画廊跳去聊天里的某一楼：先把这个面板关掉。 */
+  const gallery = createGalleryPage(api, { onError, onNavigate: () => hide() });
   gallery.root.hidden = true;
 
   const enabled = input('checkbox');
