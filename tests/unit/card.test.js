@@ -830,3 +830,203 @@ test('「查看提示词」展开后下面有「一键复制」：没展开时�
   await new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(written.at(-1), 'failed prompt', '失败的卡片也能复制');
 });
+
+/* 2.5.0 出图后的卡片上「参考重画」旁边加「换预设」。 */
+async function presetSwitchSetup(t, { provider = 'openai', withReference = true } = {}) {
+  const { JSDOM } = await import('jsdom');
+  const dom = new JSDOM('<!doctype html><html><body></body></html>');
+  const previous = { document: globalThis.document, window: globalThis.window };
+  globalThis.document = dom.window.document;
+  globalThis.window = dom.window;
+  t.after(() => {
+    globalThis.document = previous.document;
+    globalThis.window = previous.window;
+    dom.window.close();
+  });
+  const tag = { tagId: 'tag-1', prompt: 'a cat', ratio: 'portrait' };
+  const context = {
+    dom,
+    tag,
+    state: {
+      tag: { latestResultId: 'r1', resultIds: ['r1'] },
+      attempts: [{ attemptId: 'a1', status: 'succeeded', provider, presetId: 'old', model: 'm' }],
+      results: [{ resultId: 'r1', attemptId: 'a1', status: 'available', prompt: 'a cat', provider, presetId: 'old' }],
+    },
+    settings: { generationProvider: provider, executionMode: 'direct' },
+    choices: {
+      kind: provider === 'novelai' ? 'artist' : 'api',
+      activeId: 'cheap',
+      busy: false,
+      items: [{ id: 'old', name: '走十六方' }, { id: 'cheap', name: '纯爱二号' }, { id: 'stable', name: '稳定组' }],
+    },
+    switched: [],
+    /* 切换的结果由测试决定：默认切成，当前预设跟着变。 */
+    switchResult: id => {
+      context.choices = { ...context.choices, activeId: id };
+      return true;
+    },
+  };
+  context.card = createCard({
+    tag,
+    api: { fileUrl: id => `/user/images/${id}.png` },
+    getState: () => context.state,
+    getSettings: () => context.settings,
+    onGenerate() {},
+    onOpenGallery() {},
+    onCancel() {},
+    ...(withReference ? { onReferenceRegenerate() {} } : {}),
+    listPresets: async () => [],
+    getPresetChoices: () => context.choices,
+    onSwitchPreset: async id => {
+      context.switched.push(id);
+      return context.switchResult(id);
+    },
+  });
+  context.card.render();
+  context.actions = () => [...context.card.root.querySelector('.stia-actions').children];
+  context.control = () => context.card.root.querySelector('.stia-card__preset');
+  context.select = () => context.card.root.querySelector('.stia-card__preset-select');
+  context.choose = id => {
+    const select = context.select();
+    select.value = id;
+    select.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+  };
+  context.settle = () => new Promise(resolve => setTimeout(resolve, 0));
+  return context;
+}
+
+test('出图后的卡片上「参考重画」旁边有「换预设」：写着当前预设，点开是所有预设，两个各占一半', async t => {
+  const { actions, control, select } = await presetSwitchSetup(t);
+  assert.deepEqual(
+    actions().map(node => node.textContent),
+    ['↻重新生成', '⌕查看 / 保存', '▦画廊', '◫参考重画', '⇄预设：纯爱二号走十六方纯爱二号稳定组'],
+    '紧跟在「参考重画」后面',
+  );
+  assert.equal(control().tagName, 'LABEL', '整块都是选择框的标签：点哪儿都打开系统的选择器');
+  assert.ok(control().classList.contains('stia-button'), '样子和别的按钮一样');
+  assert.equal(control().querySelector('.stia-card__preset-name').textContent, '预设：纯爱二号');
+  assert.deepEqual([...select().options].map(option => [option.value, option.textContent]), [
+    ['old', '走十六方'], ['cheap', '纯爱二号'], ['stable', '稳定组'],
+  ]);
+  assert.equal(select().value, 'cheap', '选中的是当前预设，不是画这张图的那个');
+  assert.equal(select().getAttribute('aria-label'), '切换当前生图预设');
+  assert.equal(select().disabled, false);
+  assert.ok(control().parentElement.classList.contains('stia-actions--pairs'), '两个一行：和「参考重画」各占一半');
+});
+
+test('在卡片上换预设：切的时候按钮写「正在切换…」、点不动，切完写上新的；别的卡片跟着变', async t => {
+  const context = await presetSwitchSetup(t);
+  const { card, control, select, choose, settle } = context;
+  let finish;
+  context.switchResult = id => new Promise(resolve => {
+    finish = () => {
+      context.choices = { ...context.choices, activeId: id };
+      resolve(true);
+    };
+  });
+
+  choose('stable');
+  await settle();
+  assert.deepEqual(context.switched, ['stable']);
+  assert.equal(control().querySelector('.stia-card__preset-name').textContent, '正在切换…');
+  assert.equal(select().disabled, true);
+  assert.ok(control().classList.contains('is-busy'));
+
+  finish();
+  await settle();
+  assert.equal(control().querySelector('.stia-card__preset-name').textContent, '预设：稳定组');
+  assert.equal(select().value, 'stable');
+  assert.equal(select().disabled, false);
+  assert.equal(control().classList.contains('is-busy'), false);
+
+  /* 在别处（另一张卡、设置页）换了：这张卡下次重画时跟着变。 */
+  const before = control();
+  context.choices = { ...context.choices, activeId: 'old' };
+  card.render();
+  assert.equal(control().querySelector('.stia-card__preset-name').textContent, '预设：走十六方');
+  assert.notEqual(control(), before);
+  /* 什么都没变就不重建。 */
+  const same = control();
+  card.render();
+  assert.equal(control(), same);
+
+  /* 选回当前这个：什么都不做。 */
+  choose('old');
+  await settle();
+  assert.deepEqual(context.switched, ['stable']);
+});
+
+test('换预设没成功（保存失败、切换失败）：选择框回到原来那个，卡片不会停在「正在切换」', async t => {
+  const context = await presetSwitchSetup(t);
+  const { control, select, choose, settle } = context;
+  context.switchResult = () => false;
+  choose('stable');
+  await settle();
+  assert.equal(select().value, 'cheap');
+  assert.equal(control().querySelector('.stia-card__preset-name').textContent, '预设：纯爱二号');
+
+  context.switchResult = () => { throw new Error('boom'); };
+  choose('old');
+  await settle();
+  assert.equal(select().value, 'cheap', '抛错也一样');
+  assert.equal(select().disabled, false);
+  assert.deepEqual(context.switched, ['stable', 'old']);
+});
+
+test('设置面板正忙着（正在保存、正在切）：卡片上的「换预设」点不动', async t => {
+  const context = await presetSwitchSetup(t);
+  context.choices = { ...context.choices, busy: true };
+  context.card.render();
+  assert.equal(context.select().disabled, true);
+  assert.ok(context.control().classList.contains('is-busy'));
+  assert.equal(context.control().querySelector('.stia-card__preset-name').textContent, '预设：纯爱二号');
+});
+
+test('只有一个预设、没接上切换、还没出图的卡片：不显示「换预设」', async t => {
+  const context = await presetSwitchSetup(t);
+  const { card, control, actions } = context;
+  context.choices = { ...context.choices, items: [{ id: 'cheap', name: '纯爱二号' }] };
+  card.render();
+  assert.equal(control(), null, '只有一个预设没什么可换的');
+  assert.deepEqual(actions().map(node => node.textContent), ['↻重新生成', '⌕查看 / 保存', '▦画廊', '◫参考重画']);
+
+  context.choices = null;
+  card.render();
+  assert.equal(control(), null, '面板还没准备好');
+
+  context.choices = { kind: 'api', activeId: 'cheap', busy: false, items: [{ id: 'old', name: '走十六方' }, { id: 'cheap', name: '纯爱二号' }] };
+  context.state = { tag: {}, attempts: [{ attemptId: 'a2', status: 'failed', provider: 'openai', errorMessage: 'x' }], results: [] };
+  card.render();
+  assert.equal(control(), null, '失败的卡片上没有');
+  context.state = { tag: {}, attempts: [], results: [] };
+  card.render();
+  assert.equal(control(), null, '等待生成的卡片上没有');
+  context.state = { tag: {}, attempts: [{ attemptId: 'a3', status: 'generating', provider: 'openai' }], results: [] };
+  card.render();
+  assert.equal(control(), null, '正在画的卡片上没有');
+
+  const plain = createCard({
+    tag: context.tag,
+    api: { fileUrl: id => `/user/images/${id}.png` },
+    getState: () => ({
+      tag: { latestResultId: 'r1' },
+      attempts: [],
+      results: [{ resultId: 'r1', status: 'available', prompt: 'a cat', provider: 'openai' }],
+    }),
+    onGenerate() {},
+    onOpenGallery() {},
+    onCancel() {},
+  });
+  plain.render();
+  assert.equal(plain.root.querySelector('.stia-card__preset'), null, '没传这两个依赖就没有');
+});
+
+test('NovelAI：没有「参考重画」，「换预设」换的是画师串，自己占一行', async t => {
+  const { actions, control, select } = await presetSwitchSetup(t, { provider: 'novelai' });
+  assert.deepEqual(
+    actions().map(node => node.textContent.replace(/走十六方纯爱二号稳定组$/, '')),
+    ['↻重新生成', '⌕查看 / 保存', '▦画廊', '⇄画师串：纯爱二号'],
+  );
+  assert.equal(select().getAttribute('aria-label'), '切换当前画师串预设');
+  assert.ok(control().parentElement.classList.contains('stia-actions--pairs'));
+});

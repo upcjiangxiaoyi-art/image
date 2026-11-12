@@ -135,6 +135,19 @@ const actions = {
   /* 失败的卡片上「换备用线路」：用设置里的备用线路重画。 */
   fallback: tag => controller.generateWithBackup(tag),
   cancel: attemptId => controller.cancel(attemptId),
+  /* 卡片上的「换预设」：可选的预设和切换都问设置面板要，走它原来的切换逻辑，面板和卡片不会各说各的。 */
+  presetChoices: () => panel?.presetChoices?.() || null,
+  switchPreset: async presetId => {
+    const outcome = await panel.selectActivePreset(presetId);
+    if (outcome.switched && typeof globalThis.toastr?.success === 'function') {
+      globalThis.toastr.success(
+        `${outcome.kind === 'artist' ? '画师串' : '生图预设'}换成「${outcome.name}」了，之后出的图用它`,
+        '画笺',
+        { timeOut: 4000 },
+      );
+    }
+    return outcome.switched;
+  },
   openGallery: () => panel.show('gallery'),
   remove: async tag => removeTag(tag),
 };

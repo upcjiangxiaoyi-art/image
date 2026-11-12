@@ -207,6 +207,10 @@ export function createCard({
   onFallback,
   onReferenceRegenerate,
   listPresets,
+  /* 「换预设」：getPresetChoices() 当拍给出 { kind: 'api' | 'artist', activeId, busy, items: [{ id, name }] }，
+     onSwitchPreset(id) 把当前预设切过去。两个都给了、可选的不止一个才显示。 */
+  getPresetChoices,
+  onSwitchPreset,
 }) {
   const root = document.createElement('section');
   root.className = 'stia-card';
@@ -237,6 +241,8 @@ export function createCard({
   /* 选用哪个 API 预设：生成中的「再画一张」（mode 'reroll'，正在画的留在后台）和出图后的
      「重新生成」（mode 'regenerate'）共用。presets 为 null 时正在读取；originalId 是画出这张图的预设。 */
   let chooser = null;
+  /* 「换预设」正在切换中。 */
+  let switching = false;
 
   /* 从这次生成开始时算起；同一次生成里状态怎么变都不重新计时。 */
   function elapsedSince(attempt) {
@@ -448,6 +454,51 @@ export function createCard({
     return box;
   }
 
+  /* 出图后那排按钮里的「换预设」：当前的生图预设（NovelAI 时是当前画师串），不用进设置页就能换。
+     画成按钮的样子，上面盖一个透明的系统选择框：点哪儿都是打开系统自己的选择器，手机上最顺手。
+     换的是全局的当前预设，之后新出的图都用它；这张图是哪个预设画的看上面的信息栏。 */
+  function presetSwitch(choices) {
+    const artist = choices.kind === 'artist';
+    const current = choices.items.find(item => item.id === choices.activeId);
+    const busy = switching || choices.busy === true;
+    const control = document.createElement('label');
+    control.className = `stia-button stia-card__preset${busy ? ' is-busy' : ''}`;
+    const icon = document.createElement('span');
+    icon.className = 'stia-button__icon';
+    icon.setAttribute('aria-hidden', 'true');
+    icon.textContent = '⇄';
+    const name = document.createElement('span');
+    name.className = 'stia-card__preset-name';
+    name.textContent = switching ? '正在切换…' : `${artist ? '画师串' : '预设'}：${current?.name || '未选择'}`;
+    const select = document.createElement('select');
+    select.className = 'stia-card__preset-select';
+    select.setAttribute('aria-label', artist ? '切换当前画师串预设' : '切换当前生图预设');
+    select.disabled = busy;
+    for (const item of choices.items) {
+      const option = document.createElement('option');
+      option.value = item.id;
+      option.textContent = item.name;
+      select.append(option);
+    }
+    select.value = choices.activeId;
+    select.addEventListener('change', () => {
+      const nextId = select.value;
+      if (!nextId || nextId === choices.activeId) return;
+      switching = true;
+      render();
+      /* 切成没切成都重画一遍：没切成时选择框回到原来那个。 */
+      Promise.resolve()
+        .then(() => onSwitchPreset(nextId))
+        .catch(() => false)
+        .then(() => {
+          switching = false;
+          render();
+        });
+    });
+    control.append(icon, name, select);
+    return control;
+  }
+
   /* 之后又 roll 过、还在后台画的那几张：说一声有几张、最早那张画了多久。 */
   function backgroundNote(running) {
     const note = document.createElement('div');
@@ -515,6 +566,11 @@ export function createCard({
       && settings.executionMode !== 'server'
       && settings.generationProvider !== 'novelai'
       && (shown?.provider || attempt?.provider || 'openai') !== 'novelai';
+    /* 「换预设」：可选的不止一个才有意义。 */
+    const choices = shown && typeof getPresetChoices === 'function' && typeof onSwitchPreset === 'function'
+      ? getPresetChoices()
+      : null;
+    const canSwitch = Array.isArray(choices?.items) && choices.items.length > 1;
     /* 卡片换了状态（开始画了、画完了），对应的选择就收起。 */
     const chooserStale = chooser?.mode === 'regenerate' || chooser?.mode === 'reference'
       ? (!shown || ACTIVE_STATUSES.has(attempt?.status))
@@ -528,6 +584,7 @@ export function createCard({
       running.map(item => item.attemptId),
       chooser && [chooser.mode, chooser.attemptId, chooser.presets, chooser.reference?.path || chooser.reference?.resultId, chooser.uploading, chooser.error],
       duration, info, imageSize, canUseBackup, canReference,
+      canSwitch && [choices.kind, choices.activeId, choices.busy === true, choices.items, switching],
     ]);
     if (signature === lastSignature) {
       /* 卡片被摘下又放回（酒馆重建这一层）时计时可能停了，顺手续上。 */
@@ -656,6 +713,8 @@ export function createCard({
           reference: { resultId: shown.resultId },
         }), '◫'));
       }
+      /* 和「参考重画」各占一半；没有「参考重画」时自己一行。 */
+      if (canSwitch) actions.append(presetSwitch(choices));
       if (canAdjust) {
         actions.append(button('调整后重绘', '', () => onAdjustRegenerate(tag, {
           prompt: actualPrompt,

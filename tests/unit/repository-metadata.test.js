@@ -262,3 +262,19 @@ test('2.3.0 版本号写在面板标题旁，设置页有「最近更新」，�
   assert.match(index, /planUpdateNotice\(\{ current: VERSION, seen: memory\.read\(\), existingUser \}\)/);
   assert.match(index, /const existingUser = Boolean\(extension_settings\?\.\[MODULE_NAME\]\);[\s\S]*createApiClient\(/, '先看是不是老用户，再建客户端');
 });
+
+test('2.5.0 卡片上的「换预设」：卡片问面板要可选的预设、让面板去切；透明的选择框不会让 iOS 放大页面', async () => {
+  const index = await fs.readFile(path.join(root, 'index.js'), 'utf8');
+  assert.match(index, /presetChoices: \(\) => panel\?\.presetChoices\?\.\(\) \|\| null/, '面板还没建好时不报错');
+  assert.match(index, /panel\.selectActivePreset\(presetId\)/, '切换走面板原来的逻辑');
+  const renderer = await fs.readFile(path.join(root, 'src/ui/renderer/message-renderer.js'), 'utf8');
+  assert.match(renderer, /getPresetChoices: actions\.presetChoices/);
+  assert.match(renderer, /onSwitchPreset: actions\.switchPreset/);
+  const css = await fs.readFile(path.join(root, 'src/ui/styles/atelier.css'), 'utf8');
+  const select = /\.stia-card__preset > \.stia-card__preset-select \{([\s\S]*?)\n\}/.exec(css)?.[1] || '';
+  assert.match(select, /opacity: 0 !important/, '看不见，但点得到');
+  assert.match(select, /inset: 0 !important/, '盖住整个按钮');
+  assert.match(select, /font-size: 16px !important/, 'iOS 聚焦字号小于 16px 的控件会把页面放大');
+  const name = /\.stia-card__preset-name \{([\s\S]*?)\n\}/.exec(css)?.[1] || '';
+  assert.match(name, /text-overflow: ellipsis/, '预设名太长就省略，不把按钮撑成两行');
+});

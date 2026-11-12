@@ -817,7 +817,9 @@ export function createToolPanel({ api, store, onError = () => {} }) {
   presetRow.className = 'stia-inline-control';
   presetRow.append(presetSelector, createPreset, deletePreset);
 
-  presetSelector.addEventListener('change', async () => {
+  /* 选择框的值已经是要换去的那个：先把正在编辑的保存回原来那个预设，再切、再把字段读进来。
+     没切成（保存失败、切换失败）选择框回到原来那个。面板里的选择框、顶上的快捷开关、卡片上的「换预设」都走这里。 */
+  async function switchApiPreset() {
     const nextId = presetSelector.value;
     const previousId = activePresetId;
     if (!nextId || nextId === previousId) return;
@@ -832,7 +834,8 @@ export function createToolPanel({ api, store, onError = () => {} }) {
       status.textContent = `已切换到“${preset.name}”`;
     });
     if (activePresetId === previousId) presetSelector.value = previousId;
-  });
+  }
+  presetSelector.addEventListener('change', switchApiPreset);
 
   const createArtistPreset = action('新建', async () => {
     const name = window.prompt('给这套画师串起个名字', '新画师串');
@@ -928,7 +931,7 @@ export function createToolPanel({ api, store, onError = () => {} }) {
     artistImportInput,
   );
 
-  artistSelector.addEventListener('change', async () => {
+  async function switchArtistPreset() {
     const nextId = artistSelector.value;
     const previousId = activeArtistPresetId;
     if (!nextId || nextId === previousId) return;
@@ -941,7 +944,8 @@ export function createToolPanel({ api, store, onError = () => {} }) {
       status.textContent = `已切换到画师串“${preset.name}”`;
     });
     if (activeArtistPresetId === previousId) artistSelector.value = previousId;
-  });
+  }
+  artistSelector.addEventListener('change', switchArtistPreset);
 
   const clearNovelAiKey = action('清除', async () => {
     if (!confirm('确定清除已保存的 NAI 中转站 Key / Token 吗？')) return;
@@ -2049,6 +2053,33 @@ export function createToolPanel({ api, store, onError = () => {} }) {
   panel.append(header, tabs, settingsPage, gallery.root);
   overlay.append(panel);
   document.body.append(overlay);
+  /* 卡片上的「换预设」用：当前引擎下可选的预设（NovelAI 时是画师串）、现在用的是哪个、是不是正忙着。 */
+  function presetChoices() {
+    const artist = generationProvider.value === 'novelai';
+    const source = artist ? artistSelector : presetSelector;
+    return {
+      kind: artist ? 'artist' : 'api',
+      activeId: source.value,
+      busy: source.disabled,
+      items: [...source.options].map(option => ({ id: option.value, name: option.textContent })),
+    };
+  }
+
+  /* 把当前预设切到 id：把值写到面板原来的选择框上，走它自己的切换逻辑，面板里看到的和卡片上切的是同一回事。
+     返回 { switched, kind, name }；没切成的原因由面板原来那套报错弹出来。 */
+  async function selectActivePreset(id) {
+    const artist = generationProvider.value === 'novelai';
+    const source = artist ? artistSelector : presetSelector;
+    const kind = artist ? 'artist' : 'api';
+    const target = [...source.options].find(option => option.value === id);
+    if (!target || source.disabled) return { switched: false, kind, name: '' };
+    if (source.value !== id) {
+      source.value = id;
+      await (artist ? switchArtistPreset() : switchApiPreset());
+    }
+    return { switched: source.value === id, kind, name: target.textContent };
+  }
+
   void load();
-  return { show, hide, load };
+  return { show, hide, load, presetChoices, selectActivePreset };
 }

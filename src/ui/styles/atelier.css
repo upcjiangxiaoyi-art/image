@@ -973,6 +973,57 @@
 }
 
 /* 同一张卡有好几张图时，分隔线下面的「‹上一张　2 / 4　›下一张」；到头了那边的按钮变灰。 */
+/* 卡片上的「换预设」：画成按钮的样子，上面盖一个透明的系统选择框，点哪儿都是打开系统的选择器。 */
+.stia-card__preset {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-width: 0;
+  overflow: hidden;
+  text-align: center;
+}
+
+.stia-card__preset-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 酒馆自己给 select 定了一堆样式（宽度、内边距、背景图），这里一条条压回去。
+   字号定 16px：iOS 上聚焦字号小于 16px 的表单控件会把整页放大。 */
+.stia-card__preset > .stia-card__preset-select {
+  position: absolute !important;
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  opacity: 0 !important;
+  font-size: 16px !important;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+.stia-card__preset:focus-within {
+  outline: 2px solid var(--stia-accent);
+  outline-offset: 2px;
+}
+
+.stia-card__preset.is-busy {
+  cursor: wait;
+  opacity: .52;
+}
+
+.stia-card__preset.is-busy > .stia-card__preset-select {
+  cursor: wait;
+}
+
 .stia-card__pager {
   display: flex;
   align-items: center;

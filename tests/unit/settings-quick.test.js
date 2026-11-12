@@ -238,3 +238,104 @@ test('设置页「数据文件」（2.4.0）：打开面板时写明画廊索引
   await new Promise(resolve => setTimeout(resolve, 20));
   assert.match(notice().textContent, /已拆成 82 份/, '读不到就保持原样');
 });
+
+/* 2.5.0 卡片上的「换预设」问面板要可选的预设、让面板去切：走的是面板原来那个选择框自己的逻辑。 */
+test('面板给卡片用的两个接口：presetChoices() 说出可选的预设和当前是哪个，selectActivePreset() 切过去后面板、快捷开关、store 一起变', async t => {
+  const { store, panel, page, quick, calls, state } = setup(t);
+  assert.deepEqual(panel.presetChoices().items, [], '面板还没读完设置时没有可选的');
+  await waitFor(() => store.state.preset?.id === 'p1', '设置面板未完成初始化');
+  assert.deepEqual(panel.presetChoices(), {
+    kind: 'api',
+    activeId: 'p1',
+    busy: false,
+    items: [{ id: 'p1', name: '港' }, { id: 'p2', name: '备用站' }],
+  });
+
+  const notified = [];
+  store.subscribe((_, change) => notified.push(change));
+  assert.deepEqual(await panel.selectActivePreset('p2'), { switched: true, kind: 'api', name: '备用站' });
+  assert.deepEqual(calls.selectPreset, ['p2'], '切换走的是面板原来的那一套');
+  assert.equal(store.state.preset.id, 'p2');
+  assert.ok(notified.some(change => change?.all), '通知所有卡片重画');
+  assert.equal(state().activePresetId, 'p2');
+  assert.equal(page().querySelector('select[aria-label="选择 API 预设"]').value, 'p2', '面板里的下拉跟着换');
+  assert.equal(quick().querySelectorAll('select')[0].value, 'p2', '顶上的快捷下拉也跟着换');
+  assert.equal(panel.presetChoices().activeId, 'p2');
+  assert.match(page().querySelector('.stia-status').textContent, /已切换到“备用站”/);
+
+  assert.deepEqual(await panel.selectActivePreset('p2'), { switched: true, kind: 'api', name: '备用站' }, '已经是它：直接算成功');
+  assert.deepEqual(calls.selectPreset, ['p2'], '不重复切');
+  assert.deepEqual(await panel.selectActivePreset('nope'), { switched: false, kind: 'api', name: '' }, '没有这个预设');
+  assert.equal(panel.presetChoices().activeId, 'p2');
+});
+
+test('selectActivePreset() 没切成：返回没成功，面板的下拉回到原来那个，原因照旧由面板报出来', async t => {
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'https://tavern.example/' });
+  const previous = { document: globalThis.document, window: globalThis.window, navigator: globalThis.navigator };
+  globalThis.document = dom.window.document;
+  globalThis.window = dom.window;
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: dom.window.navigator });
+  t.after(() => {
+    globalThis.document = previous.document;
+    globalThis.window = previous.window;
+    Object.defineProperty(globalThis, 'navigator', { configurable: true, value: previous.navigator });
+    dom.window.close();
+  });
+  const preset = (id, name) => ({
+    id, name, baseUrl: 'https://api.example.com', modelsPath: '/v1/models', generationPath: '/v1/images/generations',
+    selectedModel: 'gpt-image-1', cachedModels: [{ id: 'gpt-image-1' }], defaultSize: '1024x1024', defaultQuality: 'auto',
+    defaultCount: 1, timeoutMs: 180000, responseFormat: 'b64_json', extraBody: {}, hasApiKey: true, apiKeyMask: 'sk-••••demo',
+  });
+  const settings = { enabled: true, autoGenerate: false, generationProvider: 'openai', executionMode: 'direct', themeMode: 'tavern', allowHttp: false };
+  const errors = [];
+  const api = {
+    mode: () => 'direct',
+    health: async () => ({ mode: 'direct' }),
+    getSettings: async () => clone(settings),
+    updateSettings: async patch => ({ ...settings, ...patch }),
+    getPresets: async () => ({ activePresetId: 'p1', items: [preset('p1', '港'), preset('p2', '备用站')] }),
+    updatePreset: async (id, patch) => ({ ...preset(id, id === 'p1' ? '港' : '备用站'), ...patch }),
+    selectPreset: async () => { throw new Error('切换失败：酒馆没存上'); },
+    getNovelAi: async () => ({
+      config: { baseUrl: '', model: 'nai-diffusion-4-5-full', sampler: 'k_euler', defaultSize: '832x1216', defaultCount: 1, steps: 28, scale: 5 },
+      artistPresets: [{ id: 'a1', name: '默认画师串', prompt: '', negativePrompt: '' }],
+      activeArtistPresetId: 'a1',
+    }),
+    getReferenceSets: async () => ({ sets: [], defaultSetId: '', character: { key: '', name: '', setId: null, follows: true }, activeSetId: '' }),
+    cleanupGallery: async () => ({}),
+    galleryMetadata: async () => ({ items: [] }),
+    fileUrl: id => `/images/${id}`,
+  };
+  const store = createStore();
+  const panel = createToolPanel({ api, store, onError: (error, title) => errors.push([error.message, title]) });
+  await waitFor(() => store.state.preset?.id === 'p1', '设置面板未完成初始化');
+
+  assert.deepEqual(await panel.selectActivePreset('p2'), { switched: false, kind: 'api', name: '备用站' });
+  assert.equal(panel.presetChoices().activeId, 'p1', '下拉回到原来那个');
+  assert.equal(panel.presetChoices().busy, false, '不会卡在忙着');
+  assert.equal(store.state.preset.id, 'p1');
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0][0], '切换失败：酒馆没存上');
+});
+
+test('NovelAI 时这两个接口说的是画师串', async t => {
+  const { api, store, panel, page, calls } = setup(t);
+  await waitFor(() => store.state.preset?.id === 'p1', '设置面板未完成初始化');
+  const selected = [];
+  api.selectArtistPreset = async id => {
+    selected.push(id);
+    return { id, name: id === 'a2' ? '水彩' : '默认画师串', prompt: '', negativePrompt: '' };
+  };
+  api.updateArtistPreset = async (id, patch) => ({ id, name: id === 'a2' ? '水彩' : '默认画师串', ...patch });
+  [...page().querySelectorAll('.stia-engine-switch button')].find(button => button.textContent === 'NovelAI').click();
+  await waitFor(() => calls.settings.some(patch => patch.generationProvider === 'novelai'), '没有切到 NovelAI');
+  await waitFor(() => panel.presetChoices().kind === 'artist' && !panel.presetChoices().busy, '面板没换到画师串');
+  assert.deepEqual(panel.presetChoices().items, [{ id: 'a1', name: '默认画师串' }, { id: 'a2', name: '水彩' }]);
+  assert.equal(panel.presetChoices().activeId, 'a1');
+
+  assert.deepEqual(await panel.selectActivePreset('a2'), { switched: true, kind: 'artist', name: '水彩' });
+  assert.deepEqual(selected, ['a2']);
+  assert.equal(store.state.artistPreset.id, 'a2');
+  assert.equal(panel.presetChoices().activeId, 'a2');
+  assert.deepEqual(calls.selectPreset, [], 'API 预设没动');
+});
