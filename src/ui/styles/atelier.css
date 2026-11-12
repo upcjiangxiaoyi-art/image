@@ -154,6 +154,47 @@
   font-size: 11px;
 }
 
+/* 标题旁的版本号。 */
+.stia-version {
+  padding: 1px 7px;
+  color: var(--stia-muted);
+  background: var(--stia-hover);
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  vertical-align: middle;
+}
+
+/* 设置页最下面的「最近更新」。 */
+.stia-release-notes ul {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 4px 16px 16px;
+  list-style: none;
+}
+
+.stia-release-notes li {
+  display: grid;
+  grid-template-columns: 3.6em minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 12px;
+}
+
+.stia-release-notes li > strong {
+  color: var(--stia-text);
+}
+
+.stia-release-notes li > span {
+  color: var(--stia-secondary);
+}
+
+.stia-release-notes li > time {
+  color: var(--stia-muted);
+  font-size: 11px;
+}
+
 .stia-health.is-ready {
   color: var(--stia-success);
 }

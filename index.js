@@ -24,6 +24,11 @@ import { createPromptOverrideDialog } from './src/ui/pages/prompt-override/promp
 import { createErrorDialog, createProblemReporter } from './src/ui/pages/error-dialog/error-dialog.js';
 import { createGenerationController } from './src/ui/state/generation-controller.js';
 import { openImageViewer } from './src/ui/media/image-viewer.js';
+import { MODULE_NAME, VERSION } from './src/shared/constants.js';
+import { createVersionMemory, planUpdateNotice } from './src/shared/release-notes.js';
+
+/* 之前就在用（扩展设置里已经有画笺的数据）。要在 createApiClient 之前看：它一进来就会把这块数据建好。 */
+const existingUser = Boolean(extension_settings?.[MODULE_NAME]);
 
 const compat = createStCompat({
   getContext,
@@ -216,6 +221,22 @@ function installToolButton() {
   });
 }
 
+/* 每台设备更新后第一次打开提示一次这次改了什么：手机上看不到控制台，这样能确认更新生效了。全新安装不提示。 */
+function announceUpdate() {
+  let storage = null;
+  try {
+    storage = globalThis.localStorage;
+  } catch {
+    storage = null;
+  }
+  const memory = createVersionMemory(storage);
+  const notice = planUpdateNotice({ current: VERSION, seen: memory.read(), existingUser });
+  memory.write(VERSION);
+  if (!notice) return;
+  if (typeof globalThis.toastr?.info === 'function') globalThis.toastr.info(notice.text, notice.title, { timeOut: 12000 });
+  else console.info(`[画笺] ${notice.title}：${notice.text}`);
+}
+
 function initialize() {
   errorDialog = createErrorDialog();
   panel = createToolPanel({ api, store, onError: reportError });
@@ -235,6 +256,8 @@ function initialize() {
     if (document.visibilityState === 'hidden') flushPending();
   });
   window.addEventListener('pagehide', flushPending);
+  /* 晚一点再说，别和酒馆启动时的一堆提示挤在一起。 */
+  setTimeout(announceUpdate, 1500);
 }
 
 if (document.readyState === 'loading') {

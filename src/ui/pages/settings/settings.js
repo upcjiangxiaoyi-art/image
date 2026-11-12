@@ -1,4 +1,6 @@
 import { createGalleryPage } from '../gallery/gallery.js';
+import { VERSION } from '../../../shared/constants.js';
+import { RELEASE_NOTES } from '../../../shared/release-notes.js';
 import { describeBytes } from '../../state/tag-footprint.js';
 import {
   NOVELAI_MODELS,
@@ -143,6 +145,12 @@ export function createToolPanel({ api, store, onError = () => {} }) {
   const header = document.createElement('header');
   const heading = document.createElement('h2');
   heading.textContent = '画笺';
+  /* 版本号就写在标题旁边：手机上看不到控制台，更新有没有生效看这里。 */
+  const versionTag = document.createElement('small');
+  versionTag.className = 'stia-version';
+  versionTag.textContent = VERSION;
+  versionTag.title = `画笺 ${VERSION}`;
+  heading.append(' ', versionTag);
   const health = document.createElement('span');
   health.className = 'stia-health';
   health.textContent = '正在连接…';
@@ -1753,6 +1761,26 @@ export function createToolPanel({ api, store, onError = () => {} }) {
   );
   advanced.append(advancedSummary, advancedGrid);
 
+  /* 最近更新：每版一句话，不用去翻仓库。 */
+  const releaseNotes = document.createElement('details');
+  releaseNotes.className = 'stia-advanced stia-release-notes';
+  const releaseSummary = document.createElement('summary');
+  releaseSummary.textContent = `最近更新 · 当前版本 ${VERSION}`;
+  const releaseList = document.createElement('ul');
+  for (const note of RELEASE_NOTES) {
+    const item = document.createElement('li');
+    const version = document.createElement('strong');
+    version.textContent = note.version;
+    const summary = document.createElement('span');
+    summary.textContent = note.summary;
+    const date = document.createElement('time');
+    date.dateTime = note.date;
+    date.textContent = note.date.slice(5);
+    item.append(version, summary, date);
+    releaseList.append(item);
+  }
+  releaseNotes.append(releaseSummary, releaseList);
+
   function setProvider(provider, announce = true) {
     const isNovelAi = provider === 'novelai';
     const wasNovelAi = generationProvider.value === 'novelai';
@@ -1825,6 +1853,7 @@ export function createToolPanel({ api, store, onError = () => {} }) {
     automationSection,
     appearanceSection,
     advanced,
+    releaseNotes,
     status,
   );
 

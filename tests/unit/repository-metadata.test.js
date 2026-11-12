@@ -253,3 +253,12 @@ test('2.2.0 画廊：只看这个聊天、跳到所在楼层的入口都在，�
   const css = await fs.readFile(path.join(root, 'src/ui/styles/atelier.css'), 'utf8');
   assert.match(css, /\.mes\.stia-jump-highlight \{/);
 });
+
+test('2.3.0 版本号写在面板标题旁，设置页有「最近更新」，更新后第一次打开会提示', async () => {
+  const settings = await fs.readFile(path.join(root, 'src/ui/pages/settings/settings.js'), 'utf8');
+  assert.match(settings, /versionTag\.textContent = VERSION/);
+  assert.match(settings, /最近更新 · 当前版本 \$\{VERSION\}/);
+  const index = await fs.readFile(path.join(root, 'index.js'), 'utf8');
+  assert.match(index, /planUpdateNotice\(\{ current: VERSION, seen: memory\.read\(\), existingUser \}\)/);
+  assert.match(index, /const existingUser = Boolean\(extension_settings\?\.\[MODULE_NAME\]\);[\s\S]*createApiClient\(/, '先看是不是老用户，再建客户端');
+});
