@@ -199,6 +199,7 @@ test('智能重试开启时，上游点名拒绝 response_format 才会去掉并
   assert.equal(results.length, 1);
   assert.deepEqual(progress[0].adjustedParameters, ['response_format']);
   assert.match(progress[0].message, /重试（1\/1）/);
+  assert.equal(progress[0].message, '这条线路不认 response_format 参数，已去掉，正在重试（1/1）', '卡片上显示的这句读起来不像报错');
 });
 
 test('智能重试关闭时不增加请求，其他 400 原因也不触发重发', async t => {

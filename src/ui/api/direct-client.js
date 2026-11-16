@@ -344,11 +344,28 @@ export function createDirectApiClient({
   const { namespace, legacyGallery } = ensureNamespace(extensionSettings);
   const metadataStore = galleryStore || createSillyTavernGalleryMetadataStore(compat);
   const attemptStore = attemptStoreOption || createSillyTavernAttemptStore(compat);
-  /* 哪些线路明确拒过参考图组的「高保真参考」（input_fidelity）。只记在这次打开页面期间：线路以后接上了，
-     下次打开页面自然会再带着试一次。预设换了地址或模型就是另一条线路（键里带着）；
-     到参考图组里重新拨一次高保真开关也清掉，等于说「再试一次」。 */
-  const fidelityRejections = new Set();
-  const fidelityKey = preset => [preset.id, preset.baseUrl, preset.editsPath || '', preset.selectedModel].join('|');
+  /* 哪些线路明确拒过哪个参数。智能重试认出线路点名拒了它就记下来，之后在这条线路上一开始就不带：
+     不然每张图都要先被拒一遍再重发，带参考图时还要白传一遍图。
+     - 只记「要么带、要么不带」的两个：参考图组的高保真 input_fidelity、图片返回格式 response_format。
+       size / quality / n 被拒往往是某个取值不行，换个值可能就行，不记。
+     - 按线路记：预设 id + 地址 + 用的是生图还是图生图接口 + 模型。预设换了地址或模型就是另一条线路。
+     - 只记在这次打开页面期间：线路以后接上了，下次打开页面自然会再带着试一次。
+     - 人主动改了相关的设置等于说「再试一次」：重新拨一次这组的高保真开关、改了预设的「图片返回格式」。 */
+  const REMEMBERED_PARAMETERS = ['input_fidelity', 'response_format'];
+  const rejectedParameters = new Map();
+  const lineKey = (preset, withReferences) => [
+    preset.id,
+    preset.baseUrl,
+    withReferences ? (preset.editsPath || '/v1/images/edits') : preset.generationPath,
+    preset.selectedModel,
+  ].join('|');
+  function forgetRejected(parameter, presetId = null) {
+    for (const [key, parameters] of rejectedParameters) {
+      if (presetId && !key.startsWith(`${presetId}|`)) continue;
+      parameters.delete(parameter);
+      if (!parameters.size) rejectedParameters.delete(key);
+    }
+  }
 
   /* ---------- 聊天的生图标签侧文件（按聊天分，按 tagId 记） ---------- */
   const tagStores = new Map();
@@ -1314,12 +1331,23 @@ export function createDirectApiClient({
     const referenceSet = provider === 'novelai' ? null : resolveReferenceSet();
     if (preset) preset.referenceFidelity = referenceSet?.referenceFidelity === 'high' ? 'high' : '';
     const references = provider === 'novelai' ? [] : planReferences(input, referenceSet);
-    /* 这条线路这次打开页面期间已经明确拒过 input_fidelity：不再带它，不然每张图都要先白传一遍参考图、被拒、再重传。 */
-    const fidelityRemembered = Boolean(preset)
-      && references.length > 0
-      && preset.referenceFidelity === 'high'
-      && fidelityRejections.has(fidelityKey(preset));
-    if (fidelityRemembered) preset.referenceFidelity = '';
+    /* 这条线路这次打开页面期间已经明确拒过的参数，一开始就不带（preset 是这次请求用的副本，不动存着的预设）。 */
+    const line = preset ? lineKey(preset, references.length > 0) : '';
+    const remembered = [];
+    if (preset) {
+      const rejected = rejectedParameters.get(line);
+      if (rejected?.has('input_fidelity') && references.length > 0 && preset.referenceFidelity === 'high') {
+        preset.referenceFidelity = '';
+        remembered.push('input_fidelity');
+      }
+      if (rejected?.has('response_format') && preset.responseFormat !== '') {
+        const before = buildRequestBody({ preset, prompt: input.prompt, parameters: input.parameters });
+        preset.responseFormat = '';
+        /* 「额外请求参数 JSON」里自己写了 response_format 的不替人删。 */
+        const after = buildRequestBody({ preset, prompt: input.prompt, parameters: input.parameters });
+        if ('response_format' in before && !('response_format' in after)) remembered.push('response_format');
+      }
+    }
 
     const attempt = {
       attemptId: input.attemptId,
@@ -1351,13 +1379,13 @@ export function createDirectApiClient({
       completedAt: null,
       schemaVersion: SCHEMA_VERSION,
     };
-    /* 没带高保真也照实记在这次生成上（remembered：没有真的重试，是记着这条线路不认）。 */
-    if (fidelityRemembered) {
+    /* 没带的参数照实记在这次生成上（remembered：没有真的重试，是记着这条线路不认）。 */
+    if (remembered.length) {
       attempt.compatibilityRetry = {
         attempted: false,
         remembered: true,
-        adjustedParameters: ['input_fidelity'],
-        reason: 'input_fidelity 这条线路不认',
+        adjustedParameters: remembered,
+        reason: `${remembered.join('、')} 这条线路不认`,
       };
     }
     /* 记下这次实际发出去的画质：预设默认值、标签里写的、「不发送」、额外请求参数 JSON 都算进去，
@@ -1418,7 +1446,18 @@ export function createDirectApiClient({
           signal: controller.signal,
           references: loadedReferences,
           onCompatibilityRetry: async retry => {
-            attempt.compatibilityRetry = retry;
+            /* 线路点名拒了的参数当场记下（不等重试画成）：拒绝本身就是证据。一次只重试一回，
+               一条线路同时不认两个参数时，第一张会失败，但第二张起就不再带第一个，很快就顺了。 */
+            const learned = retry.adjustedParameters.filter(name => REMEMBERED_PARAMETERS.includes(name));
+            if (learned.length) {
+              const rejected = rejectedParameters.get(line) || new Set();
+              for (const name of learned) rejected.add(name);
+              rejectedParameters.set(line, rejected);
+            }
+            /* 这次一开始就没带的（记着不认的）和刚被拒的，都记在这次生成上。 */
+            attempt.compatibilityRetry = remembered.length
+              ? { ...retry, adjustedParameters: [...new Set([...remembered, ...retry.adjustedParameters])] }
+              : retry;
             attempt.statusMessage = retry.message;
             await persist({ persist: false });
             input.onProgress?.(clone(attempt));
@@ -1430,10 +1469,6 @@ export function createDirectApiClient({
             input.onProgress?.(clone(attempt));
           },
         });
-        /* 去掉 input_fidelity 之后画成了：记住这条线路不认它。 */
-        if (!fidelityRemembered && attempt.compatibilityRetry?.adjustedParameters?.includes('input_fidelity')) {
-          fidelityRejections.add(fidelityKey(preset));
-        }
       }
 
       attempt.status = 'downloading';
@@ -2036,11 +2071,14 @@ export function createDirectApiClient({
       const next = { ...patch };
       delete next.apiKey;
       delete next.id;
+      const formatBefore = preset.responseFormat;
       Object.assign(preset, normalizePreset({ ...preset, ...next }), {
         id: preset.id,
         updatedAt: now(),
         schemaVersion: SCHEMA_VERSION,
       });
+      /* 「图片返回格式」真的改了才算「再试一次」；设置页每次保存、切预设都会把整个表单原样再存一遍，那不算。 */
+      if (preset.responseFormat !== formatBefore) forgetRejected('response_format', preset.id);
       await savePreferences();
       return publicPreset(preset, getApiKey(preset.id));
     },
@@ -2103,7 +2141,7 @@ export function createDirectApiClient({
       if ('useReferences' in patch) set.useReferences = patch.useReferences !== false;
       if ('referenceFidelity' in patch) {
         set.referenceFidelity = patch.referenceFidelity === 'high' ? 'high' : '';
-        fidelityRejections.clear();
+        forgetRejected('input_fidelity');
       }
       set.updatedAt = now();
       await savePreferences({ immediate: true });

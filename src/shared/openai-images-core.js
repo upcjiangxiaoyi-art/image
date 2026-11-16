@@ -457,7 +457,8 @@ export function createOpenAiImagesCore({
       attempted: true,
       adjustedParameters,
       reason: `${adjustedParameters.join('、')} 参数不兼容`,
-      message: `检测到 ${adjustedParameters.join('、')} 参数不兼容，正在回退并重试（1/1）`,
+      /* 画着的卡片上显示的那句。不是报错：这条线路不认这个参数，去掉重发一次就行。 */
+      message: `这条线路不认 ${adjustedParameters.join('、')} 参数，已去掉，正在重试（1/1）`,
     };
   }
 

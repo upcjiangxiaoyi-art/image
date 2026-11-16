@@ -879,6 +879,8 @@ async function gatedClient(t, chat, {
   chatTagStore,
   /* 图生图接口怎么回：(表单, 请求头) => Response；返回空值就照常回一张图。 */
   editsReply,
+  /* 生图接口怎么回：(请求体, 请求头) => Response；返回空值就照常回一张图。 */
+  generationReply,
 } = {}) {
   const tagStores = new Map();
   const chatTagStoreFactory = chatTagStore || (identity => {
@@ -910,7 +912,7 @@ async function gatedClient(t, chat, {
       requests.push(JSON.parse(options.body));
       markStarted();
       await gate;
-      return response(200, { data: [{ b64_json: PNG_BASE64 }] });
+      return generationReply?.(JSON.parse(options.body), options.headers || {}) || response(200, { data: [{ b64_json: PNG_BASE64 }] });
     }
     if (String(url).endsWith('/v1/images/edits')) {
       edits.push({ body: options.body, headers: options.headers || {} });
@@ -2375,4 +2377,126 @@ test('线路不认高保真参考：智能重试去掉 input_fidelity 重画；�
   assert.equal(edits.length, 8);
   assert.equal(edits[7].body.get('input_fidelity'), 'high', '别的线路不受影响');
   assert.equal(attempt.compatibilityRetry ?? null, null);
+});
+
+/* 2.5.3 线路不认 response_format：智能重试去掉它画成之后，也记住这条线路。 */
+test('线路不认 response_format：第一张去掉重发，之后这次打开页面期间不再带它；改了预设的「图片返回格式」会再试；别的线路照常带', async t => {
+  const tagId = crypto.randomUUID();
+  const messageUuid = crypto.randomUUID();
+  const message = { is_user: false, mes: '<draw>base64</draw>', extra: { stImageAtelier: leanMetadata(tagId, messageUuid) } };
+  let picky = true;
+  const { client, release, requests } = await gatedClient(t, [message], {
+    /* 只有 sk-test 这条线路不认 response_format（picky 关掉时它也认）。 */
+    generationReply: (body, headers) => (picky && 'response_format' in body && /sk-test$/.test(headers.Authorization || '')
+      ? response(400, { error: { message: "Unknown parameter: 'response_format'." } })
+      : null),
+  });
+  release();
+  await client.updateSettings({ enableSmartRetry: true });
+
+  let attempt = await client.generate(generationInput(tagId, messageUuid));
+  assert.equal(attempt.status, 'succeeded');
+  assert.equal(requests.length, 2, '第一张：带着被拒一次，去掉再发一次');
+  assert.equal(requests[0].response_format, 'b64_json');
+  assert.equal('response_format' in requests[1], false);
+  assert.deepEqual(attempt.compatibilityRetry.adjustedParameters, ['response_format']);
+  assert.notEqual(attempt.compatibilityRetry.remembered, true);
+
+  attempt = await client.generate(generationInput(tagId, messageUuid));
+  assert.equal(attempt.status, 'succeeded');
+  assert.equal(requests.length, 3, '第二张起记住了：只发一次，不再先被拒一遍');
+  assert.equal('response_format' in requests[2], false);
+  assert.equal(attempt.compatibilityRetry.remembered, true);
+  assert.deepEqual(attempt.compatibilityRetry.adjustedParameters, ['response_format']);
+  assert.equal(requests[2].quality, requests[0].quality, '别的参数不动');
+
+  /* 设置页每次保存、切预设都会把整个表单再存一遍：格式没变就不算「再试一次」。 */
+  const active = (await client.getPresets()).activePresetId;
+  await client.updatePreset(active, { responseFormat: 'b64_json', defaultQuality: 'high' });
+  await client.generate(generationInput(tagId, messageUuid));
+  assert.equal(requests.length, 4, '图片返回格式没变，照旧不带');
+  assert.equal('response_format' in requests[3], false);
+
+  /* 真的改了「图片返回格式」：等于说「再试一次」。 */
+  await client.updatePreset(active, { responseFormat: 'url' });
+  await client.generate(generationInput(tagId, messageUuid));
+  assert.equal(requests.length, 6, '带着新的格式再试一次，还是被拒，再去掉重画');
+  assert.equal(requests[4].response_format, 'url');
+  assert.equal('response_format' in requests[5], false);
+
+  /* 换一条认它的线路：照常带着。 */
+  const other = await client.createPreset({ name: '另一条线路' });
+  await client.updatePreset(other.id, { baseUrl: 'https://other.test', apiKey: 'sk-other', selectedModel: 'gpt-image-1' });
+  await client.selectPreset(other.id);
+  attempt = await client.generate(generationInput(tagId, messageUuid));
+  assert.equal(requests.length, 7);
+  assert.equal(requests[6].response_format, 'b64_json', '别的线路不受影响');
+  assert.equal(attempt.compatibilityRetry ?? null, null);
+
+  /* 自己在「额外请求参数 JSON」里写了 response_format 的：不替人删，照发（被拒了再由智能重试去掉）。 */
+  await client.selectPreset(active);
+  await client.updatePreset(active, { extraBody: { response_format: 'b64_json' } });
+  attempt = await client.generate(generationInput(tagId, messageUuid));
+  assert.equal(requests.length, 9);
+  assert.equal(requests[7].response_format, 'b64_json', '额外参数里写的照发');
+  assert.equal('response_format' in requests[8], false);
+  assert.notEqual(attempt.compatibilityRetry.remembered, true);
+  /* 照发的这一次要是线路收下了：记录上不能写成「没带」。 */
+  picky = false;
+  attempt = await client.generate(generationInput(tagId, messageUuid));
+  assert.equal(requests.length, 10);
+  assert.equal(requests[9].response_format, 'b64_json');
+  assert.equal(attempt.compatibilityRetry ?? null, null, '带了、也没被拒，就什么都不记');
+  picky = true;
+  await client.updatePreset(active, { extraBody: {} });
+
+  /* 没开智能重试时什么都不记：照原样报错。 */
+  await client.updatePreset(active, { responseFormat: 'b64_json' });
+  await client.updateSettings({ enableSmartRetry: false });
+  await assert.rejects(client.generate(generationInput(tagId, messageUuid)), error => error.code === 'UPSTREAM_HTTP_ERROR');
+  assert.equal(requests.length, 11);
+});
+
+test('一条线路同时不认两个参数：一次只重试一回，第一张失败；但被拒的当场记住，第二张只重试一回就成，第三张起一次就成', async t => {
+  const tagId = crypto.randomUUID();
+  const messageUuid = crypto.randomUUID();
+  const message = { is_user: false, mes: '<draw>base64</draw>', extra: { stImageAtelier: leanMetadata(tagId, messageUuid) } };
+  const { client, release, edits } = await gatedClient(t, [message], {
+    compatExtra: { currentCharacterKey: () => 'char:a.png', currentCharacterName: () => '阿A' },
+    editsReply: body => {
+      if (body.get('response_format')) return response(400, { error: { message: "Unknown parameter: 'response_format'." } });
+      if (body.get('input_fidelity')) return response(400, { error: { message: '当前服务尚未接入 input_fidelity 参数' } });
+      return null;
+    },
+  });
+  release();
+  await client.updateSettings({ enableSmartRetry: true });
+  /* 不是 gpt-image 开头的模型，图生图也会带 response_format。 */
+  await client.updatePreset((await client.getPresets()).activePresetId, { selectedModel: 'relay-image-1' });
+  const overview = await client.createReferenceSet({ name: '阿A的脸' });
+  await client.addReference(overview.created.setId, { bytes: Buffer.from(PNG_BASE64, 'base64'), filename: 'a.png' });
+  await client.updateReferenceSet(overview.created.setId, { referenceFidelity: 'high' });
+
+  await assert.rejects(
+    client.generate(generationInput(tagId, messageUuid)),
+    error => /input_fidelity/.test(error.details),
+    '第一张：去掉 response_format 重试，又被 input_fidelity 拦住',
+  );
+  assert.equal(edits.length, 2);
+
+  let attempt = await client.generate(generationInput(tagId, messageUuid));
+  assert.equal(attempt.status, 'succeeded');
+  assert.equal(edits.length, 4, '第二张：一开始就不带 response_format，去掉 input_fidelity 重试一回');
+  assert.equal(edits[2].body.get('response_format'), null);
+  assert.equal(edits[2].body.get('input_fidelity'), 'high');
+  assert.equal(edits[3].body.get('input_fidelity'), null);
+  assert.deepEqual([...attempt.compatibilityRetry.adjustedParameters].sort(), ['input_fidelity', 'response_format'], '两个都记在这次生成上');
+  assert.notEqual(attempt.compatibilityRetry.remembered, true, '这一次真的重试过');
+
+  attempt = await client.generate(generationInput(tagId, messageUuid));
+  assert.equal(attempt.status, 'succeeded');
+  assert.equal(edits.length, 5, '第三张起：两个都不带，一次就成');
+  assert.equal(edits[4].body.get('response_format'), null);
+  assert.equal(edits[4].body.get('input_fidelity'), null);
+  assert.equal(attempt.compatibilityRetry.remembered, true);
 });
