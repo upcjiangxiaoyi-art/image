@@ -277,6 +277,51 @@ test('智能重试去掉 quality 才出图时提醒这张不是 max；只回退 
   }
 });
 
+/* 2.5.2 线路不认参考图组的「高保真参考」。 */
+test('线路不认高保真参考：没自动重试过的失败弹窗给出两个办法；去掉它画成了提醒一次；记着线路不认、一开始就没带的不再弹', () => {
+  const details = 'status_code=400, 当前服务尚未接入 input_fidelity 参数';
+  const error = new DirectError('UPSTREAM_HTTP_ERROR', details, 400);
+  const failed = describeGenerationProblem({
+    attempt: { status: 'failed', errorCode: 'UPSTREAM_HTTP_ERROR', errorMessage: `上游生图请求失败（HTTP 400）：${details}` },
+    error,
+  });
+  assert.equal(failed.tone, 'danger');
+  assert.match(failed.message, /尚未接入 input_fidelity/, '上游的原话照样在');
+  assert.match(failed.hint, /这条线路不认参考图组的「高保真参考」/);
+  assert.match(failed.hint, /「生成失败后智能重试」打开/);
+  assert.match(failed.hint, /把「高保真参考」关掉/);
+
+  const retriedAndFailed = describeGenerationProblem({
+    attempt: {
+      status: 'failed',
+      errorCode: 'UPSTREAM_HTTP_ERROR',
+      errorMessage: '上游生图请求失败（HTTP 400）：别的原因；已尝试移除 input_fidelity 后重试一次',
+      compatibilityRetry: { adjustedParameters: ['input_fidelity'] },
+    },
+    error: new DirectError('UPSTREAM_HTTP_ERROR', '别的原因', 400),
+  });
+  assert.equal(retriedAndFailed.hint.includes('智能重试」打开'), false, '已经自动去掉重画过了，就不再劝人打开');
+
+  const other = describeGenerationProblem({
+    attempt: { status: 'failed', errorCode: 'UPSTREAM_HTTP_ERROR', errorMessage: '上游生图请求失败（HTTP 400）：size 不支持' },
+    error: new DirectError('UPSTREAM_HTTP_ERROR', 'size 不支持', 400),
+  });
+  assert.equal(other.hint.includes('高保真'), false, '别的报错不提高保真');
+
+  const recovered = describeGenerationProblem({
+    attempt: { status: 'succeeded', compatibilityRetry: { attempted: true, adjustedParameters: ['input_fidelity'] } },
+  });
+  assert.equal(recovered.tone, 'warning');
+  assert.equal(recovered.title, '参数被上游拒绝，已自动回退');
+  assert.match(recovered.message, /高保真参考 input_fidelity/);
+  assert.match(recovered.hint, /参考图照带了，只是没有高保真/);
+  assert.match(recovered.hint, /这次打开页面期间在这条线路上不再带它/);
+
+  assert.equal(describeGenerationProblem({
+    attempt: { status: 'succeeded', compatibilityRetry: { attempted: false, remembered: true, adjustedParameters: ['input_fidelity'] } },
+  }), null, '第一次已经提醒过，之后每张图不再弹');
+});
+
 test('报错弹窗：点一下任意位置就关，选中文字时不关；同内容计次、不同内容合并', t => {
   const dom = withDom(t);
   const outside = document.createElement('textarea');

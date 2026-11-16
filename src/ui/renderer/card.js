@@ -142,6 +142,8 @@ export function imageInfo(result, producer) {
     quality,
     size: dropped.has('size') ? '默认尺寸' : displaySize(producer?.parameters?.size || result?.requestedSize || ''),
     references,
+    /* 参考图组开着「高保真参考」，但这条线路不认 input_fidelity，这张是去掉它画的。 */
+    fidelityRejected: references > 0 && dropped.has('input_fidelity'),
   };
 }
 
@@ -154,7 +156,7 @@ function infoList(info) {
     [info.presetLabel, info.preset, 'is-start'],
     ['画质', qualityUnknown ? '未记录' : info.quality, 'is-end'],
     ['模型', info.model, 'is-wide'],
-    ['参考图', info.references ? `带了 ${info.references} 张` : '', 'is-wide'],
+    ['参考图', info.references ? `带了 ${info.references} 张${info.fidelityRejected ? '（这条线路不认高保真）' : ''}` : '', 'is-wide'],
   ].filter(([, value]) => value);
   if (!items.length) return null;
   const list = document.createElement('dl');

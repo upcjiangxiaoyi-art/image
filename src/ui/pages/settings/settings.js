@@ -1180,7 +1180,7 @@ export function createToolPanel({ api, store, onError = () => {} }) {
   const referenceFidelityField = field('高保真参考（input_fidelity: high）', referenceFidelity);
   referenceFidelityField.classList.add('stia-switch-field', 'stia-switch-field--row');
   const referenceFidelityDescription = document.createElement('small');
-  referenceFidelityDescription.textContent = '更贴近参考图的脸和细节，多花一点；只有 gpt-image 系列认，别的模型可能报参数不支持。跟着这一组走。';
+  referenceFidelityDescription.textContent = '更贴近参考图的脸和细节，多花一点；跟着这一组走。只有一部分线路认它，不认的会报参数不支持：开着「生成失败后智能重试」时自动去掉它重画，并记住这条线路这次不再带。';
   referenceFidelityField.querySelector('span')?.append(referenceFidelityDescription);
   const referenceActions = document.createElement('div');
   referenceActions.className = 'stia-actions stia-actions--fill';

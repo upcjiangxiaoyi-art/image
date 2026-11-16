@@ -14,7 +14,9 @@ const OUTPUT_PARAMETERS = Object.freeze({
   quality: '质量 quality',
   size: '尺寸 size',
   n: '数量 n',
+  input_fidelity: '高保真参考 input_fidelity',
 });
+const FIDELITY_PATTERN = /input[_ -]?fidelity/i;
 
 const NETWORK_CODES = new Set(['DIRECT_FETCH_BLOCKED', 'SERVER_PLUGIN_UNAVAILABLE']);
 const SETUP_CODES = new Set(['PRESET_NOT_CONFIGURED', 'API_KEY_MISSING', 'MODEL_NOT_SELECTED']);
@@ -167,11 +169,18 @@ export function describeGenerationProblem({
         parameterRejected && isPremiumQuality(quality)
           ? `${premiumQualityNote(quality)}如果报错说的是 quality，请换用这两个模型，或把默认质量改回 high。`
           : '',
+        /* 线路不认参考图组的「高保真参考」，又没有自动去掉重画过：说清楚有哪两个办法。 */
+        !interrupted && code === 'UPSTREAM_HTTP_ERROR' && FIDELITY_PATTERN.test(message)
+          && !(attempt?.compatibilityRetry?.adjustedParameters || []).includes('input_fidelity')
+          ? '这条线路不认参考图组的「高保真参考」（input_fidelity）。两个办法：把设置里的「生成失败后智能重试」打开，'
+            + '遇到不认的线路会自动去掉它重画；或者到参考图组里把「高保真参考」关掉。'
+          : '',
       ),
     };
   }
   if (status !== 'succeeded') return null;
-  const dropped = (attempt?.compatibilityRetry?.adjustedParameters || [])
+  /* remembered：这次没有真的被拒再重试，是记着这条线路不认、一开始就没带——第一次已经提醒过，不再每张都弹。 */
+  const dropped = (attempt?.compatibilityRetry?.remembered ? [] : attempt?.compatibilityRetry?.adjustedParameters || [])
     .filter(name => Object.hasOwn(OUTPUT_PARAMETERS, name));
   const qualityDropped = dropped.includes('quality') && Boolean(quality);
   const fallbackMessage = dropped.length
@@ -179,7 +188,12 @@ export function describeGenerationProblem({
       + '「生成失败后智能重试」去掉后重新生成成功。这张图按上游默认值生成'
       + `${qualityDropped ? `，不是 quality=${quality}` : ''}。`
     : '';
-  const fallbackHint = qualityDropped && isPremiumQuality(quality) ? premiumQualityNote(quality) : '';
+  const fallbackHint = joinLines(
+    qualityDropped && isPremiumQuality(quality) ? premiumQualityNote(quality) : '',
+    dropped.includes('input_fidelity')
+      ? '这条线路不认「高保真参考」，参考图照带了，只是没有高保真。这次打开页面期间在这条线路上不再带它；别的线路照常带。'
+      : '',
+  );
   /* 卡片已经不在眼前，或是后台那张：告诉用户图去了哪，带上 resultId 好「查看」。 */
   if (moved) {
     return {

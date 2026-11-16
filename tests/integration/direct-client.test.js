@@ -877,6 +877,8 @@ async function gatedClient(t, chat, {
   compatExtra = {},
   /* 聊天的生图标签侧文件：每个聊天（identity）一份内存版，测试里能看写了几次、写了什么。 */
   chatTagStore,
+  /* 图生图接口怎么回：(表单, 请求头) => Response；返回空值就照常回一张图。 */
+  editsReply,
 } = {}) {
   const tagStores = new Map();
   const chatTagStoreFactory = chatTagStore || (identity => {
@@ -914,7 +916,7 @@ async function gatedClient(t, chat, {
       edits.push({ body: options.body, headers: options.headers || {} });
       markStarted();
       await gate;
-      return response(200, { data: [{ b64_json: PNG_BASE64 }] });
+      return editsReply?.(options.body, options.headers || {}) || response(200, { data: [{ b64_json: PNG_BASE64 }] });
     }
     if (String(url).startsWith('/user/images/')) {
       served.push(String(url));
@@ -2295,4 +2297,82 @@ test('侧文件写失败：自动生图照样发请求、出图，记录留在�
   assert.equal(record.autoAttempted, true, '标记留在内存里');
   assert.deepEqual(record.resultRefs.map(ref => ref.resultId), attempt.resultIds);
   assert.match(client.chatTagFile(), /^st-image-atelier-chat-2026-11-01_20h59m56s197ms-[0-9a-z]+\.json$/, '文件名只剩酒馆收的字符');
+});
+
+/* 2.5.2 线路不认参考图组的「高保真参考」：中转回「当前服务尚未接入 input_fidelity 参数」。 */
+test('线路不认高保真参考：智能重试去掉 input_fidelity 重画；这次打开页面期间这条线路不再带它；重新开一次开关会再试；别的线路不受影响', async t => {
+  const tagId = crypto.randomUUID();
+  const messageUuid = crypto.randomUUID();
+  const message = { is_user: false, mes: '<draw>base64</draw>', extra: { stImageAtelier: leanMetadata(tagId, messageUuid) } };
+  let busyOnce = false;
+  const { client, release, edits } = await gatedClient(t, [message], {
+    compatExtra: { currentCharacterKey: () => 'char:a.png', currentCharacterName: () => '阿A' },
+    /* 只有 Authorization 是 sk-test 的这条线路不认 input_fidelity。 */
+    editsReply: (body, headers) => {
+      if (busyOnce) {
+        busyOnce = false;
+        return response(503, { error: { message: 'upstream busy' } });
+      }
+      return body.get('input_fidelity') && /sk-test$/.test(headers.Authorization || '')
+        ? response(400, { error: { message: 'status_code=400, 当前服务尚未接入 input_fidelity 参数' } })
+        : null;
+    },
+  });
+  release();
+  const png = Buffer.from(PNG_BASE64, 'base64');
+  const overview = await client.createReferenceSet({ name: '阿A的脸' });
+  const setId = overview.created.setId;
+  await client.addReference(setId, { bytes: png, filename: 'a.png' });
+  await client.updateReferenceSet(setId, { referenceFidelity: 'high' });
+
+  /* 没开智能重试：照原样报错，报错里带着上游的原话。 */
+  await assert.rejects(
+    client.generate(generationInput(tagId, messageUuid)),
+    error => error.code === 'UPSTREAM_HTTP_ERROR' && /尚未接入 input_fidelity/.test(error.details),
+  );
+  assert.equal(edits.length, 1);
+
+  await client.updateSettings({ enableSmartRetry: true });
+  let attempt = await client.generate(generationInput(tagId, messageUuid));
+  assert.equal(attempt.status, 'succeeded');
+  assert.equal(edits.length, 3, '带着被拒一次，去掉再发一次');
+  assert.equal(edits[1].body.get('input_fidelity'), 'high');
+  assert.equal(edits[2].body.get('input_fidelity'), null);
+  assert.ok(edits[2].body.get('image') instanceof Blob, '参考图照带');
+  assert.deepEqual(attempt.compatibilityRetry.adjustedParameters, ['input_fidelity']);
+  assert.notEqual(attempt.compatibilityRetry.remembered, true, '这一次是真的重试过');
+
+  attempt = await client.generate(generationInput(tagId, messageUuid));
+  assert.equal(attempt.status, 'succeeded');
+  assert.equal(edits.length, 4, '同一条线路记住了：不再带它，只发一次，参考图不用白传一遍');
+  assert.equal(edits[3].body.get('input_fidelity'), null);
+  assert.deepEqual(attempt.compatibilityRetry.adjustedParameters, ['input_fidelity'], '记录上照样写着这张没带高保真');
+  assert.equal(attempt.compatibilityRetry.remembered, true);
+  const [latest] = (await client.resolveTags([tagId]))[0].results.slice(-1);
+  assert.deepEqual(latest.compatibilityRetry.adjustedParameters, ['input_fidelity'], '图片记录上也有');
+
+  /* 记着不带的那种请求因为别的原因失败：报错里不说「已尝试移除 … 后重试一次」，这次并没有重试过。 */
+  busyOnce = true;
+  await assert.rejects(client.generate(generationInput(tagId, messageUuid)), error => error.code === 'UPSTREAM_HTTP_ERROR');
+  assert.equal(edits.length, 5);
+  assert.equal(edits[4].body.get('input_fidelity'), null);
+  const [failedAttempt] = (await client.resolveTags([tagId]))[0].attempts;
+  assert.equal(failedAttempt.status, 'failed');
+  assert.equal(/已尝试移除/.test(failedAttempt.errorMessage), false, failedAttempt.errorMessage);
+
+  /* 到参考图组里把开关重新开一次：等于说「再试一次」。 */
+  await client.updateReferenceSet(setId, { referenceFidelity: 'high' });
+  attempt = await client.generate(generationInput(tagId, messageUuid));
+  assert.equal(edits.length, 7, '又带着试了一次，还是被拒，再去掉重画');
+  assert.equal(edits[5].body.get('input_fidelity'), 'high');
+  assert.equal(edits[6].body.get('input_fidelity'), null);
+
+  /* 换一条认它的线路：照常带着。 */
+  const other = await client.createPreset({ name: '另一条线路' });
+  await client.updatePreset(other.id, { baseUrl: 'https://other.test', apiKey: 'sk-other', selectedModel: 'gpt-image-1' });
+  await client.selectPreset(other.id);
+  attempt = await client.generate(generationInput(tagId, messageUuid));
+  assert.equal(edits.length, 8);
+  assert.equal(edits[7].body.get('input_fidelity'), 'high', '别的线路不受影响');
+  assert.equal(attempt.compatibilityRetry ?? null, null);
 });

@@ -451,8 +451,27 @@ test('出图后卡片下方显示这张图的预设、画质、模型，尺寸�
   const producer = { attemptId: 'a1', status: 'succeeded', provider: 'openai', model: 'gpt-image-2.5-sunburst', presetNameSnapshot: '纯爱2.5', qualitySnapshot: 'max', parameters: { size: '1024x1792' } };
   assert.deepEqual(imageInfo(result, producer), {
     presetLabel: '预设', preset: '纯爱2.5', model: 'gpt-image-2.5-sunburst', quality: 'max', size: '1024×1792', references: 0,
+    fidelityRejected: false,
   });
   assert.equal(imageInfo({ ...result, references: ['a.png', 'b.png'] }, producer).references, 2, '图片记录上记着带了几张参考图');
+  /* 2.5.2 线路不认高保真参考：这张是去掉 input_fidelity 画的。 */
+  const withReferences = { ...result, references: ['a.png', 'b.png'] };
+  assert.equal(imageInfo(withReferences, producer).fidelityRejected, false);
+  assert.equal(
+    imageInfo(withReferences, { ...producer, compatibilityRetry: { adjustedParameters: ['input_fidelity'] } }).fidelityRejected,
+    true,
+    '智能重试去掉了 input_fidelity',
+  );
+  assert.equal(
+    imageInfo({ ...withReferences, compatibilityRetry: { remembered: true, adjustedParameters: ['input_fidelity'] } }, null).fidelityRejected,
+    true,
+    '记着这条线路不认、一开始就没带的也算；生成记录清掉以后看图片记录',
+  );
+  assert.equal(
+    imageInfo(result, { ...producer, compatibilityRetry: { adjustedParameters: ['input_fidelity'] } }).fidelityRejected,
+    false,
+    '没带参考图就谈不上',
+  );
   assert.equal(imageInfo(result, { ...producer, qualitySnapshot: '' }).quality, '默认', '没发 quality 时按上游默认');
   assert.equal(
     imageInfo(result, { ...producer, compatibilityRetry: { adjustedParameters: ['quality'] } }).quality,

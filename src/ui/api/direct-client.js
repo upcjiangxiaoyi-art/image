@@ -344,6 +344,11 @@ export function createDirectApiClient({
   const { namespace, legacyGallery } = ensureNamespace(extensionSettings);
   const metadataStore = galleryStore || createSillyTavernGalleryMetadataStore(compat);
   const attemptStore = attemptStoreOption || createSillyTavernAttemptStore(compat);
+  /* 哪些线路明确拒过参考图组的「高保真参考」（input_fidelity）。只记在这次打开页面期间：线路以后接上了，
+     下次打开页面自然会再带着试一次。预设换了地址或模型就是另一条线路（键里带着）；
+     到参考图组里重新拨一次高保真开关也清掉，等于说「再试一次」。 */
+  const fidelityRejections = new Set();
+  const fidelityKey = preset => [preset.id, preset.baseUrl, preset.editsPath || '', preset.selectedModel].join('|');
 
   /* ---------- 聊天的生图标签侧文件（按聊天分，按 tagId 记） ---------- */
   const tagStores = new Map();
@@ -1309,6 +1314,12 @@ export function createDirectApiClient({
     const referenceSet = provider === 'novelai' ? null : resolveReferenceSet();
     if (preset) preset.referenceFidelity = referenceSet?.referenceFidelity === 'high' ? 'high' : '';
     const references = provider === 'novelai' ? [] : planReferences(input, referenceSet);
+    /* 这条线路这次打开页面期间已经明确拒过 input_fidelity：不再带它，不然每张图都要先白传一遍参考图、被拒、再重传。 */
+    const fidelityRemembered = Boolean(preset)
+      && references.length > 0
+      && preset.referenceFidelity === 'high'
+      && fidelityRejections.has(fidelityKey(preset));
+    if (fidelityRemembered) preset.referenceFidelity = '';
 
     const attempt = {
       attemptId: input.attemptId,
@@ -1340,6 +1351,15 @@ export function createDirectApiClient({
       completedAt: null,
       schemaVersion: SCHEMA_VERSION,
     };
+    /* 没带高保真也照实记在这次生成上（remembered：没有真的重试，是记着这条线路不认）。 */
+    if (fidelityRemembered) {
+      attempt.compatibilityRetry = {
+        attempted: false,
+        remembered: true,
+        adjustedParameters: ['input_fidelity'],
+        reason: 'input_fidelity 这条线路不认',
+      };
+    }
     /* 记下这次实际发出去的画质：预设默认值、标签里写的、「不发送」、额外请求参数 JSON 都算进去，
        和真正的请求体同一套规则。卡片下方显示用；没发 quality 时是空字符串。 */
     if (provider !== 'novelai') {
@@ -1410,6 +1430,10 @@ export function createDirectApiClient({
             input.onProgress?.(clone(attempt));
           },
         });
+        /* 去掉 input_fidelity 之后画成了：记住这条线路不认它。 */
+        if (!fidelityRemembered && attempt.compatibilityRetry?.adjustedParameters?.includes('input_fidelity')) {
+          fidelityRejections.add(fidelityKey(preset));
+        }
       }
 
       attempt.status = 'downloading';
@@ -1474,7 +1498,7 @@ export function createDirectApiClient({
       const detail = String(error.details || '').trim();
       const withDetail = detail && !String(error.message || '').includes(detail) ? `：${detail.slice(0, 300)}` : '';
       attempt.errorMessage = cancelled ? '已取消' : `${error.message || '生成失败'}${withDetail}`;
-      if (!cancelled && attempt.compatibilityRetry) {
+      if (!cancelled && attempt.compatibilityRetry && !attempt.compatibilityRetry.remembered) {
         attempt.errorMessage += `；已尝试移除 ${attempt.compatibilityRetry.adjustedParameters.join('、')} 后重试一次`;
       }
       attempt.completedAt = now();
@@ -2077,7 +2101,10 @@ export function createDirectApiClient({
     updateReferenceSet: async (setId, patch = {}) => {
       const set = requireReferenceSet(setId);
       if ('useReferences' in patch) set.useReferences = patch.useReferences !== false;
-      if ('referenceFidelity' in patch) set.referenceFidelity = patch.referenceFidelity === 'high' ? 'high' : '';
+      if ('referenceFidelity' in patch) {
+        set.referenceFidelity = patch.referenceFidelity === 'high' ? 'high' : '';
+        fidelityRejections.clear();
+      }
       set.updatedAt = now();
       await savePreferences({ immediate: true });
       return referenceOverview();

@@ -156,6 +156,8 @@ NovelAI 当前固定走直连模式；官方 `POST /ai/generate-image` 返回的
 
 ## 请求逻辑只有一份
 
+参考图组的「高保真参考」只有一部分线路认。线路点名拒绝 `input_fidelity` 时智能重试去掉它重发；`direct-client.js` 的 `fidelityRejections` 记着这次打开页面期间哪些线路（预设 id + 地址 + 图生图路径 + 模型）拒过，之后在这些线路上一开始就不带，生成记录上照实写 `compatibilityRetry.remembered`。重新拨一次这组的高保真开关就清掉重试。
+
 OpenAI Images 兼容接口的地址拼接、请求体、报错归类与提示、智能重试和响应解析都在 `src/shared/openai-images-core.js`，直连（`src/ui/api/openai-direct.js`）和 Server Plugin（`server-plugin/src/adapters/openai-images.js`）只各自提供报错类和「连不上」时的说法。Server Plugin 是 CommonJS，用动态 `import()` 加载这份 ES 模块；安装脚本把它拷到插件目录的 `src/shared/openai-images-core.mjs`，在仓库里直接运行时则读原文件。这份文件不能 import 别的文件。
 
 ## 版本号

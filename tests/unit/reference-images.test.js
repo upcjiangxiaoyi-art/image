@@ -100,3 +100,68 @@ test('图生图也能智能重试：上游点名 quality 不支持，第二次�
   assert.equal(calls[1].options.body.get('quality'), null);
   assert.ok(calls[1].options.body.get('image') instanceof Blob, '重试时参考图照带');
 });
+
+/* 2.5.2 线路不认高保真参考：中转回「当前服务尚未接入 input_fidelity 参数」。 */
+test('线路回「尚未接入 input_fidelity 参数」：智能重试开着时去掉它重发一次，参考图和别的参数照带；关着时原样报错', async () => {
+  const rejecting = async (url, options) => (options.body.get('input_fidelity')
+    ? json(400, { error: { message: 'status_code=400, 当前服务尚未接入 input_fidelity 参数' } })
+    : json(200, { data: [{ b64_json: 'A'.repeat(80) }] }));
+  const withFidelity = { ...preset, referenceFidelity: 'high' };
+  const references = [{ bytes: png, mimeType: 'image/png', name: 'a.png' }];
+
+  const on = setup(rejecting);
+  const retries = [];
+  const sources = await generate(on.core, {
+    preset: withFidelity,
+    settings: { enableSmartRetry: true },
+    references,
+    onCompatibilityRetry: retry => retries.push(retry),
+  });
+  assert.equal(sources.length, 1);
+  assert.equal(on.calls.length, 2, '第一次被拒，去掉 input_fidelity 重发一次');
+  assert.deepEqual(retries[0].adjustedParameters, ['input_fidelity']);
+  assert.equal(on.calls[0].options.body.get('input_fidelity'), 'high');
+  assert.equal(on.calls[1].options.body.get('input_fidelity'), null);
+  assert.equal(on.calls[1].options.body.get('quality'), 'high', '别的参数不动');
+  assert.ok(on.calls[1].options.body.get('image') instanceof Blob, '参考图照带');
+
+  const off = setup(rejecting);
+  await assert.rejects(
+    generate(off.core, { preset: withFidelity, references }),
+    error => error.code === 'UPSTREAM_HTTP_ERROR' && /input_fidelity/.test(error.details),
+  );
+  assert.equal(off.calls.length, 1, '没开智能重试就不重发');
+});
+
+test('认得出「线路不认这个参数」的各种说法；没点名参数、根本没发过、余额不足、普通 5xx 都不重试', () => {
+  const { core } = setup(async () => json(200, {}));
+  const detect = (status, details, body = { input_fidelity: 'high', quality: 'high' }) => {
+    const error = new TestError('UPSTREAM_HTTP_ERROR', details, status);
+    return core.detectCompatibilityRetry(error, body)?.adjustedParameters || null;
+  };
+  for (const details of [
+    '当前服务尚未接入 input_fidelity 参数',
+    'status_code=400, 当前服务尚未接入 input_fidelity 参数',
+    'input_fidelity 参数未接入',
+    '该分组暂未支持 input_fidelity',
+    '暂不支持 input_fidelity 参数',
+    "The parameter 'input_fidelity' is not implemented for this model",
+    'This model does not support input_fidelity',
+    'input fidelity is not available on this deployment',
+    '该渠道不支持高保真参数',
+  ]) {
+    assert.deepEqual(detect(400, details), ['input_fidelity'], details);
+  }
+  assert.deepEqual(detect(422, '当前服务尚未接入 input_fidelity 参数'), ['input_fidelity']);
+  assert.deepEqual(
+    detect(500, 'status_code=400, 当前服务尚未接入 input_fidelity 参数'),
+    ['input_fidelity'],
+    '中转把上游的 400 包成 500，正文里写着 status_code=400：也认',
+  );
+  assert.equal(detect(500, '当前服务尚未接入 input_fidelity 参数'), null, '普通的 5xx 不重试：上游可能已经开始画了');
+  assert.equal(detect(502, 'status_code=502, upstream error, input_fidelity unsupported'), null);
+  assert.equal(detect(400, '当前服务尚未接入 input_fidelity 参数', { quality: 'high' }), null, '根本没发过这个参数');
+  assert.equal(detect(400, '当前服务尚未接入 gpt-image-2 模型'), null, '没点名任何参数');
+  assert.equal(detect(400, '余额不足，且尚未接入 input_fidelity 参数'), null, '余额问题重试也没用');
+  assert.equal(detect(400, 'input_fidelity 触发内容审核'), null);
+});

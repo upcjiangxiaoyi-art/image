@@ -17,8 +17,14 @@ const SMART_RETRY_PARAMETERS = Object.freeze([
   ['size', /\bsize\b|尺寸/i],
   ['quality', /\bquality\b|质量/i],
   ['n', /(?:parameter|param|field|参数)\s*['"`]?n(?:['"`]|\b)|\bn_samples\b|number of images|张数/i],
+  /* 参考图组的「高保真参考」：只有一部分线路认，不认的会点名拒绝。 */
+  ['input_fidelity', /input[_ -]?fidelity|保真/i],
 ]);
-const PARAMETER_INCOMPATIBLE = /unsupported|not support|unknown (?:parameter|field)|unrecognized|invalid|unexpected|not allowed|must be|expected|不支持|未知参数|无效|非法|不兼容|不允许/i;
+/* 「这个参数我不认」的各种说法。光有这句不重试，还得点名一个这次确实发了的参数（见 detectCompatibilityRetry）。
+   「尚未接入」「未接入」「暂未支持」是中转站的说法（当前服务尚未接入 xxx 参数）。 */
+const PARAMETER_INCOMPATIBLE = /unsupported|not support|unknown (?:parameter|field)|unrecognized|invalid|unexpected|not allowed|must be|expected|not (?:yet )?implemented|not available|不支持|未知参数|无效|非法|不兼容|不允许|尚未接入|未接入|尚未支持|暂未支持|未实现/i;
+/* 有的中转把上游的 400 包成自己的 5xx，正文里写着 status_code=400。 */
+const EMBEDDED_REJECTION_STATUS = /status[_ ]?code\s*[=:：]\s*(?:400|422)\b/i;
 const NEVER_RETRY_REASON = /余额|quota|配额/i;
 
 export function normalizeImageSize(value) {
@@ -432,10 +438,14 @@ export function createOpenAiImagesCore({
   }
 
   function detectCompatibilityRetry(error, body = {}) {
-    if (!(error instanceof ErrorClass)
-      || error.code !== 'UPSTREAM_HTTP_ERROR'
-      || ![400, 422].includes(error.upstreamStatus ?? error.status)) return null;
+    if (!(error instanceof ErrorClass) || error.code !== 'UPSTREAM_HTTP_ERROR') return null;
     const details = String(error.details || '');
+    const status = error.upstreamStatus ?? error.status;
+    /* 400 / 422 是上游在画之前就拒了。中转自己回的 5xx 只有正文里写明上游是 400 / 422 时才算；
+       别的 5xx 上游可能已经开始画了，不重试。 */
+    const rejectedUpFront = [400, 422].includes(status)
+      || (status >= 500 && status < 600 && EMBEDDED_REJECTION_STATUS.test(details));
+    if (!rejectedUpFront) return null;
     if (!PARAMETER_INCOMPATIBLE.test(details)
       || MODERATION_PATTERN.test(details)
       || NEVER_RETRY_REASON.test(details)) return null;
