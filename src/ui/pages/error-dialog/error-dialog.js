@@ -1,4 +1,5 @@
 import { MODERATION_PATTERN } from '../../api/openai-direct.js';
+import { icon as drawIcon, setIconLabel } from '../../icons.js';
 
 /* 报错弹窗：生图失败、连不上、超时、被审核拦截等报错都弹；「生成失败后智能重试」去掉
    quality / size / n 才出图时也弹，免得把回退后的图当成按 max 出的。设置页、画廊等处的
@@ -22,7 +23,7 @@ const NETWORK_CODES = new Set(['DIRECT_FETCH_BLOCKED', 'SERVER_PLUGIN_UNAVAILABL
 const SETUP_CODES = new Set(['PRESET_NOT_CONFIGURED', 'API_KEY_MISSING', 'MODEL_NOT_SELECTED']);
 const TIMEOUT_STATUSES = new Set([408, 504, 524]);
 const MAX_ENTRIES = 10;
-const TONE_ICONS = Object.freeze({ danger: '×', warning: '!', info: '✓' });
+const TONE_ICONS = Object.freeze({ danger: 'close', warning: 'exclaim', info: 'check' });
 
 /* 出结果时卡片已经不在眼前（placement 的含义见 generation-controller）。 */
 const MOVED_RESULT = Object.freeze({
@@ -303,7 +304,8 @@ export function createErrorDialog() {
     const tone = ['danger', 'warning', 'info'].find(value => entries.some(entry => entry.tone === value))
       || 'warning';
     root.dataset.tone = tone;
-    icon.textContent = TONE_ICONS[tone];
+    icon.replaceChildren(drawIcon(TONE_ICONS[tone]));
+    icon.dataset.icon = TONE_ICONS[tone];
     headingText.textContent = entries.length === 1
       ? entries[0].title
       : `画笺 · ${entries.length} 条${entries.some(entry => entry.tone === 'info') ? '提醒' : '报错'}`;
@@ -319,11 +321,11 @@ export function createErrorDialog() {
       item.append(block('stia-error-dialog__message', entry.message));
       if (entry.hint) item.append(block('stia-error-dialog__hint', entry.hint));
       const actions = block('stia-error-dialog__actions');
-      const actionButton = (className, text, handler) => {
+      const actionButton = (className, iconName, text, handler) => {
         const element = document.createElement('button');
         element.type = 'button';
         element.className = `stia-button ${className}`;
-        element.textContent = text;
+        setIconLabel(element, iconName, text);
         element.addEventListener('click', event => {
           event.stopPropagation();
           handler();
@@ -334,19 +336,21 @@ export function createErrorDialog() {
         const all = entry.fallbacks.size > 1 ? '全部' : '';
         actionButton(
           'stia-error-dialog__fallback',
-          entry.fallbackLabel ? `⇄ ${all}换「${entry.fallbackLabel}」重画` : `⇄ ${all}换备用线路重画`,
+          'swap',
+          entry.fallbackLabel ? `${all}换「${entry.fallbackLabel}」重画` : `${all}换备用线路重画`,
           () => runEntry(entry, entry.fallbacks),
         );
       }
       if (entry.retries.size) {
         actionButton(
           'stia-button--primary stia-error-dialog__retry',
-          entry.retries.size > 1 ? '↻ 全部重新生成' : '↻ 重新生成',
+          'refresh',
+          entry.retries.size > 1 ? '全部重新生成' : '重新生成',
           () => runEntry(entry, entry.retries),
         );
       }
       if (entry.view) {
-        actionButton('stia-button--primary stia-error-dialog__view', '⌕ 查看', () => viewEntry(entry));
+        actionButton('stia-button--primary stia-error-dialog__view', 'expand', '查看', () => viewEntry(entry));
       }
       if (actions.childElementCount) item.append(actions);
       return item;

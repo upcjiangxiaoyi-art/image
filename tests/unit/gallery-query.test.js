@@ -7,6 +7,7 @@ import {
   normalizeGalleryItem,
 } from '../../src/ui/pages/gallery/gallery-query.js';
 import { createGalleryPage, galleryBadges } from '../../src/ui/pages/gallery/gallery.js';
+import { blankIcons, iconOf } from '../helpers/icons.js';
 
 const NOW = Date.parse('2026-09-07T12:00:00.000Z');
 
@@ -335,6 +336,145 @@ test('画廊「只看这个聊天」和看图器里的「跳到所在楼层」',
     assert.equal(toggle.disabled, true);
     assert.equal(toggle.getAttribute('aria-pressed'), 'false');
     assert.deepEqual(ids().sort(), ['here', 'other']);
+  } finally {
+    globalThis.document = previous.document;
+    globalThis.window = previous.window;
+    Object.defineProperty(globalThis, 'navigator', { configurable: true, value: previous.navigator });
+  }
+});
+
+test('2.6.0 画廊的样子：搜索框带放大镜，两个开关各带图标；在搜索、筛选时才有「清除筛选」，「筛选」收着也写着选了几项；星星是画的', async () => {
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'https://tavern.example/' });
+  const previous = { document: globalThis.document, window: globalThis.window, navigator: globalThis.navigator };
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: dom.window.navigator });
+  try {
+    const { chatScope } = await import('../../src/ui/state/chat-scope.js');
+    const values = [
+      item({ resultId: 'loved', tagId: 't1', messageUuid: 'm1', chatId: '这个聊天', prompt: 'cat', favorite: true }),
+      item({ resultId: 'plain', tagId: 't2', messageUuid: 'm2', chatId: '别的聊天', prompt: 'dog' }),
+    ];
+    const api = {
+      cleanupGallery: async () => ({}),
+      galleryMetadata: async () => ({ items: structuredClone(values), total: values.length }),
+      fileUrl: id => `/images/${id}.png`,
+      downloadUrl: id => `/download/${id}`,
+      chatScope: () => chatScope([{ extra: { stImageAtelier: { messageUuid: 'm1', tagIds: ['t1'] } } }], '这个聊天'),
+      setFavorite: async (id, favorite) => ({ ...values.find(value => value.resultId === id), favorite }),
+      deleteResult: async () => {},
+    };
+    const page = createGalleryPage(api);
+    document.body.append(page.root);
+    await page.load();
+    const root = page.root;
+    const byText = text => [...root.querySelectorAll('button')].find(node => node.textContent === text);
+    const change = control => control.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+    const clear = root.querySelector('.stia-gallery-clear');
+    const count = () => root.querySelector('.stia-gallery-count').textContent;
+
+    /* 顶上：搜索、两个开关、筛选；张数那一行紧挨着图片。「画廊」两个字标签页上已经有了，这里不再写。 */
+    assert.deepEqual(
+      [...root.children].map(node => node.className.split(' ')[0]),
+      ['stia-gallery-tools', 'stia-gallery-filters', 'stia-gallery-batch', 'stia-gallery-heading', 'stia-status', 'stia-gallery-grid', 'stia-button'],
+    );
+    assert.equal(root.querySelector('.stia-gallery-heading strong'), null);
+    assert.equal(count(), '2 张');
+    const tools = [...root.querySelector('.stia-gallery-tools').children];
+    assert.deepEqual(tools.map(node => node.tagName), ['LABEL', 'BUTTON', 'BUTTON']);
+    assert.equal(iconOf(tools[0]), 'search');
+    assert.ok(tools[0].querySelector('input[type="search"]'));
+    assert.deepEqual(tools.slice(1).map(node => [iconOf(node), node.textContent, node.getAttribute('aria-pressed')]), [
+      ['chat', '只看这个聊天', 'false'],
+      ['select', '批量选择', 'false'],
+    ]);
+    assert.equal(iconOf(root.querySelector('.stia-gallery-filters summary')), 'filter');
+    assert.deepEqual(blankIcons(root), [], '用到的图标都画得出来');
+
+    /* 没在搜索、筛选：没有「清除筛选」，「筛选」后面也没有数字。 */
+    const active = root.querySelector('.stia-gallery-filters__active');
+    assert.equal(clear.hidden, true);
+    assert.equal(active.hidden, true);
+    assert.equal(clear.textContent, '清除筛选');
+    assert.equal(clear.getAttribute('aria-label'), '清除搜索和筛选');
+
+    /* 选了一个下拉。 */
+    const [favoriteFilter, providerFilter] = root.querySelectorAll('.stia-gallery-filters select');
+    favoriteFilter.value = 'favorite';
+    change(favoriteFilter);
+    assert.equal(count(), '1 / 2 张');
+    assert.equal(clear.hidden, false);
+    assert.equal(active.hidden, false);
+    assert.equal(active.textContent, '1 项');
+    providerFilter.value = 'openai';
+    change(providerFilter);
+    assert.equal(active.textContent, '2 项');
+
+    /* 点「清除筛选」：全回去。 */
+    clear.click();
+    assert.equal(count(), '2 张');
+    assert.equal(favoriteFilter.value, 'all');
+    assert.equal(clear.hidden, true);
+    assert.equal(active.hidden, true);
+
+    /* 只开「只看这个聊天」、只在搜索框里打字，也都算在筛选。 */
+    byText('只看这个聊天').click();
+    assert.equal(clear.hidden, false);
+    assert.equal(active.hidden, true, '「几项」只数下拉');
+    const scopeToggle = byText('只看这个聊天');
+    assert.equal(iconOf(scopeToggle), 'check', '开着时图标换成对勾');
+    assert.ok(scopeToggle.classList.contains('stia-button--primary'));
+    clear.click();
+    assert.equal(iconOf(byText('只看这个聊天')), 'chat');
+    const search = root.querySelector('input[type="search"]');
+    search.value = 'dog';
+    search.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    await new Promise(resolve => setTimeout(resolve, 150));
+    assert.equal(count(), '1 / 2 张');
+    assert.equal(clear.hidden, false);
+    clear.click();
+    assert.equal(search.value, '');
+
+    /* 星星：收藏了的是实心、金色那一档；没收藏的是空心。名字写在 aria-label 上。 */
+    const star = id => root.querySelector(`[data-result-id="${id}"] .stia-gallery-card__favorite`);
+    assert.equal(star('loved').textContent, '');
+    assert.equal(iconOf(star('loved')), 'star');
+    assert.equal(star('loved').querySelector('.stia-icon').getAttribute('fill'), 'currentColor');
+    assert.ok(star('loved').classList.contains('is-on'));
+    assert.equal(star('loved').getAttribute('aria-label'), '取消收藏');
+    assert.equal(star('plain').querySelector('.stia-icon').getAttribute('fill'), 'none');
+    assert.equal(star('plain').classList.contains('is-on'), false);
+    assert.equal(star('plain').getAttribute('aria-label'), '收藏');
+    assert.equal(star('plain').classList.contains('stia-button'), false, '不套普通按钮的底色');
+    star('plain').click();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.ok(star('plain').classList.contains('is-on'), '点了就变实心');
+
+    /* 批量选择：开关亮起来，写着选了几张；批量那一排最后是「退出批量」。 */
+    byText('批量选择').click();
+    const batchToggle = byText('已选择 0 张');
+    assert.equal(batchToggle.getAttribute('aria-pressed'), 'true');
+    assert.ok(batchToggle.classList.contains('stia-button--primary'));
+    assert.equal(iconOf(batchToggle), 'select');
+    const batch = [...root.querySelector('.stia-gallery-batch').children];
+    assert.equal(root.querySelector('.stia-gallery-batch').hidden, false);
+    assert.deepEqual(batch.map(node => node.textContent), ['选择当前结果', '取消全选', '批量收藏', '取消收藏', '批量下载', '批量删除', '退出批量']);
+    assert.ok(batch.at(-1).classList.contains('stia-gallery-batch__exit'));
+    assert.deepEqual(blankIcons(root), []);
+    byText('退出批量').click();
+    assert.equal(byText('批量选择').getAttribute('aria-pressed'), 'false');
+
+    /* 搜不到：一个图标、一句话、一个清除键。 */
+    search.value = '没有这样的图';
+    search.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    await new Promise(resolve => setTimeout(resolve, 150));
+    const empty = root.querySelector('.stia-empty');
+    assert.equal(iconOf(empty), 'image');
+    assert.match(empty.textContent, /没有符合当前搜索和筛选条件的图片/);
+    assert.equal(empty.querySelector('button').textContent, '清除搜索和筛选');
+    empty.querySelector('button').click();
+    assert.equal(root.querySelector('.stia-empty'), null);
+    assert.equal(count(), '2 张');
   } finally {
     globalThis.document = previous.document;
     globalThis.window = previous.window;

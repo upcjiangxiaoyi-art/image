@@ -4,6 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
 import { createToolPanel } from '../../src/ui/pages/settings/settings.js';
+import { blankIcons, iconOf } from '../helpers/icons.js';
 import { createStore } from '../../src/ui/state/store.js';
 
 const clone = value => structuredClone(value);
@@ -338,4 +339,39 @@ test('NovelAI 时这两个接口说的是画师串', async t => {
   assert.equal(store.state.artistPreset.id, 'a2');
   assert.equal(panel.presetChoices().activeId, 'a2');
   assert.deepEqual(calls.selectPreset, [], 'API 预设没动');
+});
+
+test('2.6.0 设置页的样子：区块标题前有图标，保存、测试这些键带图标，右上角的关闭是个图标键；用到的图标都画得出来', async t => {
+  const { store, page, quick } = setup(t);
+  await waitFor(() => store.state.preset?.id === 'p1', '设置面板未完成初始化');
+  await waitFor(() => quick().querySelectorAll('select')[1].options.length === 4, '参考图组还没读进来');
+  const panel = document.querySelector('.stia-panel');
+
+  const close = panel.querySelector('.stia-panel__close');
+  assert.equal(close.textContent, '', '只有一个叉的图标');
+  assert.equal(iconOf(close), 'close');
+  assert.ok(close.classList.contains('stia-icon-button'));
+  assert.ok(close.getAttribute('aria-label'), '名字写在 aria-label 上');
+
+  const titles = [...page().querySelectorAll('.stia-section > h3')].map(node => [iconOf(node), node.textContent]);
+  assert.deepEqual(titles.slice(0, 3), [['sliders', 'API 配置'], ['sparkles', '生图参数'], ['portrait', '参考图组（垫图）']]);
+  assert.ok(titles.every(([name]) => name), '每个区块标题前都有图标');
+
+  const labelled = text => [...page().querySelectorAll('button')].find(node => node.textContent === text);
+  assert.equal(iconOf(labelled('保存预设')), 'check');
+  assert.equal(iconOf(labelled('测试模型接口')), 'bolt');
+  assert.equal(iconOf(labelled('整理旧数据')), 'archive');
+  assert.equal(iconOf(labelled('补全画廊缩略图')), 'grid');
+  assert.equal(iconOf(labelled('导出当前')), 'share');
+  assert.equal(iconOf(labelled('导入 JSON')), 'download');
+
+  /* 参考图组那四个键两个一行：以前挤在一行，「默认组」被挤成竖排。 */
+  const setActions = labelled('重命名').parentElement;
+  assert.deepEqual([...setActions.children].map(node => node.textContent), ['新建', '重命名', '删除', '默认组']);
+  assert.ok(setActions.classList.contains('stia-actions--pairs'));
+  assert.ok(setActions.classList.contains('stia-actions--fill'));
+
+  assert.deepEqual(blankIcons(panel), []);
+  /* 状态那行字前面不再带 ● ○：那个点是样式画的。 */
+  assert.doesNotMatch(panel.querySelector('.stia-health')?.textContent || '', /[●○]/);
 });

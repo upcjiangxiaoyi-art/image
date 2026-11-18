@@ -1,4 +1,5 @@
 /* 「查看提示词」展开后下面的「一键复制」：消息卡片和原图查看层共用。 */
+import { icon } from '../icons.js';
 
 const COPY_LABEL = '一键复制';
 
@@ -47,7 +48,18 @@ export async function copyText(text, {
   return legacyCopy(value, documentRef);
 }
 
-/* 靠右的一行「一键复制」：点了显示「✓ 已复制」，过一会儿变回来；复制不了时提示长按文字手动复制。 */
+/* 按钮上的「图标 + 字」。图标只是装饰，测试用的极简假页面里不画。 */
+function label(button, iconName, text, documentRef) {
+  if (typeof button.replaceChildren !== 'function') {
+    button.textContent = text;
+    return;
+  }
+  const span = documentRef.createElement('span');
+  span.textContent = text;
+  button.replaceChildren(icon(iconName, { document: documentRef }), span);
+}
+
+/* 靠右的一行「一键复制」：点了显示「已复制」，过一会儿变回来；复制不了时提示长按文字手动复制。 */
 export function createCopyRow(text, {
   document: documentRef = globalThis.document,
   navigator: navigatorRef = globalThis.navigator,
@@ -57,15 +69,16 @@ export function createCopyRow(text, {
   const button = documentRef.createElement('button');
   button.type = 'button';
   button.className = 'stia-button stia-copy';
-  button.textContent = COPY_LABEL;
+  label(button, 'copy', COPY_LABEL, documentRef);
   let timer = null;
   button.addEventListener('click', async () => {
     const copied = await copyText(text, { document: documentRef, navigator: navigatorRef });
-    button.textContent = copied ? '✓ 已复制' : '复制失败，请长按文字复制';
+    if (copied) label(button, 'check', '已复制', documentRef);
+    else button.textContent = '复制失败，请长按文字复制';
     button.className = `stia-button stia-copy ${copied ? 'is-copied' : 'is-failed'}`;
     clearTimeout(timer);
     timer = setTimeout(() => {
-      button.textContent = COPY_LABEL;
+      label(button, 'copy', COPY_LABEL, documentRef);
       button.className = 'stia-button stia-copy';
     }, copied ? 1600 : 3200);
     timer?.unref?.();

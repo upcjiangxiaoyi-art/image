@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
 import { copyText, createCopyRow } from '../../src/ui/media/copy-text.js';
+import { blankIcons, iconOf } from '../helpers/icons.js';
 
 const settle = () => new Promise(resolve => setTimeout(resolve, 0));
 
@@ -61,7 +62,7 @@ test('剪贴板接口被拒时再试老办法；两样都不行返回 false，�
   assert.equal(document.querySelector('textarea'), null);
 });
 
-test('「一键复制」按钮：成功显示「✓ 已复制」，过一会儿变回来；失败提示长按手动复制', async t => {
+test('「一键复制」按钮：成功显示「已复制」（图标换成对勾），过一会儿变回来；失败提示长按手动复制', async t => {
   const document = page(t);
   const written = [];
   const row = createCopyRow('a cat', { document, navigator: { clipboard: { writeText: async text => { written.push(text); } } } });
@@ -70,14 +71,18 @@ test('「一键复制」按钮：成功显示「✓ 已复制」，过一会儿�
   assert.equal(row.className, 'stia-copy-row');
   assert.equal(button.type, 'button');
   assert.equal(button.textContent, '一键复制');
+  assert.equal(iconOf(button), 'copy');
 
   button.click();
   await settle();
   assert.deepEqual(written, ['a cat']);
-  assert.equal(button.textContent, '✓ 已复制');
+  assert.equal(button.textContent, '已复制');
+  assert.equal(iconOf(button), 'check');
   assert.equal(button.classList.contains('is-copied'), true);
+  assert.deepEqual(blankIcons(row), []);
   await new Promise(resolve => setTimeout(resolve, 1700));
   assert.equal(button.textContent, '一键复制');
+  assert.equal(iconOf(button), 'copy');
   assert.equal(button.classList.contains('is-copied'), false);
 
   const failing = createCopyRow('a cat', { document, navigator: {} }).querySelector('button');

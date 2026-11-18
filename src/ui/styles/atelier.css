@@ -22,7 +22,15 @@
   --stia-warning: #e8a838;
   --stia-warning-muted: rgb(232 168 56 / 12%);
   --stia-gap: 8px;
-  --stia-radius: 10px;
+  --stia-radius: 14px;
+  --stia-radius-control: 10px;
+  /* 中性的填充和细线都用文字颜色兑透明度：酒馆主题是深是浅，按钮和分隔线都压得住，不用另配一套灰。 */
+  --stia-fill: color-mix(in srgb, var(--stia-text) 7%, transparent);
+  --stia-fill-strong: color-mix(in srgb, var(--stia-text) 12%, transparent);
+  --stia-line: color-mix(in srgb, var(--stia-text) 11%, transparent);
+  /* 分段开关里选中的那一格：比底下的槽亮一截，深色浅色主题里都看得出是浮起来的。 */
+  --stia-raised: color-mix(in srgb, var(--stia-card) 80%, white 20%);
+  --stia-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
 }
 
 :root[data-stia-theme="light"] {
@@ -34,8 +42,8 @@
   --stia-input: #ffffff;
   --stia-input-text: #261f24;
   --stia-placeholder: #786d75;
-  --stia-border: #c9bec6;
-  --stia-border-subtle: #ded5db;
+  --stia-border: #d3c9d0;
+  --stia-border-subtle: #e6dfe3;
   --stia-text: #261f24;
   --stia-secondary: #594f56;
   --stia-muted: #756a72;
@@ -48,6 +56,7 @@
   --stia-danger-muted: rgb(168 63 73 / 10%);
   --stia-warning: #94610e;
   --stia-warning-muted: rgb(148 97 14 / 10%);
+  --stia-raised: #ffffff;
 }
 
 :root[data-stia-theme="dark"] {
@@ -59,22 +68,35 @@
   --stia-input: #111318;
   --stia-input-text: #f4f4f6;
   --stia-placeholder: #9a9da6;
-  --stia-border: #4d515c;
-  --stia-border-subtle: #393c45;
+  --stia-border: #474b55;
+  --stia-border-subtle: #32353d;
   --stia-text: #f4f4f6;
   --stia-secondary: #c1c3ca;
   --stia-muted: #979aa4;
   --stia-accent: #b45f80;
   --stia-accent-text: #f0acc6;
   --stia-accent-muted: rgb(180 95 128 / 15%);
+  --stia-raised: #41444f;
 }
 
-:root[data-stia-theme="light"] :where(.stia-panel, .stia-card, .stia-image-viewer) {
+:root[data-stia-theme="light"] :where(.stia-panel, .stia-card) {
   color-scheme: light;
 }
 
-:root[data-stia-theme="dark"] :where(.stia-panel, .stia-card, .stia-image-viewer) {
+:root[data-stia-theme="dark"] :where(.stia-panel, .stia-card) {
   color-scheme: dark;
+}
+
+/* 线条图标（src/ui/icons.js）：颜色跟着文字走，默认 16px。 */
+.stia-icon {
+  display: block;
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+}
+
+.stia-icon.is-spinning {
+  animation: stia-spin .9s linear infinite;
 }
 
 @keyframes stia-pulse {
@@ -89,6 +111,11 @@
 
 @keyframes stia-spin {
   to { transform: rotate(360deg); }
+}
+
+/* 「正在画」那条光带：只动 transform，交给合成器，不用每一帧重画。 */
+@keyframes stia-sweep {
+  to { transform: translateX(100%); }
 }
 
 .stia-disabled .stia-card {
@@ -121,10 +148,10 @@
   overflow: auto;
   color: var(--stia-text);
   background: var(--stia-bg);
-  border: 1px solid var(--stia-border);
-  border-radius: 14px;
+  border: 1px solid var(--stia-border-subtle);
+  border-radius: 18px;
   box-shadow: 0 24px 80px rgb(0 0 0 / 42%);
-  font: 400 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font: 400 14px/1.5 var(--stia-font);
 }
 
 .stia-panel > header {
@@ -134,35 +161,53 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  min-height: 58px;
-  padding: 0 16px;
+  min-height: 56px;
+  padding: 0 10px 0 18px;
   background: color-mix(in srgb, var(--stia-bg) 94%, transparent);
-  border-bottom: 1px solid var(--stia-border-subtle);
+  border-bottom: 1px solid var(--stia-line);
   backdrop-filter: blur(16px);
 }
 
 .stia-panel h2 {
   flex: 1;
   margin: 0;
-  font-size: 18px;
-  font-weight: 700;
-  letter-spacing: -.3px;
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: .2px;
 }
 
 .stia-health {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   color: var(--stia-muted);
   font-size: 11px;
+}
+
+/* 连接状态前面的小圆点：连上了是实心的绿点。 */
+.stia-health::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+}
+
+.stia-health.is-ready::before {
+  background: currentColor;
 }
 
 /* 标题旁的版本号。 */
 .stia-version {
-  padding: 1px 7px;
+  margin-left: 2px;
+  padding: 2px 8px;
   color: var(--stia-muted);
-  background: var(--stia-hover);
+  background: var(--stia-fill);
   border-radius: 999px;
   font-size: 11px;
   font-weight: 500;
-  vertical-align: middle;
+  letter-spacing: 0;
+  vertical-align: 2px;
 }
 
 /* 设置页最下面的「最近更新」。 */
@@ -180,6 +225,7 @@
   gap: 8px;
   align-items: baseline;
   font-size: 12px;
+  line-height: 1.5;
 }
 
 .stia-release-notes li > strong {
@@ -201,51 +247,66 @@
 
 .stia-tabs {
   position: sticky;
-  top: 58px;
+  top: 56px;
   z-index: 2;
   display: flex;
-  gap: 4px;
+  gap: 2px;
   margin: 12px 16px 0;
   padding: 3px;
-  background: var(--stia-card);
-  border: 1px solid var(--stia-border-subtle);
-  border-radius: 10px;
+  /* 垫一层不透明的面板底色：页面内容从下面滚过去时不会透出来。 */
+  background: linear-gradient(var(--stia-fill), var(--stia-fill)), var(--stia-bg);
+  border-radius: 12px;
 }
 
 .stia-tabs .stia-button {
   flex: 1;
-  min-height: 36px;
-  border: 0;
+  min-height: 34px;
+  color: var(--stia-secondary);
   background: transparent;
+  border: 0;
+  border-radius: 9px;
 }
 
 .stia-tabs .stia-button--primary {
-  color: white;
-  background: var(--stia-accent);
+  /* 选中的那一页：一块浮起来的卡片色，不用主题色整块填满。主题色留给真正的主要按钮和开关。 */
+  color: var(--stia-text);
+  background: var(--stia-raised);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 14%);
+  font-weight: 600;
 }
 
+/* 按钮三种：默认是一块淡淡的底、没有边框；主要的那个用主题色填满；ghost 是透明底加细边，给「取消」「删除」「算了」。
+   图标和字排在一行、居中，高度都是 40。 */
 .stia-icon-button,
 .stia-button {
   box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   min-height: 40px;
   min-width: 40px;
-  padding: 8px 12px;
+  padding: 8px 14px;
   color: var(--stia-text);
-  background: var(--stia-hover);
-  border: 1px solid var(--stia-border);
-  border-radius: 8px;
+  background: var(--stia-fill);
+  border: 1px solid transparent;
+  border-radius: var(--stia-radius-control);
   cursor: pointer;
   font: inherit;
+  font-weight: 500;
+  line-height: 1.25;
+  text-align: center;
   text-decoration: none;
-  transition: background .15s ease, border-color .15s ease, transform .15s ease;
+  -webkit-tap-highlight-color: transparent;
+  transition: background .15s ease, border-color .15s ease, transform .1s ease;
 }
 
 .stia-button:hover {
-  background: color-mix(in srgb, var(--stia-hover) 76%, var(--stia-accent) 24%);
+  background: var(--stia-fill-strong);
 }
 
 .stia-button:active {
-  transform: translateY(1px);
+  transform: scale(.98);
 }
 
 .stia-button:focus-visible,
@@ -260,22 +321,34 @@
 
 .stia-button:disabled {
   cursor: wait;
-  opacity: .52;
+  opacity: .5;
 }
 
 .stia-icon-button {
   padding: 0;
   border: 0;
+  border-radius: 50%;
   background: transparent;
   color: var(--stia-secondary);
-  font-size: 24px;
+}
+
+.stia-icon-button:hover {
+  background: var(--stia-fill);
+}
+
+.stia-icon-button > .stia-icon {
+  width: 18px;
+  height: 18px;
 }
 
 .stia-button--primary {
   color: white;
   background: var(--stia-accent);
-  border-color: transparent;
   font-weight: 600;
+}
+
+.stia-button--primary:hover {
+  background: color-mix(in srgb, var(--stia-accent) 88%, black 12%);
 }
 
 .stia-button--danger {
@@ -285,12 +358,16 @@
 .stia-button--danger-soft {
   color: var(--stia-danger);
   background: var(--stia-danger-muted);
-  border-color: color-mix(in srgb, var(--stia-danger) 24%, transparent);
+}
+
+.stia-button--danger-soft:hover {
+  background: color-mix(in srgb, var(--stia-danger) 18%, transparent);
 }
 
 .stia-button--ghost {
-  color: var(--stia-muted);
+  color: var(--stia-secondary);
   background: transparent;
+  border-color: var(--stia-line);
 }
 
 .stia-button--compact {
@@ -314,13 +391,13 @@
 
 .stia-settings-page,
 .stia-gallery-page {
-  padding: 16px;
+  padding: 14px 16px 16px;
 }
 
 .stia-settings-page {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 14px;
 }
 
 .stia-page-heading {
@@ -334,7 +411,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 15px;
+  font-size: 16px;
 }
 
 .stia-page-title > span {
@@ -344,16 +421,25 @@
 .stia-engine-switch {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px;
-  padding: 5px;
-  background: var(--stia-elevated);
-  border: 1px solid var(--stia-border-subtle);
-  border-radius: 10px;
+  gap: 2px;
+  padding: 3px;
+  background: var(--stia-fill);
+  border-radius: 12px;
 }
 
 .stia-engine-switch > .stia-button {
-  min-height: 38px;
+  min-height: 36px;
+  color: var(--stia-secondary);
+  background: transparent;
   border-color: transparent;
+  border-radius: 9px;
+}
+
+.stia-engine-switch > .stia-button--primary {
+  color: var(--stia-accent-text);
+  background: var(--stia-raised);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 14%);
+  font-weight: 600;
 }
 
 .stia-section {
@@ -377,21 +463,29 @@
 .stia-section h3 {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   margin: 0;
   color: var(--stia-text);
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 650;
 }
 
 .stia-section h3 > span {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
   color: var(--stia-accent);
+  background: var(--stia-accent-muted);
+  border-radius: 8px;
 }
 
 .stia-subheading {
-  margin: 4px 0 -2px;
-  color: var(--stia-secondary);
-  font-size: 12px;
+  margin: 8px 0 -2px;
+  padding-top: 12px;
+  color: var(--stia-text);
+  border-top: 1px solid var(--stia-line);
+  font-size: 13px;
   font-weight: 650;
 }
 
@@ -449,14 +543,14 @@
 .stia-field textarea {
   box-sizing: border-box;
   width: 100%;
-  min-height: 38px;
-  padding: 8px 11px;
+  min-height: 40px;
+  padding: 8px 12px;
   color: var(--stia-input-text);
   background: var(--stia-input);
   border: 1px solid var(--stia-border);
-  border-radius: 7px;
+  border-radius: var(--stia-radius-control);
   font: inherit;
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .stia-field input::placeholder,
@@ -529,7 +623,7 @@
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 8px;
+  gap: 12px;
   cursor: pointer;
 }
 
@@ -540,12 +634,15 @@
 
 .stia-switch-field input {
   appearance: none;
+  -webkit-appearance: none;
   position: relative;
-  width: 36px;
-  height: 20px;
+  /* 不许被旁边的长说明挤扁：以前说明文字一长，开关就缩成一小团。 */
+  flex: 0 0 44px;
+  width: 44px;
+  height: 26px;
   margin: 0;
-  background: var(--stia-input);
-  border: 1px solid var(--stia-border);
+  background: var(--stia-fill-strong);
+  border: 0;
   border-radius: 999px;
   cursor: pointer;
   transition: background .2s ease;
@@ -554,40 +651,41 @@
 .stia-switch-field input::after {
   content: "";
   position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 14px;
-  height: 14px;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
   background: white;
   border-radius: 50%;
-  box-shadow: 0 1px 3px rgb(0 0 0 / 24%);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 28%);
   transition: transform .2s ease;
 }
 
 .stia-switch-field input:checked {
   background: var(--stia-accent);
-  border-color: var(--stia-accent);
 }
 
 .stia-switch-field input:checked::after {
-  transform: translateX(16px);
+  transform: translateX(18px);
 }
 
 .stia-switch-field--row {
   justify-content: space-between;
-  padding-top: 5px;
+  padding-block: 4px;
 }
 
 .stia-switch-field--row > span {
   display: grid;
+  min-width: 0;
   color: var(--stia-text);
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .stia-switch-field--row small {
   margin-top: 2px;
   color: var(--stia-muted);
-  font-size: 11px;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .stia-url-preview {
@@ -596,7 +694,8 @@
   padding: 0;
   color: var(--stia-muted);
   background: transparent;
-  font: 11px/1.4 inherit;
+  font: 12px/1.5 var(--stia-font);
+  white-space: pre-wrap;
 }
 
 .stia-url-preview::before {
@@ -611,17 +710,42 @@
 
 .stia-actions--fill > .stia-button,
 .stia-actions--fill > a {
-  flex: 1;
+  flex: 1 1 0;
+}
+
+/* 出图后的那排按钮：第一行三个（「重新生成」占四成，「原图」「画廊」各三成），之后两个一行，
+   最后落单的一个占满。用网格排，卡片多宽都是这个样子。 */
+.stia-actions--result {
+  display: grid;
+  grid-template-columns: repeat(10, minmax(0, 1fr));
+}
+
+.stia-actions--result > * {
+  grid-column: span 5;
+  min-width: 0;
+}
+
+.stia-actions--result > .stia-card__action-main {
+  grid-column: span 4;
+}
+
+.stia-actions--result > .stia-card__action-side {
+  grid-column: span 3;
+  padding-inline: 6px;
+}
+
+.stia-actions--result > :nth-child(n+4):nth-child(even):last-child {
+  grid-column: 1 / -1;
 }
 
 .stia-status {
   min-height: 0;
   margin: 0;
-  padding: 8px 11px;
+  padding: 9px 12px;
   color: var(--stia-success);
   background: var(--stia-success-muted);
-  border: 1px solid rgb(92 184 92 / 20%);
-  border-radius: 7px;
+  border: 1px solid color-mix(in srgb, var(--stia-success) 22%, transparent);
+  border-radius: var(--stia-radius-control);
   font-size: 12px;
 }
 
@@ -667,7 +791,7 @@
 .stia-status.stia-error {
   color: var(--stia-danger);
   background: var(--stia-danger-muted);
-  border-color: rgb(217 83 79 / 22%);
+  border-color: color-mix(in srgb, var(--stia-danger) 24%, transparent);
 }
 
 .stia-status.stia-error::before {
@@ -682,7 +806,8 @@
 .stia-warning {
   grid-column: 1 / -1;
   margin: 2px 0 0;
-  font-size: 11px;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .stia-advanced {
@@ -695,22 +820,33 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  min-height: 42px;
+  min-height: 46px;
   padding: 0 16px;
-  color: var(--stia-secondary);
+  color: var(--stia-text);
   cursor: pointer;
+  font-weight: 600;
   list-style: none;
   user-select: none;
 }
 
+.stia-advanced > summary::-webkit-details-marker {
+  display: none;
+}
+
 .stia-advanced > summary::after {
-  content: "⌄";
-  color: var(--stia-muted);
+  /* 朝下的小箭头：两条边拼出来的，展开时转过去。 */
+  content: "";
+  width: 7px;
+  height: 7px;
+  margin-right: 4px;
+  border-right: 1.75px solid var(--stia-muted);
+  border-bottom: 1.75px solid var(--stia-muted);
+  transform: translateY(-2px) rotate(45deg);
   transition: transform .2s ease;
 }
 
 .stia-advanced[open] > summary::after {
-  transform: rotate(180deg);
+  transform: translateY(2px) rotate(225deg);
 }
 
 .stia-advanced > .stia-form-grid {
@@ -725,76 +861,87 @@
 
 .stia-card {
   overflow: hidden;
-  margin-block: 8px;
+  margin-block: 10px;
   color: var(--stia-text);
   background: var(--stia-card);
-  border: 1px solid var(--stia-border);
+  border: 1px solid var(--stia-border-subtle);
   border-radius: var(--stia-radius);
-  font: 400 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font: 400 13px/1.5 var(--stia-font);
 }
 
 .stia-card--generating {
-  border-color: color-mix(in srgb, var(--stia-accent) 36%, transparent);
+  border-color: color-mix(in srgb, var(--stia-accent) 30%, var(--stia-border-subtle));
 }
 
 .stia-card--queued {
-  border-color: color-mix(in srgb, var(--stia-warning) 36%, transparent);
+  border-color: color-mix(in srgb, var(--stia-warning) 34%, var(--stia-border-subtle));
 }
 
 .stia-card--failed {
-  border-color: color-mix(in srgb, var(--stia-danger) 36%, transparent);
+  border-color: color-mix(in srgb, var(--stia-danger) 32%, var(--stia-border-subtle));
 }
 
 .stia-card__body {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
   padding: 14px;
 }
 
 .stia-card__status {
-  display: flex;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
   align-items: center;
-  gap: 8px;
+  column-gap: 10px;
 }
 
 .stia-card__status-icon {
   display: grid;
-  flex: 0 0 28px;
-  width: 28px;
-  height: 28px;
+  grid-row: 1 / span 2;
+  width: 34px;
+  height: 34px;
   place-items: center;
   color: var(--stia-accent);
   background: var(--stia-accent-muted);
-  border-radius: 6px;
-  font-size: 15px;
+  border-radius: 50%;
+}
+
+.stia-card__status-icon > .stia-icon {
+  width: 18px;
+  height: 18px;
 }
 
 .stia-card__status-text {
-  display: grid;
-  min-width: 0;
+  /* 标题和说明直接排进上面的网格：计时和标题同一行，说明在下面占满，不被计时挤得折行。 */
+  display: contents;
 }
 
 /* 生成计时：靠右、等宽数字，每秒跳动时不左右晃。 */
 .stia-card__elapsed {
-  flex: 0 0 auto;
-  margin-left: auto;
+  grid-column: 3;
+  grid-row: 1;
   color: var(--stia-muted);
-  font-size: 11px;
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
 .stia-card__status strong {
-  color: var(--stia-secondary);
-  font-size: 13px;
-  font-weight: 500;
+  grid-column: 2;
+  grid-row: 1;
+  align-self: end;
+  color: var(--stia-text);
+  font-size: 14px;
+  font-weight: 600;
 }
 
 .stia-card__status small {
-  margin-top: 1px;
+  grid-column: 2 / -1;
+  grid-row: 2;
+  align-self: start;
   color: var(--stia-muted);
-  font-size: 11px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 .stia-card__status.is-accent strong {
@@ -850,33 +997,41 @@
 }
 
 .stia-card__shimmer {
-  height: 120px;
+  position: relative;
+  height: 96px;
   overflow: hidden;
-  background: linear-gradient(90deg, var(--stia-input) 25%, var(--stia-hover) 50%, var(--stia-input) 75%);
-  background-size: 200% 100%;
-  border-radius: 8px;
-  animation: stia-shimmer 1.5s ease-in-out infinite;
+  background: var(--stia-fill);
+  border-radius: var(--stia-radius-control);
 }
 
-.stia-card--generating .stia-card__status-icon {
-  animation: stia-spin .9s linear infinite;
-}
-
-.stia-card--generating .stia-card__status strong {
-  animation: stia-pulse 1.5s ease-in-out infinite;
+.stia-card__shimmer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(100deg, transparent 25%, color-mix(in srgb, var(--stia-text) 8%, transparent) 50%, transparent 75%);
+  transform: translateX(-100%);
+  animation: stia-sweep 1.8s ease-in-out infinite;
+  will-change: transform;
 }
 
 .stia-card__media {
   position: relative;
   min-height: 120px;
-  background: var(--stia-accent-muted);
+  background: var(--stia-fill);
 }
 
 .stia-card__image {
   display: block;
   width: 100%;
-  max-height: 70vh;
+  max-height: 72vh;
   object-fit: contain;
+}
+
+/* 手机上让图尽量铺满宽度：竖着的漫画页（9:16）铺满时差不多一屏高，字看得清；再长的才收一收，不超过一屏。 */
+@media (max-width: 640px) {
+  .stia-card__image {
+    max-height: 86vh;
+  }
 }
 
 .stia-saveable-image {
@@ -899,13 +1054,28 @@
 /* 「✓ 已完成　用时 16 分 37 秒」 */
 .stia-card__completion-status {
   display: inline-flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
+}
+
+/* 「✓ 已完成」 */
+.stia-card__done {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.stia-card__done > .stia-icon {
+  width: 15px;
+  height: 15px;
+  stroke-width: 2.4;
 }
 
 .stia-card__duration {
   color: var(--stia-muted);
-  font-size: 11px;
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -920,8 +1090,8 @@
 .stia-card__completion-size {
   padding-left: 8px;
   color: var(--stia-secondary);
-  border-left: 1px solid var(--stia-border-subtle);
-  font-size: 11px;
+  border-left: 1px solid var(--stia-line);
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -929,11 +1099,12 @@
 .stia-card__info {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 4px 12px;
+  gap: 5px 12px;
   margin: 0;
-  padding-bottom: 10px;
-  border-bottom: 1px solid var(--stia-border-subtle);
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--stia-line);
   font-size: 12px;
+  line-height: 1.5;
 }
 
 .stia-card__info-item {
@@ -976,13 +1147,8 @@
 /* 卡片上的「换预设」：画成按钮的样子，上面盖一个透明的系统选择框，点哪儿都是打开系统的选择器。 */
 .stia-card__preset {
   position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 2px;
   min-width: 0;
   overflow: hidden;
-  text-align: center;
 }
 
 /* 失败的卡片上只有「重试」「换预设」「删除」三个时排一行：预设名要占地方，给它两份宽。
@@ -1034,26 +1200,29 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 16px;
+  gap: 6px;
 }
 
 .stia-card__pager .stia-card__nav {
-  min-height: 34px;
-  padding: 5px 12px;
-  font-size: 12px;
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
+  min-height: 36px;
+  color: var(--stia-text);
+  background: var(--stia-fill);
 }
 
 .stia-card__pager .stia-card__nav:disabled {
   cursor: default;
-  opacity: .42;
+  opacity: .35;
 }
 
 .stia-card__pager .stia-card__nav:disabled:hover {
-  background: var(--stia-hover);
+  background: var(--stia-fill);
 }
 
 .stia-card__pager-count {
-  min-width: 3.5em;
+  min-width: 4.4em;
   color: var(--stia-secondary);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
@@ -1075,7 +1244,7 @@
 
 .stia-muted {
   color: var(--stia-muted);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 /* 设置页「数据文件」：画廊索引、生成记录各一行。 */
@@ -1089,27 +1258,42 @@
 }
 
 .stia-prompt summary {
-  min-height: 28px;
-  display: flex;
+  display: inline-flex;
   align-items: center;
+  gap: 4px;
+  min-height: 30px;
   color: var(--stia-muted);
   cursor: pointer;
-  font-size: 11px;
+  font-size: 12px;
   list-style: none;
   user-select: none;
+}
+
+.stia-prompt summary::-webkit-details-marker {
+  display: none;
+}
+
+.stia-prompt summary > .stia-icon {
+  width: 14px;
+  height: 14px;
+  transition: transform .15s ease;
+}
+
+.stia-prompt[open] summary > .stia-icon {
+  transform: rotate(90deg);
 }
 
 .stia-prompt pre {
   max-height: 240px;
   overflow: auto;
   overflow-wrap: anywhere;
-  margin: 6px 0 0;
-  padding: 8px 10px;
+  margin: 4px 0 0;
+  padding: 10px 12px;
   color: var(--stia-secondary);
-  background: var(--stia-input);
-  border-radius: 6px;
+  background: var(--stia-fill);
+  border-radius: var(--stia-radius-control);
   white-space: pre-wrap;
-  font: 12px/1.5 inherit;
+  font: 12px/1.6 var(--stia-font);
 }
 
 /* 「查看提示词」展开后下面的「一键复制」；没展开时跟着收起来，看不到。 */
@@ -1120,7 +1304,7 @@
 }
 
 .stia-copy {
-  min-height: 32px;
+  min-height: 34px;
   padding: 4px 14px;
   font-size: 12px;
 }
@@ -1136,13 +1320,14 @@
 .stia-gallery-page {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
 }
 
+/* 画廊顶上：一整行搜索框，下面「只看这个聊天」「批量选择」两个开关各占一半。 */
 .stia-gallery-tools,
 .stia-gallery-batch {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -1151,17 +1336,41 @@
 .stia-prompt-override textarea {
   box-sizing: border-box;
   min-height: 40px;
-  padding: 8px 10px;
+  padding: 8px 12px;
   color: var(--stia-input-text);
   background: var(--stia-input);
   border: 1px solid var(--stia-border);
-  border-radius: 8px;
+  border-radius: var(--stia-radius-control);
   font: inherit;
+  font-size: 14px;
+}
+
+.stia-gallery-search {
+  position: relative;
+  display: block;
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
+.stia-gallery-search > .stia-icon {
+  position: absolute;
+  top: 50%;
+  left: 12px;
+  margin-top: -8px;
+  color: var(--stia-muted);
+  pointer-events: none;
 }
 
 .stia-gallery-tools input {
-  flex: 1 1 220px;
+  width: 100%;
   min-width: 0;
+  padding-left: 36px;
+}
+
+.stia-gallery-tools input:focus-visible,
+.stia-gallery-filters select:focus-visible {
+  outline: 2px solid var(--stia-accent);
+  outline-offset: 2px;
 }
 
 .stia-gallery-tools input::placeholder,
@@ -1170,130 +1379,234 @@
 }
 
 .stia-gallery-filters {
-  padding: 10px;
-  background: var(--stia-elevated);
+  padding: 0 14px;
+  background: var(--stia-card);
   border: 1px solid var(--stia-border-subtle);
   border-radius: var(--stia-radius);
 }
 
 .stia-gallery-filters summary {
-  min-height: 28px;
-  color: var(--stia-secondary);
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding-right: 22px;
+  color: var(--stia-text);
   cursor: pointer;
+  font-size: 14px;
   font-weight: 600;
+  list-style: none;
+}
+
+.stia-gallery-filters summary::-webkit-details-marker {
+  display: none;
+}
+
+.stia-gallery-filters summary > .stia-icon {
+  color: var(--stia-secondary);
+}
+
+/* 右边的小箭头：收着朝下，展开朝上。 */
+.stia-gallery-filters summary::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  width: 7px;
+  height: 7px;
+  margin-top: -6px;
+  border-right: 1.75px solid var(--stia-muted);
+  border-bottom: 1.75px solid var(--stia-muted);
+  transform: rotate(45deg);
+  transition: transform .15s ease;
+}
+
+.stia-gallery-filters[open] summary::after {
+  margin-top: -2px;
+  transform: rotate(-135deg);
+}
+
+.stia-gallery-filters__active {
+  padding: 1px 8px;
+  color: var(--stia-accent-text);
+  background: var(--stia-accent-muted);
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
 }
 
 .stia-gallery-filters__grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
-  padding-top: 8px;
+  padding: 2px 0 14px;
 }
 
-.stia-gallery-filters__grid select:last-child {
+.stia-gallery-filters__grid select {
+  width: 100%;
+  min-width: 0;
+}
+
+/* 五个下拉：收藏、引擎一行，模型、日期一行，名字最长的「API 预设 / 画师串」放最后占一整行。 */
+.stia-gallery-filters__grid select:nth-child(4) {
   grid-column: 1 / -1;
+  order: 1;
 }
 
 .stia-gallery-batch {
   padding: 10px;
   background: var(--stia-accent-muted);
-  border: 1px solid color-mix(in srgb, var(--stia-accent) 32%, transparent);
   border-radius: var(--stia-radius);
 }
 
 .stia-gallery-batch .stia-button {
-  flex: 1 1 120px;
+  min-width: 0;
+  background: var(--stia-card);
+}
+
+.stia-gallery-batch .stia-button--danger-soft {
+  background: color-mix(in srgb, var(--stia-danger) 12%, var(--stia-card));
+}
+
+/* 「退出批量」单独一行，是条退路，不抢眼。 */
+.stia-gallery-batch .stia-gallery-batch__exit {
+  grid-column: 1 / -1;
+  background: transparent;
 }
 
 .stia-gallery-heading {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 8px;
+  min-height: 30px;
+  margin-top: 2px;
 }
 
-.stia-gallery-heading strong {
-  color: var(--stia-text);
-  font-size: 15px;
-  font-weight: 650;
+.stia-gallery-count {
+  color: var(--stia-secondary);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
 }
 
-.stia-gallery-heading span {
-  color: var(--stia-muted);
+.stia-gallery-clear {
+  min-height: 30px;
+  padding: 3px 10px 3px 8px;
+  border-radius: 999px;
   font-size: 12px;
+}
+
+.stia-gallery-clear > .stia-icon {
+  width: 13px;
+  height: 13px;
 }
 
 .stia-gallery-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(auto-fill, minmax(136px, 1fr));
+  gap: 10px;
 }
 
 .stia-gallery-card {
   position: relative;
-  display: grid;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
   margin: 0;
   padding: 0;
   overflow: hidden;
   text-align: left;
   color: var(--stia-text);
   background: var(--stia-card);
-  border: 1px solid var(--stia-border);
+  border: 1px solid var(--stia-border-subtle);
   border-radius: var(--stia-radius);
   cursor: pointer;
-  transition: border-color .15s ease, transform .15s ease;
+  transition: border-color .15s ease, box-shadow .15s ease;
 }
 
 .stia-gallery-card.is-selected {
   border-color: var(--stia-accent);
-  box-shadow: 0 0 0 2px var(--stia-accent-muted);
+  box-shadow: 0 0 0 2px var(--stia-accent);
 }
 
 .stia-gallery-card__tools {
   position: absolute;
-  top: 7px;
-  right: 7px;
+  top: 6px;
+  right: 6px;
+  left: 6px;
   z-index: 1;
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 6px;
+  pointer-events: none;
+}
+
+.stia-gallery-card__tools > * {
+  pointer-events: auto;
+}
+
+/* 只有星星时靠右；批量选择时左边多一个勾选框。 */
+.stia-gallery-card__favorite:first-child {
+  margin-left: auto;
 }
 
 .stia-gallery-card__tools input {
-  width: 24px;
-  height: 24px;
+  width: 26px;
+  height: 26px;
   margin: 0;
   accent-color: var(--stia-accent);
 }
 
 .stia-gallery-card__favorite {
-  min-width: 38px;
-  min-height: 38px;
+  display: grid;
+  width: 34px;
+  height: 34px;
   padding: 0;
-  color: #f2b72e;
-  background: color-mix(in srgb, var(--stia-card) 88%, transparent);
+  place-items: center;
+  color: #fff;
+  background: rgb(18 16 20 / 46%);
+  border: 0;
   border-radius: 50%;
-  box-shadow: 0 2px 9px rgb(0 0 0 / 24%);
-  font-size: 23px;
-  line-height: 1;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.stia-gallery-card__favorite > .stia-icon {
+  width: 18px;
+  height: 18px;
+}
+
+.stia-gallery-card__favorite.is-on {
+  color: #ffc94a;
+}
+
+.stia-gallery-card__favorite:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 1px;
 }
 
 .stia-gallery-card:hover {
-  border-color: var(--stia-accent);
-  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--stia-accent) 55%, var(--stia-border-subtle));
 }
 
 .stia-gallery-card img {
+  display: block;
   width: 100%;
-  aspect-ratio: 1.35;
+  /* 画的大多是竖图：格子也竖着放，人不会被裁掉大半。竖图裁上下时多留上面（脸一般在上半张）。 */
+  aspect-ratio: 3 / 4;
   object-fit: cover;
-  background: var(--stia-accent-muted);
+  object-position: 50% 28%;
+  background: var(--stia-fill);
 }
 
 .stia-gallery-card__caption {
   display: grid;
-  gap: 3px;
+  gap: 4px;
   width: 100%;
-  padding: 8px 10px;
+  min-width: 0;
+  padding: 9px 10px 10px;
   text-align: left;
   color: inherit;
   background: transparent;
@@ -1303,22 +1616,26 @@
 }
 
 .stia-gallery-card strong {
-  color: var(--stia-secondary);
-  font-size: 10px;
-  font-weight: 500;
+  overflow: hidden;
+  color: var(--stia-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 400;
 }
 
 .stia-gallery-card__caption > span {
   overflow: hidden;
-  color: var(--stia-secondary);
+  color: var(--stia-text);
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .stia-gallery-card time {
   color: var(--stia-muted);
-  font-size: 10px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
 }
 
 /* 画廊卡片上的渠道 / 画质小标：GPT 预设用主题色，NovelAI 画师串用绿色，画质用暖色，一眼分得开。 */
@@ -1332,14 +1649,14 @@
 .stia-gallery-card__badge {
   display: inline-block;
   max-width: 100%;
-  padding: 1px 7px;
+  padding: 1px 8px;
   overflow: hidden;
   color: var(--stia-accent-text);
   background: var(--stia-accent-muted);
   border-radius: 999px;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 500;
   line-height: 1.6;
 }
@@ -1355,8 +1672,24 @@
 }
 
 .stia-empty {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  padding: 36px 16px;
   color: var(--stia-muted);
   text-align: center;
+  font-size: 13px;
+}
+
+.stia-empty > .stia-icon {
+  width: 34px;
+  height: 34px;
+  stroke-width: 1.3;
+  opacity: .7;
+}
+
+.stia-empty p {
+  margin: 0;
 }
 
 /* 设置页的参考图：一排缩略图，右上角一个删除。 */
@@ -1431,20 +1764,30 @@
   color: var(--stia-text);
   background: rgb(0 0 0 / 62%);
   backdrop-filter: blur(4px);
-  font: 400 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font: 400 14px/1.45 var(--stia-font);
 }
 
 .stia-prompt-override__panel {
   display: grid;
-  gap: 13px;
+  box-sizing: border-box;
+  gap: 12px;
   width: min(620px, 100%);
   max-height: calc(100dvh - 32px);
   overflow: auto;
-  padding: 18px;
+  padding: 20px;
   background: var(--stia-panel);
-  border: 1px solid var(--stia-border);
-  border-radius: 14px;
+  border: 1px solid var(--stia-border-subtle);
+  border-radius: 18px;
   box-shadow: 0 24px 80px rgb(0 0 0 / 42%);
+}
+
+.stia-prompt-override__panel h3 {
+  font-size: 17px;
+  font-weight: 650;
+}
+
+.stia-prompt-override__panel .stia-button {
+  min-height: 44px;
 }
 
 .stia-prompt-override__panel h3,
@@ -1460,6 +1803,12 @@
 .stia-prompt-override textarea {
   width: 100%;
   resize: vertical;
+  line-height: 1.55;
+}
+
+.stia-prompt-override textarea:focus-visible {
+  outline: 2px solid var(--stia-accent);
+  outline-offset: 1px;
 }
 
 /* 报错弹窗是原生 <dialog>，showModal() 后在浏览器顶层显示。主题或角色卡注入的通用 CSS
@@ -1470,28 +1819,28 @@
   position: fixed !important;
   inset: 0 !important;
   z-index: 2147483010 !important;
-  width: min(320px, calc(100vw - 32px)) !important;
+  width: min(336px, calc(100vw - 32px)) !important;
   min-width: 0 !important;
   max-width: none !important;
   height: -webkit-fit-content !important;
   height: fit-content !important;
   min-height: 0 !important;
-  max-height: min(60dvh, 420px) !important;
+  max-height: min(64dvh, 460px) !important;
   margin: auto !important;
   transform: none !important;
   visibility: visible !important;
   opacity: 1 !important;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
   overflow: hidden;
-  padding: 12px 14px 10px;
+  padding: 16px 16px 10px;
   color: var(--stia-text);
   background: var(--stia-panel);
-  border: 1px solid color-mix(in srgb, var(--stia-danger) 40%, var(--stia-border));
-  border-radius: 12px;
-  box-shadow: 0 12px 40px rgb(0 0 0 / 35%);
+  border: 1px solid var(--stia-border-subtle);
+  border-radius: 18px;
+  box-shadow: 0 18px 54px rgb(0 0 0 / 32%);
   cursor: pointer;
-  font: 400 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font: 400 14px/1.5 var(--stia-font);
   text-align: left;
   outline: none;
   -webkit-tap-highlight-color: transparent;
@@ -1515,33 +1864,30 @@
   transform: none !important;
 }
 
-.stia-error-dialog[data-tone="warning"] {
-  border-color: color-mix(in srgb, var(--stia-warning) 40%, var(--stia-border));
-}
-
-.stia-error-dialog[data-tone="info"] {
-  border-color: color-mix(in srgb, var(--stia-accent) 40%, var(--stia-border));
-}
-
 .stia-error-dialog__title {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   margin: 0;
-  font-size: 14px;
-  font-weight: 700;
+  font-size: 15px;
+  font-weight: 650;
 }
 
 .stia-error-dialog__icon {
   display: inline-grid;
   flex: 0 0 auto;
-  width: 18px;
-  height: 18px;
+  width: 24px;
+  height: 24px;
   place-items: center;
   color: var(--stia-danger);
   background: var(--stia-danger-muted);
   border-radius: 50%;
-  font-size: 12px;
+}
+
+.stia-error-dialog__icon > .stia-icon {
+  width: 14px;
+  height: 14px;
+  stroke-width: 2.2;
 }
 
 .stia-error-dialog[data-tone="warning"] .stia-error-dialog__icon {
@@ -1557,7 +1903,7 @@
 .stia-error-dialog__list {
   display: grid;
   flex: 1 1 auto;
-  gap: 8px;
+  gap: 12px;
   min-height: 0;
   margin: 0;
   overflow: auto;
@@ -1566,10 +1912,16 @@
 
 .stia-error-dialog__item {
   display: grid;
-  gap: 3px;
+  gap: 4px;
   margin: 0;
-  padding-left: 8px;
+  padding-left: 10px;
   border-left: 2px solid var(--stia-danger);
+}
+
+/* 只有一条时不用左边那条色带。 */
+.stia-error-dialog__item:only-child {
+  padding-left: 0;
+  border-left: 0;
 }
 
 .stia-error-dialog__item.is-warning {
@@ -1582,7 +1934,8 @@
 
 .stia-error-dialog__entry-title {
   color: var(--stia-danger);
-  font-weight: 700;
+  font-size: 13px;
+  font-weight: 650;
 }
 
 .stia-error-dialog__item.is-warning .stia-error-dialog__entry-title {
@@ -1610,6 +1963,7 @@
 .stia-error-dialog__hint {
   color: var(--stia-secondary);
   font-size: 12px;
+  line-height: 1.55;
 }
 
 .stia-error-dialog__dismiss {
@@ -1621,16 +1975,16 @@
 .stia-error-dialog__actions {
   display: flex;
   flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 6px;
-  margin-top: 4px;
+  gap: 8px;
+  margin-top: 8px;
 }
 
 .stia-error-dialog__retry,
 .stia-error-dialog__view,
 .stia-error-dialog__fallback {
-  min-height: 34px;
-  padding: 5px 14px;
+  flex: 1 1 auto;
+  min-height: 40px;
+  padding: 6px 12px;
   font-size: 13px;
 }
 
@@ -1639,6 +1993,16 @@
 }
 
 .stia-image-viewer {
+  /* 看图器固定用深色：图放在黑底上最干净，酒馆主题是深是浅都一样。这里把用到的颜色重新定一遍。 */
+  --stia-text: #f5f4f6;
+  --stia-secondary: #cbc8cf;
+  --stia-muted: #a09ca6;
+  --stia-fill: rgb(255 255 255 / 11%);
+  --stia-fill-strong: rgb(255 255 255 / 18%);
+  --stia-line: rgb(255 255 255 / 18%);
+  --stia-input: rgb(255 255 255 / 7%);
+  --stia-success: #77d394;
+  --stia-danger: #ff8f8f;
   position: fixed;
   inset: 0;
   z-index: 2147483000;
@@ -1649,109 +2013,178 @@
   height: 100dvh;
   overflow: hidden;
   color: var(--stia-text);
-  background: color-mix(in srgb, var(--stia-panel) 96%, black 4%);
-  font: 400 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: #0d0c0f;
+  color-scheme: dark;
+  font: 400 13px/1.45 var(--stia-font);
 }
 
 .stia-image-viewer__toolbar {
   z-index: 2;
   display: flex;
-  min-height: 56px;
+  min-height: 52px;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: max(8px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) 8px max(12px, env(safe-area-inset-left));
-  background: color-mix(in srgb, var(--stia-elevated) 94%, transparent);
-  border-bottom: 1px solid var(--stia-border);
-  backdrop-filter: blur(14px);
+  padding: max(6px, env(safe-area-inset-top)) max(10px, env(safe-area-inset-right)) 6px max(16px, env(safe-area-inset-left));
 }
 
 .stia-image-viewer__toolbar strong {
-  font-size: 15px;
+  color: var(--stia-secondary);
+  font-size: 14px;
+  font-weight: 500;
 }
 
 .stia-image-viewer__close {
-  min-width: 88px;
-  min-height: 44px;
-  padding: 8px 14px;
+  display: inline-flex;
+  flex: 0 0 auto;
+  min-height: 40px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 14px 0 11px;
   color: var(--stia-text);
-  background: var(--stia-hover);
-  border: 1px solid var(--stia-border);
-  border-radius: 10px;
+  background: var(--stia-fill);
+  border: 0;
+  border-radius: 999px;
   cursor: pointer;
   font: inherit;
-  font-weight: 650;
+  font-size: 14px;
+  font-weight: 500;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.stia-image-viewer__close:hover {
+  background: var(--stia-fill-strong);
+}
+
+.stia-image-viewer__close:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 2px;
 }
 
 .stia-image-viewer__stage {
-  display: grid;
+  position: relative;
   min-width: 0;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
   overscroll-behavior: contain;
-  place-items: center;
-  padding: 12px;
-  background: rgb(0 0 0 / 82%);
 }
 
 .stia-image-viewer__image {
+  /* 整张放进这块区域、居中。用绝对定位算最大宽高：百分比高度在各家浏览器上都认，图不会溢出去。 */
+  position: absolute;
+  inset: 0;
   display: block;
   width: auto;
-  max-width: 100%;
+  max-width: calc(100% - 16px);
   height: auto;
   max-height: 100%;
-  object-fit: contain;
-  border-radius: 8px;
-  box-shadow: 0 14px 44px rgb(0 0 0 / 34%);
+  margin: auto;
+  border-radius: 6px;
+  cursor: zoom-in;
+}
+
+/* 点了一下：放大到原始大小，最宽占满屏幕，上下滑着看。 */
+.stia-image-viewer__stage.is-zoomed {
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.stia-image-viewer__stage.is-zoomed .stia-image-viewer__image {
+  position: static;
+  max-width: 100%;
+  max-height: none;
+  margin: 0 auto;
+  border-radius: 0;
+  cursor: zoom-out;
 }
 
 .stia-image-viewer__footer {
+  /* 内容多了自己滚；每一行按内容定高，不会被挤扁叠在一起。 */
   display: grid;
-  gap: 7px;
-  max-height: 34vh;
+  grid-auto-rows: max-content;
+  gap: 8px;
+  max-height: 46vh;
   overflow: auto;
+  overscroll-behavior: contain;
   padding: 10px max(12px, env(safe-area-inset-right)) max(10px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
-  background: var(--stia-elevated);
-  border-top: 1px solid var(--stia-border);
 }
 
 .stia-image-viewer__hint {
-  color: var(--stia-accent-text);
+  margin: 0;
+  color: var(--stia-muted);
   text-align: center;
-  font-size: 13px;
+  font-size: 11px;
 }
 
 .stia-image-viewer__meta,
 .stia-image-viewer__status {
-  min-height: 0;
   margin: 0;
-  color: var(--stia-muted);
+  color: var(--stia-secondary);
   text-align: center;
-  font-size: 11px;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.stia-image-viewer__status {
+  color: #ffd27a;
+}
+
+.stia-image-viewer__status:empty {
+  display: none;
 }
 
 .stia-image-viewer__prompt {
   margin: 0;
-  color: var(--stia-muted);
-  font-size: 11px;
+  color: var(--stia-secondary);
+  font-size: 12px;
 }
 
 .stia-image-viewer__prompt summary {
-  min-height: 28px;
+  display: flex;
+  width: fit-content;
+  min-height: 30px;
+  align-items: center;
+  gap: 4px;
+  margin: 0 auto;
+  padding: 0 12px;
   cursor: pointer;
-  text-align: center;
+  border-radius: 999px;
+  list-style: none;
+}
+
+.stia-image-viewer__prompt summary::-webkit-details-marker {
+  display: none;
+}
+
+.stia-image-viewer__prompt summary::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  margin: -3px 0 0 4px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
+}
+
+.stia-image-viewer__prompt[open] summary::after {
+  margin-top: 3px;
+  transform: rotate(-135deg);
 }
 
 .stia-image-viewer__prompt pre {
-  max-height: 120px;
+  max-height: 132px;
   overflow: auto;
-  margin: 4px 0 0;
-  padding: 8px;
+  margin: 6px 0 0;
+  padding: 10px 12px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  color: var(--stia-secondary);
+  color: var(--stia-text);
   background: var(--stia-input);
-  border-radius: 8px;
+  border-radius: var(--stia-radius-control);
+  font: 12px/1.55 ui-monospace, "SFMono-Regular", Consolas, monospace;
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 .stia-image-viewer__prompt .stia-copy-row {
@@ -1759,15 +2192,36 @@
 }
 
 .stia-image-viewer__actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
+  /* 底下一排：图标在上、字在下，几个键平分一行。 */
+  display: grid;
+  grid-auto-columns: minmax(0, 1fr);
+  grid-auto-flow: column;
   gap: 8px;
+  width: min(100%, 460px);
+  margin: 0 auto;
 }
 
 .stia-image-viewer__actions > .stia-button {
-  flex: 1 1 140px;
-  max-width: 240px;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  min-height: 52px;
+  padding: 6px 4px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.2;
+}
+
+.stia-image-viewer__actions > .stia-button > .stia-icon {
+  width: 19px;
+  height: 19px;
+}
+
+.stia-image-viewer__actions > .stia-button > span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 @media (max-width: 640px) {
@@ -1808,14 +2262,6 @@
     display: none;
   }
 
-  .stia-gallery-tools > .stia-button {
-    flex: 1 1 140px;
-  }
-
-  .stia-gallery-batch .stia-button {
-    flex-basis: calc(50% - 4px);
-  }
-
   .stia-prompt-override {
     align-items: end;
     padding: 0;
@@ -1824,9 +2270,9 @@
   .stia-prompt-override__panel {
     width: 100%;
     max-height: 92dvh;
-    padding: 16px;
+    padding: 18px 16px max(16px, env(safe-area-inset-bottom));
     border-width: 1px 0 0;
-    border-radius: 14px 14px 0 0;
+    border-radius: 18px 18px 0 0;
   }
 }
 
@@ -1884,17 +2330,12 @@
 @media (hover: none) and (pointer: coarse) {
   .stia-overlay,
   .stia-panel > header,
-  .stia-prompt-override,
-  .stia-image-viewer__toolbar {
+  .stia-prompt-override {
     backdrop-filter: none;
   }
 
   /* 没有模糊垫着，94% 不透明的顶栏会把底下滚过去的字透出来：触屏上干脆不透明。 */
   .stia-panel > header {
     background: var(--stia-bg);
-  }
-
-  .stia-image-viewer__toolbar {
-    background: var(--stia-elevated);
   }
 }

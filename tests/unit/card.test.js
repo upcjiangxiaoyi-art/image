@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createCard, formatDuration, formatElapsed, generationDuration, imageInfo } from '../../src/ui/renderer/card.js';
+import { blankIcons, iconOf } from '../helpers/icons.js';
 
 class FakeClassList {
   constructor() {
@@ -338,15 +339,19 @@ test('生成中可以「再画一张」：选预设（当前的排前面、没�
   const click = label => [...card.root.querySelectorAll('button')].find(button => button.textContent === label).click();
   const settle = () => new Promise(resolve => setTimeout(resolve, 0));
 
-  assert.deepEqual(buttons(), ['↻再画一张', '×取消']);
-  click('↻再画一张');
+  assert.deepEqual(buttons(), ['再画一张', '取消']);
+  assert.deepEqual([...card.root.querySelectorAll('button')].map(iconOf), ['refresh', 'close']);
+  assert.equal(iconOf(card.root.querySelector('.stia-card__status')), 'spinner', '正在画：一个转着的圈');
+  assert.ok(card.root.querySelector('.stia-card__status .stia-icon').classList.contains('is-spinning'));
+  assert.deepEqual(blankIcons(card.root), []);
+  click('再画一张');
   await settle();
   assert.match(card.root.textContent, /这张会在后台接着画。用哪个预设再画一张？/);
   assert.deepEqual(buttons(), ['便宜组（当前）', '快速组', '新预设（没填 Key）', '算了']);
   click('算了');
-  assert.deepEqual(buttons(), ['↻再画一张', '×取消'], '「算了」收起');
+  assert.deepEqual(buttons(), ['再画一张', '取消'], '「算了」收起');
 
-  click('↻再画一张');
+  click('再画一张');
   await settle();
   click('快速组');
   assert.equal(rerolls.length, 1);
@@ -374,20 +379,21 @@ test('生成中可以「再画一张」：选预设（当前的排前面、没�
 
   state = { tag: {}, attempts: [{ attemptId: 'quick', status: 'failed', errorMessage: 'x' }, state.attempts[1]], results: [] };
   card.render();
-  assert.equal(buttons().includes('×删除'), false, '后台还在画时不给删除');
+  assert.equal(buttons().includes('删除'), false, '后台还在画时不给删除');
 
   settings = { generationProvider: 'novelai' };
   state = { attempts: [{ attemptId: 'nai', status: 'generating', requestMode: 'manual' }], results: [] };
   card.render();
-  click('↻再画一张');
+  click('再画一张');
   await settle();
-  assert.deepEqual(buttons(), ['↻确定再画一张', '算了'], 'NovelAI 没有 API 预设可选，确认一下就画');
-  click('↻确定再画一张');
+  assert.deepEqual(buttons(), ['确定再画一张', '算了'], 'NovelAI 没有 API 预设可选，确认一下就画');
+  click('确定再画一张');
   assert.deepEqual(rerolls.at(-1).slice(1), ['nai', undefined]);
 
   state = { attempts: [{ attemptId: 'auto:tag-1', status: 'queued', requestMode: 'auto' }], results: [] };
   card.render();
-  assert.deepEqual(buttons(), ['×取消排队'], '自动排队时还没开始画，没有「再画一张」');
+  assert.deepEqual(buttons(), ['取消排队'], '自动排队时还没开始画，没有「再画一张」');
+  assert.deepEqual(blankIcons(card.root), []);
 });
 
 test('出图后「已完成」旁边显示这张图用了多久，图片上不压东西；记录不全时不显示', async t => {
@@ -426,7 +432,7 @@ test('出图后「已完成」旁边显示这张图用了多久，图片上不�
   card.render();
   const badge = () => card.root.querySelector('.stia-card__completion-status .stia-card__duration');
   assert.equal(badge().textContent, '用时 16 分 37 秒');
-  assert.equal(card.root.querySelector('.stia-card__completion-status').textContent, '✓ 已完成用时 16 分 37 秒');
+  assert.equal(card.root.querySelector('.stia-card__completion-status').textContent, '已完成用时 16 分 37 秒');
   assert.deepEqual(
     [...card.root.querySelector('.stia-card__media').children].map(child => child.tagName),
     ['IMG'],
@@ -564,13 +570,13 @@ test('失败的卡片上「换备用线路」：设了备用线路、这次用�
   });
   card.render();
   const buttons = () => [...card.root.querySelectorAll('button:not(.stia-copy)')].map(button => button.textContent);
-  assert.deepEqual(buttons(), ['↻重试', '⇄换备用线路', '×删除']);
-  [...card.root.querySelectorAll('button')].find(button => button.textContent === '⇄换备用线路').click();
+  assert.deepEqual(buttons(), ['重试', '换备用线路', '删除']);
+  [...card.root.querySelectorAll('button')].find(button => button.textContent === '换备用线路').click();
   assert.deepEqual(fallbacks, [tag]);
 
   const without = expected => {
     card.render();
-    assert.equal(buttons().includes('⇄换备用线路'), false, expected);
+    assert.equal(buttons().includes('换备用线路'), false, expected);
   };
   state = { attempts: [{ ...failed, presetId: 'stable' }], results: [] };
   without('这次用的本来就是备用线路');
@@ -587,7 +593,7 @@ test('失败的卡片上「换备用线路」：设了备用线路、这次用�
   settings = { ...settings, backupPresetId: 'stable' };
   state = { attempts: [{ attemptId: 'a2', status: 'generating', requestMode: 'manual' }], results: [] };
   card.render();
-  [...card.root.querySelectorAll('button')].find(button => button.textContent === '↻再画一张').click();
+  [...card.root.querySelectorAll('button')].find(button => button.textContent === '再画一张').click();
   await new Promise(resolve => setTimeout(resolve, 0));
   assert.deepEqual(buttons(), ['便宜组（当前）', '稳定组（备用）', '别的组', '算了'], '当前的第一，备用的第二');
 });
@@ -631,15 +637,20 @@ test('同一张卡有好几张图时，在卡片上左右翻看：信息跟着�
   const history = () => card.root.querySelector('.stia-card__completion-meta .stia-muted').textContent;
   const duration = () => card.root.querySelector('.stia-card__completion .stia-card__duration').textContent;
   const rows = () => [...card.root.querySelectorAll('.stia-card__info-item')].map(item => item.textContent);
+  /* 翻看的两个键只有箭头图标，名字写在 aria-label 上。 */
   const pagerButton = label => [...card.root.querySelectorAll('.stia-card__pager button')]
-    .find(item => item.textContent.endsWith(label));
+    .find(item => item.getAttribute('aria-label') === label);
   const click = label => pagerButton(label).click();
 
   assert.equal(shownSrc(), '/user/images/r3.png', '先显示最新那张');
   assert.equal(counter(), '3 / 3');
   assert.deepEqual(
-    [...card.root.querySelectorAll('.stia-card__pager > *')].map(item => item.textContent),
-    ['‹上一张', '3 / 3', '›下一张'],
+    [...card.root.querySelectorAll('.stia-card__pager > *')].map(item => item.getAttribute('aria-label') || item.textContent),
+    ['上一张', '3 / 3', '下一张'],
+  );
+  assert.deepEqual(
+    [...card.root.querySelectorAll('.stia-card__pager button')].map(iconOf),
+    ['chevron-left', 'chevron-right'],
   );
   assert.equal(history(), '历史 3 张');
   assert.equal(duration(), '用时 3 分 00 秒');
@@ -688,7 +699,7 @@ test('同一张卡有好几张图时，在卡片上左右翻看：信息跟着�
   assert.equal(counter(), '1 / 3', '别的动静（比如新的一次没画成）不打断正在看的');
 
   const bodyButton = label => [...card.root.querySelectorAll('.stia-card__body button')].find(item => item.textContent === label);
-  bodyButton('↻重新生成').click();
+  bodyButton('重新生成').click();
   await new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(card.root.querySelector('.stia-card__pager'), null, '选预设重新生成时先收起翻看');
   assert.ok(bodyButton('纯爱二号（当前）'));
@@ -752,7 +763,7 @@ test('出图后的「重新生成」可以直接换预设：画这张图的「�
   const buttons = () => [...card.root.querySelectorAll('.stia-card__body button:not(.stia-copy)')].map(button => button.textContent);
   const click = label => [...card.root.querySelectorAll('button')].find(button => button.textContent === label).click();
 
-  click('↻重新生成');
+  click('重新生成');
   await settle();
   assert.match(card.root.textContent, /用哪个预设重新生成？/);
   assert.deepEqual(
@@ -761,30 +772,30 @@ test('出图后的「重新生成」可以直接换预设：画这张图的「�
     '画这张图的原渠道第一，然后当前、备用、其他',
   );
   click('算了');
-  assert.deepEqual(buttons(), ['↻重新生成', '⌕查看 / 保存', '▦画廊'], '「算了」收起');
+  assert.deepEqual(buttons(), ['重新生成', '原图', '画廊'], '「算了」收起');
 
-  click('↻重新生成');
+  click('重新生成');
   await settle();
   click('稳定组（备用）');
   assert.equal(generated.length, 1);
   assert.equal(generated[0][0], tag);
   assert.equal(generated[0][1], 'manual');
   assert.equal(generated[0][2].preset.id, 'stable', '用选的预设重新生成');
-  assert.deepEqual(buttons(), ['↻重新生成', '⌕查看 / 保存', '▦画廊']);
+  assert.deepEqual(buttons(), ['重新生成', '原图', '画廊']);
 
   presets = [{ id: 'old', name: '老渠道', active: true, backup: false }, { id: 'stable', name: '稳定组', active: false, backup: true }];
-  click('↻重新生成');
+  click('重新生成');
   await settle();
   assert.deepEqual(buttons().slice(0, 2), ['老渠道（原渠道）', '稳定组（备用）'], '原渠道就是当前预设时只写原渠道');
   click('算了');
 
   presets = [{ id: 'old', name: '老渠道', active: true }];
-  click('↻重新生成');
+  click('重新生成');
   await settle();
   assert.deepEqual(generated.at(-1), [tag, 'manual'], '只有一个预设：和以前一样点了就画');
 
   settings = { generationProvider: 'novelai' };
-  click('↻重新生成');
+  click('重新生成');
   await settle();
   assert.deepEqual(generated.at(-1), [tag, 'manual'], 'NovelAI 没有 API 预设可选');
   assert.equal(generated.length, 3);
@@ -838,9 +849,9 @@ test('「查看提示词」展开后下面有「一键复制」：没展开时�
   copy.click();
   await new Promise(resolve => setTimeout(resolve, 0));
   assert.deepEqual(written, ['a cat in the rain\n\nNo watermark.'], '复制的是这张图实际用的提示词，原样保留换行');
-  assert.equal(copy.textContent, '✓ 已复制');
+  assert.equal(copy.textContent, '已复制');
   card.render();
-  assert.equal(card.root.querySelector('.stia-copy'), copy, '别的卡片有动静时不重建，「✓ 已复制」不会被冲掉');
+  assert.equal(card.root.querySelector('.stia-copy'), copy, '别的卡片有动静时不重建，「已复制」不会被冲掉');
   assert.equal(details.open, true);
 
   state = { attempts: [{ attemptId: 'a2', status: 'failed', errorMessage: 'HTTP 500', promptSnapshot: 'failed prompt' }], results: [] };
@@ -918,9 +929,14 @@ test('出图后的卡片上「参考重画」旁边有「换预设」：写着�
   const { actions, control, select } = await presetSwitchSetup(t);
   assert.deepEqual(
     actions().map(node => node.textContent),
-    ['↻重新生成', '⌕查看 / 保存', '▦画廊', '◫参考重画', '▤预设：纯爱二号走十六方纯爱二号稳定组'],
+    ['重新生成', '原图', '画廊', '参考重画', '预设：纯爱二号走十六方纯爱二号稳定组'],
     '紧跟在「参考重画」后面',
   );
+  /* 2.6.0：按钮前面是画出来的线条图标，不再是 ↻ ⌕ ▦ 这类符号字符；字里不带符号，读屏只读字。 */
+  assert.deepEqual(actions().map(iconOf), ['refresh', 'expand', 'grid', 'portrait', 'sliders']);
+  assert.deepEqual(blankIcons(actions()[0].closest('.stia-card')), [], '用到的图标都画得出来');
+  assert.ok(actions().every(node => node.querySelector('.stia-icon').getAttribute('aria-hidden') === 'true'), '图标只是装饰');
+  assert.equal(actions()[1].getAttribute('aria-label'), '查看原图、保存', '「原图」两个字短，完整的意思写在 aria-label 上');
   assert.equal(control().tagName, 'LABEL', '整块都是选择框的标签：点哪儿都打开系统的选择器');
   assert.ok(control().classList.contains('stia-button'), '样子和别的按钮一样');
   assert.equal(control().querySelector('.stia-card__preset-name').textContent, '预设：纯爱二号');
@@ -1007,7 +1023,7 @@ test('只有一个预设、没接上切换、等待生成和正在画的卡片�
   context.choices = { ...context.choices, items: [{ id: 'cheap', name: '纯爱二号' }] };
   card.render();
   assert.equal(control(), null, '只有一个预设没什么可换的');
-  assert.deepEqual(actions().map(node => node.textContent), ['↻重新生成', '⌕查看 / 保存', '▦画廊', '◫参考重画']);
+  assert.deepEqual(actions().map(node => node.textContent), ['重新生成', '原图', '画廊', '参考重画']);
 
   context.choices = null;
   card.render();
@@ -1041,7 +1057,7 @@ test('NovelAI：没有「参考重画」，「换预设」换的是画师串，�
   const { actions, control, select } = await presetSwitchSetup(t, { provider: 'novelai' });
   assert.deepEqual(
     actions().map(node => node.textContent.replace(/走十六方纯爱二号稳定组$/, '')),
-    ['↻重新生成', '⌕查看 / 保存', '▦画廊', '▤画师串：纯爱二号'],
+    ['重新生成', '原图', '画廊', '画师串：纯爱二号'],
   );
   assert.equal(select().getAttribute('aria-label'), '切换当前画师串预设');
   assert.ok(control().parentElement.classList.contains('stia-actions--pairs'));
@@ -1085,7 +1101,10 @@ test('失败、被中断、已取消的卡片上也有「换预设」：只换�
     context.state = { tag: {}, attempts: [{ attemptId: `a-${status}`, status, provider: 'openai', presetId: 'cheap', errorMessage: '上游超时' }], results: [] };
     failing.render();
     assert.match(failing.root.textContent, new RegExp(title));
-    assert.deepEqual(labels(), ['↻重试', '▤预设：纯爱二号', '×删除'], `${title}的卡片上有`);
+    assert.deepEqual(labels(), ['重试', '预设：纯爱二号', '删除'], `${title}的卡片上有`);
+    /* 失败、中断是警告三角，自己取消的是个叉。 */
+    assert.equal(iconOf(failing.root.querySelector('.stia-card__status')), status === 'cancelled' ? 'close' : 'alert');
+    assert.deepEqual(blankIcons(failing.root), []);
     assert.equal(row()[1], failedControl());
     assert.equal(failedControl().parentElement.classList.contains('stia-actions--pairs'), false, '三个按钮排一行');
   }
@@ -1094,16 +1113,21 @@ test('失败、被中断、已取消的卡片上也有「换预设」：只换�
   await settle();
   assert.deepEqual(context.switched, ['stable']);
   assert.deepEqual(generated, [], '换预设不会自己去重试：重试要花钱，得自己点');
-  assert.deepEqual(labels(), ['↻重试', '▤预设：稳定组', '×删除'], '按钮写上新的预设');
+  assert.deepEqual(labels(), ['重试', '预设：稳定组', '删除'], '按钮写上新的预设');
 
-  [...failing.root.querySelectorAll('button')].find(button => button.textContent === '↻重试').click();
+  [...failing.root.querySelectorAll('button')].find(button => button.textContent === '重试').click();
   assert.deepEqual(generated, [[tag, 'manual']], '点「重试」才画，用的是当前预设');
 
   /* 设了备用线路、开了「调整后重绘」：换备用线路在前，换预设跟在后面，两个一行。 */
   context.settings = { generationProvider: 'openai', executionMode: 'direct', backupPresetId: 'old', enablePromptOverrideRegenerate: true };
   context.state = { tag: {}, attempts: [{ attemptId: 'a-again', status: 'failed', provider: 'openai', presetId: 'stable', errorMessage: '上游超时' }], results: [] };
   failing.render();
-  assert.deepEqual(labels(), ['↻重试', '⇄换备用线路', '▤预设：稳定组', '✎调整后重绘', '×删除']);
+  assert.deepEqual(labels(), ['重试', '换备用线路', '预设：稳定组', '调整后重绘', '删除']);
+  assert.deepEqual(
+    [...failing.root.querySelectorAll('.stia-actions > *')].map(iconOf),
+    ['refresh', 'swap', 'sliders', 'pencil', 'trash'],
+  );
+  assert.deepEqual(blankIcons(failing.root), []);
   assert.ok(failedControl().parentElement.classList.contains('stia-actions--pairs'));
 
   /* 只有一个预设：没有。 */

@@ -3,6 +3,7 @@ import { VERSION } from '../../../shared/constants.js';
 import { RELEASE_NOTES } from '../../../shared/release-notes.js';
 import { describeBytes } from '../../state/tag-footprint.js';
 import { describeStorage } from './storage-status.js';
+import { icon, setIconLabel } from '../../icons.js';
 import {
   NOVELAI_MODELS,
   NOVELAI_SAMPLERS,
@@ -93,13 +94,25 @@ function select(options = []) {
   return element;
 }
 
-function action(label, handler, primary = false) {
+/* 按钮。iconName 是 src/ui/icons.js 里的名字，给了就是「图标 + 文字」。 */
+function action(label, handler, primary = false, iconName = '') {
   const element = document.createElement('button');
   element.type = 'button';
   element.className = `stia-button${primary ? ' stia-button--primary' : ''}`;
-  element.textContent = label;
+  if (iconName) setIconLabel(element, iconName, label);
+  else element.textContent = label;
   element.addEventListener('click', handler);
   return element;
+}
+
+/* 区块标题：「图标 + 文字」。 */
+function sectionTitle(iconName, text) {
+  const title = document.createElement('h3');
+  const badge = document.createElement('span');
+  badge.setAttribute('aria-hidden', 'true');
+  badge.append(icon(iconName));
+  title.append(badge, text);
+  return title;
 }
 
 function safeFilename(value) {
@@ -155,8 +168,9 @@ export function createToolPanel({ api, store, onError = () => {} }) {
   const health = document.createElement('span');
   health.className = 'stia-health';
   health.textContent = '正在连接…';
-  const close = action('×', () => hide());
-  close.className = 'stia-icon-button';
+  const close = action('', () => hide());
+  close.className = 'stia-icon-button stia-panel__close';
+  close.replaceChildren(icon('close'));
   close.setAttribute('aria-label', '关闭');
   header.append(heading, health, close);
 
@@ -872,7 +886,7 @@ export function createToolPanel({ api, store, onError = () => {} }) {
   artistPresetRow.className = 'stia-inline-control';
   artistPresetRow.append(artistSelector, createArtistPreset, deleteArtistPreset);
 
-  const exportCurrentArtistPreset = action('⇧ 导出当前', async () => {
+  const exportCurrentArtistPreset = action('导出当前', async () => {
     await run(exportCurrentArtistPreset, async () => {
       const preset = await saveCurrentArtistPreset();
       const payload = await api.exportArtistPresets({ presetIds: [preset.id] });
@@ -882,7 +896,7 @@ export function createToolPanel({ api, store, onError = () => {} }) {
     });
   });
 
-  const exportAllArtistPresets = action('⇧ 导出全部', async () => {
+  const exportAllArtistPresets = action('导出全部', async () => {
     await run(exportAllArtistPresets, async () => {
       const preset = await saveCurrentArtistPreset();
       const payload = await api.exportArtistPresets();
@@ -893,10 +907,14 @@ export function createToolPanel({ api, store, onError = () => {} }) {
     });
   });
 
-  const importArtistPresets = action('⇩ 导入 JSON', () => {
+  const importArtistPresets = action('导入 JSON', () => {
     artistImportInput.value = '';
     artistImportInput.click();
   });
+
+  setIconLabel(exportCurrentArtistPreset, 'share', '导出当前');
+  setIconLabel(exportAllArtistPresets, 'share', '导出全部');
+  setIconLabel(importArtistPresets, 'download', '导入 JSON');
 
   artistImportInput.addEventListener('change', async () => {
     const file = artistImportInput.files?.[0];
@@ -985,7 +1003,9 @@ export function createToolPanel({ api, store, onError = () => {} }) {
   pageHeading.className = 'stia-page-heading';
   const pageTitle = document.createElement('div');
   pageTitle.className = 'stia-page-title';
-  pageTitle.innerHTML = '<span aria-hidden="true">⚙</span><strong>设置</strong>';
+  const pageTitleText = document.createElement('strong');
+  pageTitleText.textContent = '设置';
+  pageTitle.append(pageTitleText);
   const enabledField = field('扩展已启用', enabled);
   enabledField.classList.add('stia-switch-field');
   pageHeading.append(pageTitle, enabledField);
@@ -1063,7 +1083,7 @@ export function createToolPanel({ api, store, onError = () => {} }) {
   const apiSection = document.createElement('section');
   apiSection.className = 'stia-section';
   const apiTitle = document.createElement('h3');
-  apiTitle.innerHTML = '<span aria-hidden="true">▤</span> API 配置';
+  apiTitle.replaceChildren(...sectionTitle('sliders', 'API 配置').childNodes);
   const apiGrid = document.createElement('div');
   apiGrid.className = 'stia-form-stack';
   const presetField = field('API 预设', presetRow);
@@ -1087,15 +1107,15 @@ export function createToolPanel({ api, store, onError = () => {} }) {
   );
   const apiActions = document.createElement('div');
   apiActions.className = 'stia-actions stia-actions--fill';
-  save.textContent = '✓  保存预设';
-  test.textContent = '⌁  测试模型接口';
+  setIconLabel(save, 'check', '保存预设');
+  setIconLabel(test, 'bolt', '测试模型接口');
   apiActions.append(save, test);
   apiSection.append(apiTitle, apiGrid, apiActions);
 
   const generationSection = document.createElement('section');
   generationSection.className = 'stia-section';
   const generationTitle = document.createElement('h3');
-  generationTitle.innerHTML = '<span aria-hidden="true">▧</span> 生图参数';
+  generationTitle.replaceChildren(...sectionTitle('sparkles', '生图参数').childNodes);
   const generationGrid = document.createElement('div');
   generationGrid.className = 'stia-form-grid stia-form-grid--compact';
   const defaultSizeField = field('默认尺寸（标签未指定 ratio 时）', defaultSize);
@@ -1115,13 +1135,14 @@ export function createToolPanel({ api, store, onError = () => {} }) {
   );
   generationSaveHint = document.createElement('small');
   generationSaveHint.className = 'stia-muted';
-  generationSaveButton = action('✓  保存生图参数', async () => run(generationSaveButton, async () => {
+  generationSaveButton = action('保存生图参数', async () => run(generationSaveButton, async () => {
     const preset = await saveGenerationParameters();
     const sizeText = preset.sendSize === false ? '不发送 size' : preset.defaultSize;
     const qualityText = preset.sendQuality === false ? '不发送 quality' : preset.defaultQuality;
     const countText = preset.sendN === false ? '不发送 n' : `${preset.defaultCount} 张`;
     status.textContent = `生图参数已保存：${sizeText} · ${qualityText} · ${countText}`;
   }), true);
+  setIconLabel(generationSaveButton, 'check', '保存生图参数');
   const generationActions = document.createElement('div');
   generationActions.className = 'stia-actions stia-actions--fill';
   generationActions.append(generationSaveButton);
@@ -1140,7 +1161,7 @@ export function createToolPanel({ api, store, onError = () => {} }) {
   const referenceSection = document.createElement('section');
   referenceSection.className = 'stia-section';
   const referenceTitle = document.createElement('h3');
-  referenceTitle.innerHTML = '<span aria-hidden="true">◫</span> 参考图组（垫图）';
+  referenceTitle.replaceChildren(...sectionTitle('portrait', '参考图组（垫图）').childNodes);
   const referenceHint = document.createElement('small');
   referenceHint.className = 'stia-muted';
   referenceHint.textContent = '传几张角色的脸和服装，出图就跟着参考走。参考图组不跟 API 预设走：换渠道不用重传；每个角色卡可以记住自己用哪一组，换卡自动换脸，没单独设置的角色用默认组。走 OpenAI 的 /v1/images/edits 接口，中转站要支持；只有免服务端直连的 GPT 有，NovelAI 和增强模式暂不支持。';
@@ -1163,7 +1184,7 @@ export function createToolPanel({ api, store, onError = () => {} }) {
   referenceInput.accept = 'image/png,image/jpeg,image/webp';
   referenceInput.multiple = true;
   referenceInput.hidden = true;
-  const addReference = action('⊕  添加参考图', () => referenceInput.click());
+  const addReference = action('添加参考图', () => referenceInput.click(), false, 'plus');
   /* 「换一张」：单选一张，原位替换这张参考图（顺序不变，满 4 张也能换）。记下换的是哪张、点的是哪个按钮。 */
   const replaceInput = input('file');
   replaceInput.accept = 'image/png,image/jpeg,image/webp';
@@ -1236,9 +1257,9 @@ export function createToolPanel({ api, store, onError = () => {} }) {
       referenceList.append(empty);
     }
     addReference.disabled = !set || items.length >= 4;
-    addReference.textContent = !set
-      ? '⊕  添加参考图'
-      : (items.length >= 4 ? '⊕  已满 4 张' : `⊕  添加参考图（${items.length} / 4）`);
+    setIconLabel(addReference, 'plus', !set
+      ? '添加参考图'
+      : (items.length >= 4 ? '已满 4 张' : `添加参考图（${items.length} / 4）`));
     useReferences.disabled = !set;
     referenceFidelity.disabled = !set;
     useReferences.checked = Boolean(set) && set.useReferences !== false;
@@ -1284,7 +1305,8 @@ export function createToolPanel({ api, store, onError = () => {} }) {
     renameSet.disabled = !editingSetId;
     deleteSet.disabled = !editingSetId;
     makeDefault.disabled = !editingSetId || editingSetId === defaultSetId;
-    makeDefault.textContent = editingSetId && editingSetId === defaultSetId ? '✓ 默认组' : '设为默认';
+    if (editingSetId && editingSetId === defaultSetId) setIconLabel(makeDefault, 'check', '默认组');
+    else makeDefault.textContent = '设为默认';
     renderReferences(editingSet());
   }
 
@@ -1367,7 +1389,8 @@ export function createToolPanel({ api, store, onError = () => {} }) {
     });
   });
   const setActions = document.createElement('div');
-  setActions.className = 'stia-actions stia-actions--fill';
+  /* 四个按钮：手机上两个一行，字不会被挤成竖排。 */
+  setActions.className = 'stia-actions stia-actions--fill stia-actions--pairs';
   setActions.append(createSet, renameSet, deleteSet, makeDefault);
 
   referenceInput.addEventListener('change', async () => {
@@ -1451,7 +1474,7 @@ export function createToolPanel({ api, store, onError = () => {} }) {
   novelAiSection.className = 'stia-section stia-section--novelai';
   novelAiSection.hidden = true;
   const novelAiTitle = document.createElement('h3');
-  novelAiTitle.innerHTML = '<span aria-hidden="true">✦</span> NovelAI 配置';
+  novelAiTitle.replaceChildren(...sectionTitle('sparkles', 'NovelAI 配置').childNodes);
   const novelAiGrid = document.createElement('div');
   novelAiGrid.className = 'stia-form-stack';
   const novelAiKeyRow = document.createElement('div');
@@ -1537,7 +1560,7 @@ export function createToolPanel({ api, store, onError = () => {} }) {
   );
   novelAiAdvanced.append(novelAiAdvancedSummary, novelAiAdvancedGrid);
 
-  const saveNovelAi = action('✓  保存 NovelAI 配置', saveSettings, true);
+  const saveNovelAi = action('保存 NovelAI 配置', saveSettings, true, 'check');
   const novelAiActions = document.createElement('div');
   novelAiActions.className = 'stia-actions stia-actions--fill';
   novelAiActions.append(saveNovelAi);
@@ -1591,7 +1614,7 @@ export function createToolPanel({ api, store, onError = () => {} }) {
   const appearanceSection = document.createElement('section');
   appearanceSection.className = 'stia-section';
   const appearanceTitle = document.createElement('h3');
-  appearanceTitle.innerHTML = '<span aria-hidden="true">◐</span> 界面与画廊';
+  appearanceTitle.replaceChildren(...sectionTitle('contrast', '界面与画廊').childNodes);
   const themeField = field('界面主题', themeMode);
   const themeHint = document.createElement('small');
   themeHint.className = 'stia-muted';
@@ -1622,7 +1645,7 @@ export function createToolPanel({ api, store, onError = () => {} }) {
   const cleanupNotice = document.createElement('p');
   cleanupNotice.className = 'stia-warning';
   cleanupNotice.textContent = '两项可单独或同时启用；同时启用时，任一规则命中的旧图片都会被永久删除。仅清理画笺自己登记的图片，不会触碰酒馆或其他扩展的图片。';
-  const saveMaintenance = action('✓  保存规则并立即检查', async () => {
+  const saveMaintenance = action('保存规则并立即检查', async () => {
     if ((cleanupByAge.checked || cleanupByCount.checked)
       && !confirm('保存后会立即按规则永久删除旧图片，且无法撤销。确定继续吗？')) return;
     await run(saveMaintenance, async () => {
@@ -1641,6 +1664,7 @@ export function createToolPanel({ api, store, onError = () => {} }) {
     });
   }, true);
   saveMaintenance.classList.add('stia-button--full');
+  setIconLabel(saveMaintenance, 'check', '保存规则并立即检查');
 
   /* 整理旧数据：2.0.0 之前楼层里写着整份标签状态（1.7.0 之前还有整份生成记录），楼层一多聊天文件就几十 MB，
      酒馆每次保存都整份上传、重写、备份。先算账再确认，做完只保存一次聊天。 */
@@ -1650,7 +1674,7 @@ export function createToolPanel({ api, store, onError = () => {} }) {
   const slimNotice = document.createElement('p');
   slimNotice.className = 'stia-muted';
   slimNotice.textContent = '2.0.0 起每一楼只留百来字节的引用，提示词在正文里、标签状态在按聊天分的侧文件里，出图不再保存聊天。旧聊天里还带着整份标签数据的楼，点这里一次搬完：先把侧文件和画廊整理好，再把每一楼换成引用，只保存一次聊天。开始前建议先用小锚「立即快照」或导出一份聊天。重复执行没有副作用。';
-  const slimChat = action('◫  整理旧数据', async () => {
+  const slimChat = action('整理旧数据', async () => {
     await run(slimChat, async () => {
       const plan = await api.organizeChat({ dryRun: true });
       if (!plan.messages) {
@@ -1686,6 +1710,7 @@ export function createToolPanel({ api, store, onError = () => {} }) {
     });
   });
   slimChat.classList.add('stia-button--full');
+  setIconLabel(slimChat, 'archive', '整理旧数据');
   /* 1.9.0 画廊缩略图：新图自动带；以前的图在画廊里翻到时后台慢慢补，也可以在这里一次补全。原图不动。 */
   const thumbnailHeading = document.createElement('h4');
   thumbnailHeading.className = 'stia-subheading';
@@ -1694,13 +1719,13 @@ export function createToolPanel({ api, store, onError = () => {} }) {
   thumbnailNotice.className = 'stia-muted';
   thumbnailNotice.textContent = '画廊格子里放的是缩略图，点开、下载、参考重画、聊天里的卡片都是原图，原图一个字节不动。新出的图自动带缩略图；以前的图在画廊里翻到时后台慢慢补，也可以在这里一次补全（每张原图要解码一遍，建议在电脑上做，手机上做会热）。';
   let thumbnailAbort = null;
-  const backfillThumbnails = action('▦  补全画廊缩略图', async () => {
+  const backfillThumbnails = action('补全画廊缩略图', async () => {
     if (thumbnailAbort) {
       thumbnailAbort.abort();
       return;
     }
     thumbnailAbort = new AbortController();
-    backfillThumbnails.textContent = '■  停止补全';
+    setIconLabel(backfillThumbnails, 'stop', '停止补全');
     status.className = 'stia-status';
     status.textContent = '正在清点没有缩略图的图片…';
     try {
@@ -1720,10 +1745,11 @@ export function createToolPanel({ api, store, onError = () => {} }) {
       onError(error, '补全画廊缩略图');
     } finally {
       thumbnailAbort = null;
-      backfillThumbnails.textContent = '▦  补全画廊缩略图';
+      setIconLabel(backfillThumbnails, 'grid', '补全画廊缩略图');
     }
   });
   backfillThumbnails.classList.add('stia-button--full');
+  setIconLabel(backfillThumbnails, 'grid', '补全画廊缩略图');
   /* 2.4.0 画廊索引、生成记录拆成小文件存：这里写着现在是拆开的还是整份的，拆分没成功也能看到原因。 */
   const storageHeading = document.createElement('h4');
   storageHeading.className = 'stia-subheading';
@@ -1827,10 +1853,10 @@ export function createToolPanel({ api, store, onError = () => {} }) {
     deletePreset.disabled = !isNovelAi && executionMode.value === 'server';
     syncBackupControls();
     health.textContent = isNovelAi
-      ? '● NovelAI 兼容接口已就绪'
+      ? 'NovelAI 兼容接口已就绪'
       : api.mode() === 'server'
-        ? '● Server Plugin 已连接'
-        : '● 免服务端模式已就绪';
+        ? 'Server Plugin 已连接'
+        : '免服务端模式已就绪';
     store.set({
       settings: {
         ...store.state.settings,
@@ -1928,10 +1954,10 @@ export function createToolPanel({ api, store, onError = () => {} }) {
       });
       const healthData = await api.health();
       health.textContent = provider === 'novelai'
-        ? '● NovelAI 兼容接口已就绪'
+        ? 'NovelAI 兼容接口已就绪'
         : healthData.mode === 'direct'
-          ? '● 免服务端模式已就绪'
-          : '● Server Plugin 已连接';
+          ? '免服务端模式已就绪'
+          : 'Server Plugin 已连接';
       health.classList.add('is-ready');
       status.textContent = provider === 'novelai'
         ? `NovelAI 配置与画师串“${savedArtist.name}”已保存`
@@ -1960,10 +1986,10 @@ export function createToolPanel({ api, store, onError = () => {} }) {
       void loadReferenceSets();
       const provider = settings.generationProvider === 'novelai' ? 'novelai' : 'openai';
       health.textContent = provider === 'novelai'
-        ? '● NovelAI 兼容接口已就绪'
+        ? 'NovelAI 兼容接口已就绪'
         : healthData.mode === 'direct'
-          ? '● 免服务端模式已就绪'
-          : '● Server Plugin 已连接';
+          ? '免服务端模式已就绪'
+          : 'Server Plugin 已连接';
       health.classList.add('is-ready');
       enabled.checked = settings.enabled;
       autoGenerate.checked = settings.autoGenerate;
@@ -2003,8 +2029,8 @@ export function createToolPanel({ api, store, onError = () => {} }) {
       setProvider(provider, false);
     } catch (error) {
       health.textContent = api.mode() === 'server'
-        ? '○ Server Plugin 未连接'
-        : '○ 免服务端模式初始化失败';
+        ? 'Server Plugin 未连接'
+        : '免服务端模式初始化失败';
       health.classList.remove('is-ready');
       status.className = 'stia-status stia-error';
       status.textContent = error.message;

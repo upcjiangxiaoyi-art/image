@@ -12,6 +12,7 @@ import {
   describeGenerationProblem,
   requestedQuality,
 } from '../../src/ui/pages/error-dialog/error-dialog.js';
+import { blankIcons, iconOf } from '../helpers/icons.js';
 import { createStore } from '../../src/ui/state/store.js';
 
 function withDom(t) {
@@ -476,9 +477,13 @@ test('生图失败那条带「重新生成」：点了只收起这一条并重�
   assert.equal(items().length, 3);
   assert.deepEqual(
     retryButtons().map(button => button.textContent),
-    ['↻ 全部重新生成', '↻ 重新生成'],
+    ['全部重新生成', '重新生成'],
     '回退提醒不带按钮',
   );
+  assert.deepEqual(retryButtons().map(iconOf), ['refresh', 'refresh']);
+  /* 标题前的小圆点：有报错是叉，只有回退提醒是感叹号，图画好了是对勾。 */
+  assert.equal(iconOf(dialog.root.querySelector('.stia-error-dialog__icon')), 'close');
+  assert.deepEqual(blankIcons(dialog.root), [], '用到的图标都画得出来');
 
   retryButtons()[0].dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
   assert.equal(dialog.root.hidden, false, '焦点在按钮上按 Enter 是按按钮，不是关弹窗');
@@ -623,10 +628,12 @@ test('画好的图的提醒：每张一条，「查看」先把弹窗整个关�
 
   dialog.show(notice('r-1'));
   assert.equal(dialog.root.dataset.tone, 'info');
-  assert.equal(dialog.root.querySelector('.stia-error-dialog__icon').textContent, '✓');
+  assert.equal(iconOf(dialog.root.querySelector('.stia-error-dialog__icon')), 'check');
+  assert.equal(dialog.root.querySelector('.stia-error-dialog__icon').textContent, '', '圆点里是画的图标，不是符号字符');
   assert.equal(dialog.root.getAttribute('aria-label'), '上一版回复的图画好了');
   assert.equal(dialog.root.querySelector('.stia-error-dialog__retry'), null);
-  assert.deepEqual(viewButtons().map(button => button.textContent), ['⌕ 查看']);
+  assert.deepEqual(viewButtons().map(button => button.textContent), ['查看']);
+  assert.deepEqual(viewButtons().map(iconOf), ['expand']);
 
   dialog.show(notice('r-2'));
   assert.equal(viewButtons().length, 2, '两张图各占一条，不合并');
@@ -702,9 +709,10 @@ test('弹窗里「换备用线路重画」：写着备用线路的名字，点�
   const failure = { tone: 'danger', title: '上游服务器出错', message: '上游生图请求失败（HTTP 502）' };
   dialog.show({ ...failure, retry: { key: 'a', run: () => runs.push('retry-a') }, fallback: { key: 'a', label: '稳定组', run: () => runs.push('backup-a') } });
   const buttons = () => [...dialog.root.querySelectorAll('.stia-error-dialog__actions button')].map(button => button.textContent);
-  assert.deepEqual(buttons(), ['⇄ 换「稳定组」重画', '↻ 重新生成']);
+  assert.deepEqual(buttons(), ['换「稳定组」重画', '重新生成']);
+  assert.deepEqual([...dialog.root.querySelectorAll('.stia-error-dialog__actions button')].map(iconOf), ['swap', 'refresh']);
   dialog.show({ ...failure, retry: { key: 'b', run: () => runs.push('retry-b') }, fallback: { key: 'b', label: '稳定组', run: () => runs.push('backup-b') } });
-  assert.deepEqual(buttons(), ['⇄ 全部换「稳定组」重画', '↻ 全部重新生成'], '同一条合并了两张');
+  assert.deepEqual(buttons(), ['全部换「稳定组」重画', '全部重新生成'], '同一条合并了两张');
   dialog.root.querySelector('.stia-error-dialog__fallback').click();
   assert.deepEqual(runs, ['backup-a', 'backup-b'], '两张都换备用线路，原线路不重跑');
   assert.equal(dialog.root.hidden, true, '只有这一条，点了就关');

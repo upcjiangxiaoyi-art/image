@@ -1,5 +1,6 @@
 import { makeImageSaveable, openImageViewer } from '../media/image-viewer.js';
 import { createCopyRow } from '../media/copy-text.js';
+import { icon } from '../icons.js';
 import { fallbackAdvice } from '../pages/error-dialog/error-dialog.js';
 
 const ACTIVE_STATUSES = new Set(['queued', 'generating', 'downloading', 'saving']);
@@ -77,20 +78,27 @@ function startedAt(attempt, current = Date.now()) {
   return Number.isFinite(created) ? Math.min(created, current) : current;
 }
 
-function button(label, className, handler, symbol = '') {
+/* 按钮：图标（src/ui/icons.js 里的名字，可以不给）+ 文字。 */
+function button(label, className, handler, iconName = '') {
   const element = document.createElement('button');
   element.type = 'button';
   element.className = `stia-button ${className || ''}`.trim();
-  if (symbol) {
-    const icon = document.createElement('span');
-    icon.className = 'stia-button__icon';
-    icon.setAttribute('aria-hidden', 'true');
-    icon.textContent = symbol;
-    element.append(icon);
-  }
+  if (iconName) element.append(icon(iconName));
   const text = document.createElement('span');
   text.textContent = label;
   element.append(text);
+  element.addEventListener('click', handler);
+  return element;
+}
+
+/* 只有图标的圆按钮（翻页的左右箭头）：字写在 aria-label 里。 */
+function iconButton(label, className, handler, iconName) {
+  const element = document.createElement('button');
+  element.type = 'button';
+  element.className = `stia-icon-button ${className || ''}`.trim();
+  element.setAttribute('aria-label', label);
+  element.title = label;
+  element.append(icon(iconName));
   element.addEventListener('click', handler);
   return element;
 }
@@ -99,7 +107,9 @@ function promptDetails(prompt) {
   const details = document.createElement('details');
   details.className = 'stia-prompt';
   const summary = document.createElement('summary');
-  summary.textContent = '◉  查看提示词';
+  const summaryText = document.createElement('span');
+  summaryText.textContent = '查看提示词';
+  summary.append(icon('chevron-right'), summaryText);
   const text = document.createElement('pre');
   text.textContent = prompt;
   /* 「一键复制」放在 details 里：展开前看不到，展开后在提示词下面。 */
@@ -175,12 +185,12 @@ function infoList(info) {
   return list;
 }
 
-function statusHeading(symbol, title, subtitle, tone = '') {
+function statusHeading(iconName, title, subtitle, tone = '') {
   const heading = document.createElement('div');
   heading.className = `stia-card__status ${tone}`.trim();
-  const icon = document.createElement('span');
-  icon.className = 'stia-card__status-icon';
-  icon.textContent = symbol;
+  const badge = document.createElement('span');
+  badge.className = 'stia-card__status-icon';
+  badge.append(icon(iconName, { spin: iconName === 'spinner' }));
   const copy = document.createElement('span');
   copy.className = 'stia-card__status-text';
   const strong = document.createElement('strong');
@@ -191,7 +201,7 @@ function statusHeading(symbol, title, subtitle, tone = '') {
     small.textContent = subtitle;
     copy.append(small);
   }
-  heading.append(icon, copy);
+  heading.append(badge, copy);
   return heading;
 }
 
@@ -222,7 +232,7 @@ export function createCard({
   /* 一键删除：卡片、消息里的 <draw> 注入词、标签元数据一起清掉，不留痕迹。
      只在失败和待生成两种状态提供；已出图的走画廊删除，生成中的先取消。 */
   function removeButton() {
-    return button('删除', 'stia-button--ghost stia-card__remove', () => onRemove(tag), '×');
+    return button('删除', 'stia-button--ghost stia-card__remove', () => onRemove(tag), 'trash');
   }
 
   /* 渲染器在任何一张卡有动静时都会把所有卡片重画一遍。画面没变就不重建 DOM；要重建时，
@@ -282,12 +292,12 @@ export function createCard({
   function pager(index, total) {
     const row = document.createElement('div');
     row.className = 'stia-card__pager';
-    const previous = button('上一张', 'stia-card__nav is-prev', () => step(-1), '‹');
+    const previous = iconButton('上一张', 'stia-card__nav is-prev', () => step(-1), 'chevron-left');
     previous.disabled = index <= 0;
     const count = document.createElement('span');
     count.className = 'stia-card__pager-count';
     count.textContent = `${index + 1} / ${total}`;
-    const next = button('下一张', 'stia-card__nav is-next', () => step(1), '›');
+    const next = iconButton('下一张', 'stia-card__nav is-next', () => step(1), 'chevron-right');
     next.disabled = index >= total - 1;
     row.append(previous, count, next);
     return row;
@@ -376,7 +386,7 @@ export function createCard({
     box.append(note);
     const source = document.createElement('div');
     source.className = 'stia-actions stia-actions--fill';
-    source.append(button(chooser.uploading ? '正在上传…' : '从相册另选一张', 'stia-button--ghost stia-card__reference-pick', pickReferenceFile, '⊕'));
+    source.append(button(chooser.uploading ? '正在上传…' : '从相册另选一张', 'stia-button--ghost stia-card__reference-pick', pickReferenceFile, 'image'));
     box.append(source);
     if (chooser.error) {
       const error = document.createElement('p');
@@ -397,7 +407,7 @@ export function createCard({
         actions.append(button(presetLabel(preset), 'stia-card__reroll-preset', () => startReferenceRegenerate(preset)));
       }
     } else {
-      actions.append(button('确定参考重画', 'stia-button--primary', () => startReferenceRegenerate(presets[0]), '◫'));
+      actions.append(button('确定参考重画', 'stia-button--primary', () => startReferenceRegenerate(presets[0]), 'portrait'));
     }
     actions.append(button('算了', 'stia-button--ghost stia-card__reroll-close', closeChooser));
     box.append(actions);
@@ -449,7 +459,7 @@ export function createCard({
       }
     } else {
       note.textContent = '这张会在后台接着画，确定再画一张？';
-      actions.append(button('确定再画一张', 'stia-button--primary', () => startReroll(attempt, presets[0]), '↻'));
+      actions.append(button('确定再画一张', 'stia-button--primary', () => startReroll(attempt, presets[0]), 'refresh'));
     }
     actions.append(button('算了', 'stia-button--ghost stia-card__reroll-close', closeChooser));
     box.append(note, actions);
@@ -466,11 +476,8 @@ export function createCard({
     const busy = switching || choices.busy === true;
     const control = document.createElement('label');
     control.className = `stia-button stia-card__preset${busy ? ' is-busy' : ''}`;
-    const icon = document.createElement('span');
-    icon.className = 'stia-button__icon';
-    icon.setAttribute('aria-hidden', 'true');
-    /* 和设置页「API 配置」一个图标；「换备用线路」已经用了 ⇄，两个挨着不能长一样。 */
-    icon.textContent = '▤';
+    /* 和设置页「API 配置」一个图标；「换备用线路」用的是来回箭头，两个挨着不能长一样。 */
+    const glyph = icon('sliders');
     const name = document.createElement('span');
     name.className = 'stia-card__preset-name';
     name.textContent = switching ? '正在切换…' : `${artist ? '画师串' : '预设'}：${current?.name || '未选择'}`;
@@ -499,7 +506,7 @@ export function createCard({
           render();
         });
     });
-    control.append(icon, name, select);
+    control.append(glyph, name, select);
     return control;
   }
 
@@ -611,7 +618,7 @@ export function createCard({
       const isRegenerating = Boolean(latest) && !isAutoQueue;
       root.classList.add(isAutoQueue ? 'stia-card--queued' : 'stia-card--generating');
       const heading = statusHeading(
-        isAutoQueue ? '◷' : '◌',
+        isAutoQueue ? 'clock' : 'spinner',
         isAutoQueue
           ? '自动排队中'
           : (isRegenerating ? '正在重新生成…' : (STATUS_TEXT[attempt.status] || '处理中')),
@@ -634,8 +641,8 @@ export function createCard({
         const actions = document.createElement('div');
         actions.className = 'stia-actions stia-actions--fill';
         actions.append(
-          button('再画一张', '', () => openChooser('reroll', { attemptId: attempt.attemptId }), '↻'),
-          button('取消', 'stia-button--ghost', () => onCancel(attempt.attemptId), '×'),
+          button('再画一张', '', () => openChooser('reroll', { attemptId: attempt.attemptId }), 'refresh'),
+          button('取消', 'stia-button--ghost', () => onCancel(attempt.attemptId), 'close'),
         );
         body.append(actions);
       } else {
@@ -643,7 +650,7 @@ export function createCard({
           isAutoQueue ? '取消排队' : '取消',
           'stia-button--ghost stia-button--full',
           () => onCancel(attempt.attemptId),
-          '×',
+          'close',
         ));
       }
       if (running.length) body.append(backgroundNote(running));
@@ -680,8 +687,10 @@ export function createCard({
       const status = document.createElement('span');
       status.className = 'stia-card__completion-status';
       const done = document.createElement('span');
-      done.className = 'stia-success';
-      done.textContent = '✓ 已完成';
+      done.className = 'stia-success stia-card__done';
+      const doneText = document.createElement('span');
+      doneText.textContent = '已完成';
+      done.append(icon('check'), doneText);
       status.append(done);
       if (duration) {
         const spent = document.createElement('span');
@@ -705,18 +714,23 @@ export function createCard({
       completion.append(status, meta);
       const actions = document.createElement('div');
       actions.className = 'stia-actions stia-actions--fill';
+      /* 第一行三个：重新生成宽一点，原图、画廊各占一份；字都在一行里，三个一样高。
+         「原图」打开看图器：放大看、长按保存、分享都在那里（点图片本身也一样）。 */
+      const original = button('原图', 'stia-card__action-side', openOriginal, 'expand');
+      original.setAttribute('aria-label', '查看原图、保存');
+      original.title = '查看原图、保存';
       actions.append(
-        button('重新生成', '', () => openChooser('regenerate', {
+        button('重新生成', 'stia-card__action-main', () => openChooser('regenerate', {
           originalId: shown.presetId || producer?.presetId || '',
-        }), '↻'),
-        button('查看 / 保存', 'stia-button--square', openOriginal, '⌕'),
-        button('画廊', 'stia-button--square', () => onOpenGallery(tag.tagId), '▦'),
+        }), 'refresh'),
+        original,
+        button('画廊', 'stia-card__action-side', () => onOpenGallery(tag.tagId), 'grid'),
       );
       if (canReference) {
         actions.append(button('参考重画', '', () => openChooser('reference', {
           originalId: shown.presetId || producer?.presetId || '',
           reference: { resultId: shown.resultId },
-        }), '◫'));
+        }), 'portrait'));
       }
       /* 和「参考重画」各占一半；没有「参考重画」时自己一行。 */
       if (canSwitch) actions.append(presetSwitch(choices));
@@ -727,9 +741,10 @@ export function createCard({
           provider: shown.provider || attempt?.provider || 'openai',
           result: shown,
           attempt,
-        }), '✎'));
+        }), 'pencil'));
       }
-      /* 四个以上按钮在手机上挤成一行每个都要折行，改成两个一行。 */
+      /* 第一行那三个之后的，两个一行。 */
+      actions.classList.add('stia-actions--result');
       if (actions.children.length >= 4) actions.classList.add('stia-actions--pairs');
       body.append(completion);
       const details = infoList(info);
@@ -749,7 +764,7 @@ export function createCard({
     if (attempt && ['failed', 'interrupted', 'cancelled'].includes(attempt.status)) {
       root.classList.add('stia-card--failed');
       body.append(statusHeading(
-        '×',
+        attempt.status === 'cancelled' ? 'close' : 'alert',
         attempt.status === 'failed' ? '生成失败' : STATUS_TEXT[attempt.status],
         attempt.errorMessage || '请稍后重试',
         'is-danger',
@@ -758,11 +773,11 @@ export function createCard({
       actions.className = 'stia-actions stia-actions--fill';
       actions.append(button('重试', 'stia-button--danger-soft', () => {
         void Promise.resolve(onGenerate(tag, 'manual')).catch(() => {});
-      }, '↻'));
+      }, 'refresh'));
       if (canUseBackup) {
         actions.append(button('换备用线路', '', () => {
           void Promise.resolve(onFallback(tag)).catch(() => {});
-        }, '⇄'));
+        }, 'swap'));
       }
       /* 这条线路不行就在这儿换一个，再点「重试」：重试用的是当前预设。 */
       if (canSwitch) actions.append(presetSwitch(choices));
@@ -771,7 +786,7 @@ export function createCard({
         negativePrompt: actualNegativePrompt,
         provider: attempt.provider || 'openai',
         attempt,
-      }), '✎'));
+      }), 'pencil'));
       if (onRemove && !running.length) actions.append(removeButton());
       /* 四个按钮挤一行在手机上每个都要折成两行字，改成两个一行。 */
       if (actions.children.length >= 4) actions.classList.add('stia-actions--pairs');
@@ -784,7 +799,7 @@ export function createCard({
 
     root.classList.add('stia-card--idle');
     body.append(statusHeading(
-      '▧',
+      'image',
       '等待生成',
       `${attempt?.model || '使用当前预设模型'} · ${size || ratioLabel || '默认尺寸'}`,
       'is-accent',
@@ -800,14 +815,14 @@ export function createCard({
     actions.append(button(attempt ? '重新生成' : '生成图片', 'stia-button--primary', () => {
       /* 失败由报错弹窗和卡片状态说明，这里接住 reject，不留未处理的异常。 */
       void Promise.resolve(onGenerate(tag, 'manual')).catch(() => {});
-    }, '▧'));
+    }, 'sparkles'));
     if (onRemove && !running.length) actions.append(removeButton());
     if (canAdjust && attempt) actions.append(button('调整后重绘', '', () => onAdjustRegenerate(tag, {
       prompt: actualPrompt,
       negativePrompt: actualNegativePrompt,
       provider: attempt.provider || 'openai',
       attempt,
-    }), '✎'));
+    }), 'pencil'));
     body.append(promptDetails(actualPrompt), actions);
     if (running.length) body.append(backgroundNote(running));
     root.append(body);

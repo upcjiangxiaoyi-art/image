@@ -160,6 +160,41 @@ test('原图查看层的「查看提示词」展开后也有「一键复制」',
   copy.dispatch('click');
   await new Promise(resolve => setTimeout(resolve, 0));
   assert.deepEqual(written, ['a cat in the rain']);
-  assert.equal(copy.textContent, '✓ 已复制');
+  assert.equal(copy.textContent, '已复制');
   viewer.destroy();
+});
+
+test('2.6.0 看图器：打开时整张图放进屏幕，点一下图片放大、再点一下回来；底下一排按钮最后是「关闭」', () => {
+  const environment = fakeEnvironment();
+  environment.navigator = { share: async () => {} };
+  const viewer = openImageViewer({
+    src: '/user/images/d.png',
+    meta: 'gpt-image · 1024×1792',
+    onJump: async () => true,
+    onDelete: async () => true,
+  }, { ...environment, fetch: async () => ({ ok: true, blob: async () => ({ type: 'image/png' }) }), File: class {} });
+  const [toolbar, stage, footer] = viewer.root.children;
+  assert.equal(stage.className, 'stia-image-viewer__stage');
+  assert.equal(stage.classList.contains('is-zoomed'), false, '打开时是整张');
+  viewer.image.dispatch('click');
+  assert.equal(stage.classList.contains('is-zoomed'), true, '点一下放大');
+  viewer.image.dispatch('click');
+  assert.equal(stage.classList.contains('is-zoomed'), false, '再点一下回来');
+  assert.equal(viewer.image.listeners.has('contextmenu'), false, '长按保存的菜单没被拦');
+
+  /* 底下：信息、状态、一排按钮、最后一句小字。 */
+  assert.deepEqual(footer.children.map(child => child.className), [
+    'stia-image-viewer__meta',
+    'stia-image-viewer__status',
+    'stia-image-viewer__actions',
+    'stia-image-viewer__hint',
+  ]);
+  assert.equal(footer.children.at(-1).textContent, '点一下图片放大，长按图片保存');
+  const actions = footer.children[2].children;
+  assert.deepEqual(actions.map(button => button.textContent), ['分享、保存', '跳到所在楼层', '删除', '关闭']);
+  assert.equal(actions.at(-1).attributes.get('aria-label'), '关闭原图并返回酒馆页面');
+  assert.equal(toolbar.children[1].textContent, '关闭');
+
+  actions.at(-1).dispatch('click');
+  assert.equal(environment.document.body.children.includes(viewer.root), false, '底下的「关闭」也关得掉');
 });

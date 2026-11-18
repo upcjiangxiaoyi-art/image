@@ -2,6 +2,7 @@ import { makeImageSaveable, openImageViewer } from '../../media/image-viewer.js'
 import { imageInfo } from '../../renderer/card.js';
 import { filterGalleryItems, galleryFilterOptions, normalizeGalleryItem } from './gallery-query.js';
 import { belongsToChat, hasChat } from '../../state/chat-scope.js';
+import { icon, setIconLabel } from '../../icons.js';
 
 const PAGE_SIZE = 30;
 
@@ -16,11 +17,12 @@ function formatDate(value) {
   }
 }
 
-function button(label, className = '') {
+function button(label, className = '', iconName = '') {
   const element = document.createElement('button');
   element.type = 'button';
   element.className = `stia-button ${className}`.trim();
-  element.textContent = label;
+  if (iconName) setIconLabel(element, iconName, label);
+  else element.textContent = label;
   return element;
 }
 
@@ -70,31 +72,44 @@ export function galleryBadges(result) {
 export function createGalleryPage(api, { onError = () => {}, onNavigate = () => {} } = {}) {
   const root = document.createElement('section');
   root.className = 'stia-gallery-page';
+  /* 图片上面的一行：左边是张数，右边是「清除筛选」。没在搜索、筛选时右边什么都没有。
+     「画廊」两个字顶上的标签页已经写了，这里不再写一遍。 */
   const heading = document.createElement('div');
   heading.className = 'stia-gallery-heading';
-  const title = document.createElement('strong');
-  title.textContent = '▦  画廊';
   const count = document.createElement('span');
+  count.className = 'stia-gallery-count';
   count.textContent = '0 张';
-  heading.append(title, count);
+  const clear = button('清除筛选', 'stia-button--ghost stia-gallery-clear', 'close');
+  clear.setAttribute('aria-label', '清除搜索和筛选');
+  clear.hidden = true;
+  heading.append(count, clear);
 
   const tools = document.createElement('div');
   tools.className = 'stia-gallery-tools';
+  const searchBox = document.createElement('label');
+  searchBox.className = 'stia-gallery-search';
   const search = document.createElement('input');
   search.type = 'search';
-  search.placeholder = '搜索提示词、模型、API 预设或画师串';
+  search.placeholder = '搜索提示词、模型、预设或画师串';
   search.setAttribute('aria-label', '搜索画廊');
-  const clear = button('清除搜索 / 筛选');
-  const batchToggle = button('批量选择');
+  searchBox.append(icon('search'), search);
+  const batchToggle = button('批量选择', '', 'select');
+  batchToggle.setAttribute('aria-pressed', 'false');
   /* 只看这个聊天：按当前聊天里的引用认，聊天改过名也认得。 */
-  const scopeToggle = button('只看这个聊天');
+  const scopeToggle = button('只看这个聊天', '', 'chat');
   scopeToggle.setAttribute('aria-pressed', 'false');
-  tools.append(search, scopeToggle, clear, batchToggle);
+  tools.append(searchBox, scopeToggle, batchToggle);
 
   const filtersPanel = document.createElement('details');
   filtersPanel.className = 'stia-gallery-filters';
   const filtersSummary = document.createElement('summary');
-  filtersSummary.textContent = '筛选';
+  const filtersLabel = document.createElement('span');
+  filtersLabel.textContent = '筛选';
+  /* 收着的时候也看得出选了几项。 */
+  const filtersActive = document.createElement('span');
+  filtersActive.className = 'stia-gallery-filters__active';
+  filtersActive.hidden = true;
+  filtersSummary.append(icon('filter'), filtersLabel, filtersActive);
   const filters = document.createElement('div');
   filters.className = 'stia-gallery-filters__grid';
   const favoriteFilter = select([
@@ -126,11 +141,11 @@ export function createGalleryPage(api, { onError = () => {}, onNavigate = () => 
   batchBar.hidden = true;
   const selectVisible = button('选择当前结果');
   const clearSelection = button('取消全选');
-  const favoriteSelected = button('批量收藏');
+  const favoriteSelected = button('批量收藏', '', 'star');
   const unfavoriteSelected = button('取消收藏');
-  const downloadSelected = button('批量下载');
-  const deleteSelected = button('批量删除', 'stia-button--danger-soft');
-  const exitBatch = button('退出批量');
+  const downloadSelected = button('批量下载', '', 'download');
+  const deleteSelected = button('批量删除', 'stia-button--danger-soft', 'trash');
+  const exitBatch = button('退出批量', 'stia-button--ghost stia-gallery-batch__exit');
   batchBar.append(selectVisible, clearSelection, favoriteSelected, unfavoriteSelected,
     downloadSelected, deleteSelected, exitBatch);
 
@@ -143,8 +158,8 @@ export function createGalleryPage(api, { onError = () => {}, onNavigate = () => 
   const empty = document.createElement('div');
   empty.className = 'stia-empty';
   const emptyText = document.createElement('p');
-  const emptyClear = button('清除搜索 / 筛选');
-  empty.append(emptyText, emptyClear);
+  const emptyClear = button('清除搜索和筛选');
+  empty.append(icon('image'), emptyText, emptyClear);
   const loadMore = button('加载更多');
 
   let allItems = [];
@@ -166,7 +181,20 @@ export function createGalleryPage(api, { onError = () => {}, onNavigate = () => 
     scopeToggle.title = available ? '' : '先打开一个聊天';
     scopeToggle.classList.toggle('stia-button--primary', onlyThisChat);
     scopeToggle.setAttribute('aria-pressed', String(onlyThisChat));
-    scopeToggle.textContent = onlyThisChat ? '✓ 只看这个聊天' : '只看这个聊天';
+    setIconLabel(scopeToggle, onlyThisChat ? 'check' : 'chat', '只看这个聊天');
+  }
+
+  /* 下拉里选了几项（不算搜索框和「只看这个聊天」）。 */
+  function activeFilterCount() {
+    return [favoriteFilter.value !== 'all', providerFilter.value !== 'all', modelFilter.value, sourceFilter.value, dateFilter.value]
+      .filter(Boolean).length;
+  }
+
+  function syncFilterState() {
+    const amount = activeFilterCount();
+    filtersActive.hidden = amount === 0;
+    filtersActive.textContent = amount ? `${amount} 项` : '';
+    clear.hidden = !(amount || search.value.trim() || onlyThisChat);
   }
 
   function currentFilters() {
@@ -300,7 +328,11 @@ export function createGalleryPage(api, { onError = () => {}, onNavigate = () => 
     card.classList.toggle('is-selected', selectedIds.has(result.resultId));
     const cardTools = document.createElement('div');
     cardTools.className = 'stia-gallery-card__tools';
-    const favorite = button(result.favorite ? '★' : '☆', 'stia-gallery-card__favorite');
+    const favorite = document.createElement('button');
+    favorite.type = 'button';
+    favorite.className = 'stia-gallery-card__favorite';
+    favorite.classList.toggle('is-on', Boolean(result.favorite));
+    favorite.append(icon('star', { filled: Boolean(result.favorite) }));
     favorite.setAttribute('aria-label', result.favorite ? '取消收藏' : '收藏');
     favorite.setAttribute('aria-pressed', String(result.favorite));
     favorite.addEventListener('click', event => {
@@ -379,7 +411,9 @@ export function createGalleryPage(api, { onError = () => {}, onNavigate = () => 
     for (const control of [clearSelection, favoriteSelected, unfavoriteSelected, downloadSelected, deleteSelected]) {
       control.disabled = amount === 0;
     }
-    batchToggle.textContent = batchMode ? `已选择 ${amount} 张` : '批量选择';
+    batchToggle.classList.toggle('stia-button--primary', batchMode);
+    batchToggle.setAttribute('aria-pressed', String(batchMode));
+    setIconLabel(batchToggle, 'select', batchMode ? `已选择 ${amount} 张` : '批量选择');
   }
 
   function render() {
@@ -398,6 +432,7 @@ export function createGalleryPage(api, { onError = () => {}, onNavigate = () => 
       root.insertBefore(empty, loadMore);
     }
     syncScopeToggle();
+    syncFilterState();
     syncBatchState();
     void backfillThumbnails();
   }
@@ -549,6 +584,6 @@ export function createGalleryPage(api, { onError = () => {}, onNavigate = () => 
     render();
   });
 
-  root.append(heading, tools, filtersPanel, batchBar, status, grid, loadMore);
+  root.append(tools, filtersPanel, batchBar, heading, status, grid, loadMore);
   return { root, load };
 }

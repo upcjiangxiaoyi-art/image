@@ -1,4 +1,5 @@
 import { createCopyRow } from './copy-text.js';
+import { icon } from '../icons.js';
 
 const HISTORY_KEY = 'stImageAtelierViewer';
 let activeViewer = null;
@@ -18,11 +19,18 @@ function safeFilename(value, extension) {
   return `${base}.${extension}`;
 }
 
-function createButton(documentRef, label, className, handler) {
+/* iconName 给了就是「图标 + 字」。图标只是装饰，测试用的极简假页面里不画。 */
+function createButton(documentRef, label, className, handler, iconName = '') {
   const button = documentRef.createElement('button');
   button.type = 'button';
   button.className = className;
-  button.textContent = label;
+  if (iconName && typeof button.replaceChildren === 'function') {
+    const text = documentRef.createElement('span');
+    text.textContent = label;
+    button.replaceChildren(icon(iconName, { document: documentRef }), text);
+  } else {
+    button.textContent = label;
+  }
   button.addEventListener('click', handler);
   return button;
 }
@@ -72,11 +80,13 @@ export function openImageViewer(options, environment = {}) {
   title.textContent = '查看原图';
   const close = createButton(
     documentRef,
-    '× 关闭',
+    '关闭',
     'stia-image-viewer__close',
     () => requestClose(),
+    'close',
   );
   close.setAttribute('aria-label', '关闭原图并返回酒馆页面');
+  close.title = '关闭';
   toolbar.append(title, close);
 
   const stage = documentRef.createElement('div');
@@ -86,13 +96,18 @@ export function openImageViewer(options, environment = {}) {
   image.src = options.src;
   image.alt = options.alt || '生成图片原图';
   image.draggable = true;
+  /* 打开时整张图放进屏幕；点一下放大（最宽占满屏幕，上下滑着看），再点一下回来。长按保存不受影响。 */
+  image.addEventListener('click', () => {
+    if (stage.classList.contains('is-zoomed')) stage.classList.remove('is-zoomed');
+    else stage.classList.add('is-zoomed');
+  });
   stage.append(image);
 
   const footer = documentRef.createElement('footer');
   footer.className = 'stia-image-viewer__footer';
-  const hint = documentRef.createElement('strong');
+  const hint = documentRef.createElement('p');
   hint.className = 'stia-image-viewer__hint';
-  hint.textContent = '手机请长按图片保存';
+  hint.textContent = '点一下图片放大，长按图片保存';
   const status = documentRef.createElement('p');
   status.className = 'stia-image-viewer__status';
   status.setAttribute('role', 'status');
@@ -116,7 +131,7 @@ export function openImageViewer(options, environment = {}) {
   const actions = documentRef.createElement('div');
   actions.className = 'stia-image-viewer__actions';
   if (typeof navigatorRef?.share === 'function' && typeof FileRef === 'function' && typeof fetchRef === 'function') {
-    const share = createButton(documentRef, '分享 / 保存', 'stia-button stia-button--primary', async () => {
+    const share = createButton(documentRef, '分享、保存', 'stia-button stia-button--primary', async () => {
       share.disabled = true;
       status.textContent = '正在准备原图…';
       try {
@@ -141,7 +156,7 @@ export function openImageViewer(options, environment = {}) {
       } finally {
         share.disabled = false;
       }
-    });
+    }, 'share');
     actions.append(share);
   }
   /* onJump：跳到这张图所在的楼层。返回 true 就关掉看图器；返回一句话就留在这里把它写出来。 */
@@ -161,7 +176,7 @@ export function openImageViewer(options, environment = {}) {
       } finally {
         jump.disabled = false;
       }
-    });
+    }, 'locate');
     actions.append(jump);
   }
   if (typeof options.onDelete === 'function') {
@@ -175,18 +190,20 @@ export function openImageViewer(options, environment = {}) {
       } finally {
         remove.disabled = false;
       }
-    });
+    }, 'trash');
     actions.append(remove);
   }
+  /* 顶上的关闭键单手够不着，底下再放一个。 */
   const footerClose = createButton(
     documentRef,
-    '关闭并返回酒馆',
-    'stia-button stia-button--ghost',
+    '关闭',
+    'stia-button stia-image-viewer__dismiss',
     () => requestClose(),
+    'close',
   );
+  footerClose.setAttribute('aria-label', '关闭原图并返回酒馆页面');
   actions.append(footerClose);
-  footer.prepend(hint);
-  footer.append(status, actions);
+  footer.append(status, actions, hint);
   overlay.append(toolbar, stage, footer);
 
   function destroy() {

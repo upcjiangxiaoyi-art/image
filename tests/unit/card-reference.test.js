@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
 import { createCard } from '../../src/ui/renderer/card.js';
+import { blankIcons, iconOf } from '../helpers/icons.js';
 
 const tick = () => new Promise(resolve => setTimeout(resolve, 5));
 
@@ -44,6 +45,9 @@ test('出图后的卡片有「参考重画」：默认拿这张图当参考，�
   await tick();
   assert.match(card.root.textContent, /用卡片上这张图当参考重画/);
   assert.ok(find('从相册另选一张'));
+  assert.equal(iconOf(find('从相册另选一张')), 'image');
+  assert.equal(iconOf(find('确定参考重画')), 'portrait');
+  assert.deepEqual(blankIcons(card.root), [], '用到的图标都画得出来');
   find('确定参考重画').click();
   assert.equal(calls.length, 1);
   assert.deepEqual(calls[0].options.references, [{ resultId: 'r1' }]);

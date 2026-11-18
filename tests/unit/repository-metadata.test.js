@@ -176,11 +176,12 @@ test('触屏设备上不做毛玻璃：每一处 backdrop-filter 都在触屏媒
   const css = await fs.readFile(path.join(root, 'src/ui/styles/atelier.css'), 'utf8');
   const block = /@media \(hover: none\) and \(pointer: coarse\) \{([\s\S]*?)\n\}/.exec(css)?.[1] || '';
   assert.match(block, /backdrop-filter: none/);
-  for (const selector of ['.stia-overlay', '.stia-panel > header', '.stia-prompt-override', '.stia-image-viewer__toolbar']) {
+  for (const selector of ['.stia-overlay', '.stia-panel > header', '.stia-prompt-override']) {
     assert.ok(block.includes(selector), `${selector} 在触屏上关掉毛玻璃`);
   }
+  /* 2.6.0 起看图器顶栏不再盖在别的东西上面，也就不用毛玻璃了：剩三处。 */
   const blurred = css.split('\n').filter(line => /backdrop-filter: blur/.test(line)).length;
-  assert.equal(blurred, 4, '新加的毛玻璃也要进触屏关闭列表');
+  assert.equal(blurred, 3, '新加的毛玻璃也要进触屏关闭列表');
 });
 
 test('卡片、画廊、参考图的图片都异步解码', async () => {
