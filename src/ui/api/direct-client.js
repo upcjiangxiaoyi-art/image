@@ -2284,6 +2284,95 @@ export function createDirectApiClient({
         attempts: attemptStore.storage?.status?.() || null,
       };
     },
+    /* 设置页「复制诊断信息」的原料（写成文字在 pages/settings/diagnostics.js）。只挑排查用得上的字段：
+       密钥、提示词、参考图路径、额外请求参数的值都不给；报错和状态里万一带着密钥原文，也先抹掉。 */
+    diagnostics: async ({ attempts: limit = 8 } = {}) => {
+      await ensureReady().catch(() => {});
+      const secrets = [...namespace.presets.map(preset => getApiKey(preset.id)), getNovelAiKey()]
+        .filter(value => typeof value === 'string' && value.length >= 4);
+      const scrub = text => {
+        let value = typeof text === 'string' ? text : '';
+        for (const secret of secrets) value = value.split(secret).join('[已隐藏密钥]');
+        return value;
+      };
+      const activeSet = resolveReferenceSet();
+      const artistPreset = namespace.artistPresets.find(item => item.id === namespace.activeArtistPresetId);
+      let recent = [];
+      try {
+        recent = attemptStore.recent(limit);
+      } catch {
+        // 生成记录还没读出来：这一块空着。
+      }
+      return {
+        mode: namespace.settings.executionMode || 'direct',
+        settings: clone(namespace.settings),
+        activePresetId: namespace.activePresetId,
+        presets: namespace.presets.map(preset => ({
+          id: preset.id,
+          name: preset.name,
+          baseUrl: preset.baseUrl,
+          selectedModel: preset.selectedModel,
+          generationPath: preset.generationPath,
+          editsPath: preset.editsPath,
+          defaultSize: preset.defaultSize,
+          defaultQuality: preset.defaultQuality,
+          defaultCount: preset.defaultCount,
+          sendSize: preset.sendSize,
+          sendQuality: preset.sendQuality,
+          sendN: preset.sendN,
+          responseFormat: preset.responseFormat,
+          timeoutMs: preset.timeoutMs,
+          hasApiKey: Boolean(getApiKey(preset.id)),
+          extraBody: Object.fromEntries(Object.keys(preset.extraBody || {}).map(name => [name, true])),
+        })),
+        novelAi: {
+          baseUrl: namespace.novelAi.baseUrl || '',
+          model: namespace.novelAi.model || '',
+          hasApiKey: Boolean(getNovelAiKey()),
+          artistPresetName: artistPreset?.name || '',
+        },
+        references: {
+          active: activeSet
+            ? {
+              name: activeSet.name,
+              count: activeSet.references.length,
+              useReferences: activeSet.useReferences !== false,
+              fidelity: activeSet.referenceFidelity === 'high' ? 'high' : '',
+            }
+            : null,
+          total: namespace.referenceSets.length,
+        },
+        storage: {
+          gallery: metadataStore.storage?.status?.() || null,
+          attempts: attemptStore.storage?.status?.() || null,
+        },
+        lineMemory: lineMemory.snapshot(),
+        attempts: recent.map(attempt => ({
+          status: attempt.status,
+          requestMode: attempt.requestMode,
+          provider: attempt.provider,
+          presetId: attempt.presetId,
+          presetNameSnapshot: attempt.presetNameSnapshot,
+          artistPresetNameSnapshot: attempt.artistPresetNameSnapshot,
+          model: attempt.model,
+          parameters: { size: attempt.parameters?.size || '' },
+          qualitySnapshot: attempt.qualitySnapshot || '',
+          referenceCount: attempt.references?.length || 0,
+          resultCount: attempt.resultIds?.length || 0,
+          createdAt: attempt.createdAt,
+          completedAt: attempt.completedAt,
+          errorCode: attempt.errorCode || null,
+          errorMessage: scrub(attempt.errorMessage),
+          statusMessage: scrub(attempt.statusMessage),
+          compatibilityRetry: attempt.compatibilityRetry
+            ? {
+              remembered: attempt.compatibilityRetry.remembered === true,
+              adjustedParameters: [...(attempt.compatibilityRetry.adjustedParameters || [])],
+            }
+            : null,
+        })),
+      };
+    },
     /* 上次问过之后又认领回了几张图（问完清零）：加载完聊天用来提示一声。 */
     takeAdoptedCount: () => {
       const count = adoptedCount;

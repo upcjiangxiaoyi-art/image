@@ -375,3 +375,76 @@ test('2.6.0 设置页的样子：区块标题前有图标，保存、测试这�
   /* 状态那行字前面不再带 ● ○：那个点是样式画的。 */
   assert.doesNotMatch(panel.querySelector('.stia-health')?.textContent || '', /[●○]/);
 });
+
+test('2.8.0 设置页「复制诊断信息」：点一下把版本、开关、最近的生成结果写成一段文字复制走；复制不了就展开让人手动复制；增强模式等读不到原料时也给得出一份', async t => {
+  const { api, store, page, dom } = setup(t);
+  await waitFor(() => store.state.preset?.id === 'p1', '设置面板未完成初始化');
+  const { VERSION } = await import('../../src/shared/constants.js');
+  const section = page().querySelector('.stia-diagnostics');
+  assert.ok(section, '有这一块');
+  const sections = [...page().children];
+  assert.ok(sections.indexOf(section) > sections.findIndex(node => node.classList.contains('stia-release-notes')), '放在最下面，不挡平时用的东西');
+  const button = [...section.querySelectorAll('button')].find(node => node.textContent === '复制诊断信息');
+  assert.equal(iconOf(button), 'copy');
+  assert.match(section.textContent, /没有密钥和提示词/);
+  const preview = section.querySelector('textarea');
+  assert.equal(preview.readOnly, true);
+  const details = section.querySelector('details');
+  assert.equal(details.open, false, '平时收着');
+  const status = () => page().querySelector('.stia-status').textContent;
+
+  let asked = 0;
+  api.diagnostics = async () => {
+    asked += 1;
+    return {
+      mode: 'direct',
+      settings: { enabled: true, autoGenerate: true, generationProvider: 'openai' },
+      presets: [{ id: 'p1', name: '港', baseUrl: 'https://api.example.com/secret-path', selectedModel: 'gpt-image-1', hasApiKey: true, timeoutMs: 180000 }],
+      activePresetId: 'p1',
+      references: { active: null, total: 0 },
+      storage: { gallery: null, attempts: null },
+      lineMemory: [],
+      attempts: [{ status: 'failed', requestMode: 'auto', provider: 'openai', presetNameSnapshot: '港', createdAt: '2026-11-18T06:00:00.000Z', errorCode: 'UPSTREAM_HTTP_ERROR', errorMessage: '上游生图请求失败（HTTP 502）' }],
+    };
+  };
+
+  /* 能用剪贴板：复制走，状态条说一声；展开能看到复制了什么。 */
+  const written = [];
+  Object.defineProperty(dom.window.navigator, 'clipboard', { configurable: true, value: { writeText: async text => { written.push(text); } } });
+  button.click();
+  await waitFor(() => written.length === 1, '没有复制');
+  assert.equal(asked, 1);
+  const text = written[0];
+  assert.match(text, /^画笺诊断信息\n版本：/);
+  assert.ok(text.includes(`版本：${VERSION}`));
+  assert.match(text, /浏览器：.*jsdom/i, '带上浏览器是什么');
+  assert.match(text, /窗口：\d+ × \d+/);
+  assert.match(text, /【当前预设】港\n地址：api\.example\.com\n/);
+  assert.match(text, /失败 · 自动 · GPT · 港\n {3}原因：\[UPSTREAM_HTTP_ERROR\] 上游生图请求失败（HTTP 502）/);
+  assert.equal(text.includes('secret-path'), false);
+  assert.equal(preview.value, text, '预览里就是复制走的那段');
+  await waitFor(() => /已复制诊断信息/.test(status()), '状态条没有说已复制');
+  assert.equal(details.open, false, '复制成了就不用展开');
+  assert.equal(button.disabled, false);
+
+  /* 剪贴板用不了（局域网 http、权限没给）：展开那段文字、选中，提示手动复制。 */
+  Object.defineProperty(dom.window.navigator, 'clipboard', { configurable: true, value: undefined });
+  let selected = 0;
+  preview.select = () => { selected += 1; };
+  button.click();
+  await waitFor(() => /复制不了/.test(status()), '没有提示手动复制');
+  assert.equal(details.open, true);
+  assert.equal(selected, 1);
+  assert.match(status(), /长按下面的文字/);
+  assert.match(preview.value, /^画笺诊断信息/);
+
+  /* 读原料出错、或者这个接口根本没有：照样给一份只有基本信息的，并写明哪块没读到。 */
+  api.diagnostics = async () => { throw new Error('存储没准备好'); };
+  button.click();
+  await waitFor(() => /没读到：存储没准备好/.test(preview.value), '没有写明原因');
+  assert.match(preview.value, /^画笺诊断信息\n版本：/);
+  assert.match(preview.value, /运行模式：免服务端直连/);
+  delete api.diagnostics;
+  button.click();
+  await waitFor(() => /没读到：这个版本的接口不提供/.test(preview.value), '没有接口时也给得出');
+});

@@ -241,6 +241,65 @@
   font-size: 11px;
 }
 
+/* 设置页最下面的「诊断信息」：一句说明、一个复制键，下面收着一份能看、能手动复制的原文。 */
+.stia-diagnostics > .stia-muted {
+  margin: 0;
+  line-height: 1.6;
+}
+
+.stia-diagnostics > .stia-button {
+  width: 100%;
+}
+
+.stia-diagnostics__preview > summary {
+  display: flex;
+  width: fit-content;
+  min-height: 32px;
+  align-items: center;
+  gap: 6px;
+  color: var(--stia-secondary);
+  cursor: pointer;
+  font-size: 12px;
+  list-style: none;
+}
+
+.stia-diagnostics__preview > summary::-webkit-details-marker {
+  display: none;
+}
+
+.stia-diagnostics__preview > summary::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  margin-top: -3px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
+}
+
+.stia-diagnostics__preview[open] > summary::after {
+  margin-top: 3px;
+  transform: rotate(-135deg);
+}
+
+.stia-diagnostics__preview textarea {
+  box-sizing: border-box;
+  display: block;
+  width: 100%;
+  min-height: 220px;
+  margin-top: 6px;
+  padding: 10px 12px;
+  color: var(--stia-input-text);
+  background: var(--stia-input);
+  border: 1px solid var(--stia-border);
+  border-radius: var(--stia-radius-control);
+  font: 11px/1.6 ui-monospace, "SFMono-Regular", Consolas, monospace;
+  resize: vertical;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow: auto;
+}
+
 .stia-health.is-ready {
   color: var(--stia-success);
 }

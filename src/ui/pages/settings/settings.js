@@ -3,6 +3,8 @@ import { VERSION } from '../../../shared/constants.js';
 import { RELEASE_NOTES } from '../../../shared/release-notes.js';
 import { describeBytes } from '../../state/tag-footprint.js';
 import { describeStorage } from './storage-status.js';
+import { buildDiagnostics } from './diagnostics.js';
+import { copyText } from '../../media/copy-text.js';
 import { icon, setIconLabel } from '../../icons.js';
 import {
   NOVELAI_MODELS,
@@ -1831,6 +1833,67 @@ export function createToolPanel({ api, store, onError = () => {} }) {
   }
   releaseNotes.append(releaseSummary, releaseList);
 
+  /* 诊断信息：手机上看不到控制台，出了问题只能截图描述。点一下，把排查要看的东西写成一段文字复制走。 */
+  const diagnosticsSection = document.createElement('section');
+  diagnosticsSection.className = 'stia-section stia-diagnostics';
+  const diagnosticsHint = document.createElement('p');
+  diagnosticsHint.className = 'stia-muted';
+  diagnosticsHint.textContent = '出了问题想让人帮忙看时，点下面的按钮，把复制到的文字贴过去。里面有版本、各个开关、当前预设、数据文件状态，'
+    + '还有最近 8 次生成的结果和报错原文；没有密钥和提示词。';
+  const diagnosticsDetails = document.createElement('details');
+  diagnosticsDetails.className = 'stia-diagnostics__preview';
+  const diagnosticsSummary = document.createElement('summary');
+  diagnosticsSummary.textContent = '看看复制了什么';
+  const diagnosticsPreview = document.createElement('textarea');
+  diagnosticsPreview.readOnly = true;
+  diagnosticsPreview.rows = 12;
+  diagnosticsPreview.setAttribute('aria-label', '诊断信息');
+  diagnosticsPreview.placeholder = '点上面的按钮之后，复制的内容会显示在这里';
+  diagnosticsDetails.append(diagnosticsSummary, diagnosticsPreview);
+
+  /* 原料读不到（增强模式下的老接口、存储还没准备好）也给一份只有基本信息的，并写明哪块没读到。 */
+  async function collectDiagnostics() {
+    let data = {};
+    let problem = '';
+    try {
+      if (typeof api.diagnostics === 'function') data = await api.diagnostics() || {};
+      else problem = '这个版本的接口不提供';
+    } catch (error) {
+      problem = error?.message || '读取失败';
+    }
+    const text = buildDiagnostics({
+      mode: api.mode(),
+      settings: store.state.settings,
+      ...data,
+      version: VERSION,
+      now: new Date(),
+      userAgent: globalThis.navigator?.userAgent || '',
+      viewport: `${globalThis.window?.innerWidth ?? '?'} × ${globalThis.window?.innerHeight ?? '?'}`,
+    });
+    return problem ? `${text}\n\n【预设、数据文件、生成记录这些没读到：${problem}】` : text;
+  }
+
+  const copyDiagnostics = action('复制诊断信息', async () => {
+    await run(copyDiagnostics, async () => {
+      const text = await collectDiagnostics();
+      diagnosticsPreview.value = text;
+      if (await copyText(text)) {
+        status.textContent = `已复制诊断信息（${text.split('\n').length} 行），贴出去就行`;
+        return;
+      }
+      /* 剪贴板用不了（局域网 http、没给权限）：把那段文字展开、选中，让人自己复制。 */
+      diagnosticsDetails.open = true;
+      try {
+        diagnosticsPreview.select();
+        diagnosticsPreview.setSelectionRange(0, text.length);
+      } catch {
+        // 选不中也没关系，长按照样能全选。
+      }
+      status.textContent = '复制不了（浏览器没给剪贴板）。请长按下面的文字，全选后手动复制';
+    });
+  }, false, 'copy');
+  diagnosticsSection.append(sectionTitle('info', '诊断信息'), diagnosticsHint, copyDiagnostics, diagnosticsDetails);
+
   function setProvider(provider, announce = true) {
     const isNovelAi = provider === 'novelai';
     const wasNovelAi = generationProvider.value === 'novelai';
@@ -1904,6 +1967,7 @@ export function createToolPanel({ api, store, onError = () => {} }) {
     appearanceSection,
     advanced,
     releaseNotes,
+    diagnosticsSection,
     status,
   );
 

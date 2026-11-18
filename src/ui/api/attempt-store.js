@@ -213,6 +213,11 @@ export function createAttemptStore({
       ready();
       return Object.values(document.attempts).map(clone);
     },
+    /* 整份里最近开始的 limit 条，最新的在前（诊断信息用）。 */
+    recent(limit) {
+      ready();
+      return newestFirst(Object.values(document.attempts)).slice(0, Math.max(0, limit)).map(clone);
+    },
     get size() {
       ready();
       return Object.keys(document.attempts).length;

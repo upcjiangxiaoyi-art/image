@@ -234,6 +234,8 @@ export function createApiClient({
     tagRecord: tagId => direct.tagRecord(tagId),
     flushPending: () => direct.flushPending(),
     storageStatus: () => direct.storageStatus(),
+    /* 诊断信息的原料：浏览器这一端的设置、记录都在直连这份里，增强模式下也走它。 */
+    diagnostics: options => direct.diagnostics(options),
     /* 画廊「只看这个聊天」：当前聊天用到的 messageUuid / tagId 和聊天名。 */
     chatScope: () => chatScope(compat.chat(), compat.currentChatId()),
     /* 画廊「跳到所在楼层」：在当前聊天里找这张图所在的楼，滚过去。

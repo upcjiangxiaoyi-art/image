@@ -137,3 +137,18 @@ test('延后合并写：几次 put 合成一次；immediate 把排着的一起�
   await new Promise(resolve => setTimeout(resolve, 100));
   assert.equal(store.writes, 1, '原来排的那次已经并进去了，不再多写');
 });
+
+test('recent(n)：整份里最近开始的 n 条，最新的在前；读出来的是拷贝（2.8.0 诊断信息用）', async () => {
+  const store = createMemoryAttemptStore();
+  await store.initialize();
+  await store.putMany([
+    attempt('old', 't1', { createdAt: '2026-10-01T00:00:00.000Z' }),
+    attempt('new', 't2', { createdAt: '2026-10-03T00:00:00.000Z' }),
+    attempt('mid', 't1', { createdAt: '2026-10-02T00:00:00.000Z' }),
+  ]);
+  assert.deepEqual(store.recent(2).map(item => item.attemptId), ['new', 'mid']);
+  assert.deepEqual(store.recent(10).map(item => item.attemptId), ['new', 'mid', 'old']);
+  assert.deepEqual(store.recent(0), []);
+  store.recent(1)[0].status = 'tampered';
+  assert.equal(store.get('new').status, 'succeeded');
+});

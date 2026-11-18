@@ -2597,3 +2597,75 @@ test('2.7.1 本机存不了时（隐私模式、被禁用）：退回只记在�
   assert.equal((await client.generate(generationInput(tagId, messageUuid))).status, 'succeeded');
   assert.equal(requests.length, 3, '这次打开页面期间照样记得');
 });
+
+/* 2.8.0 设置页「复制诊断信息」的原料：最近的生成记录、当前预设、参考图组、线路记忆。密钥、提示词、参考图路径不给。 */
+test('2.8.0 diagnostics()：给出排查要看的东西，不带密钥、提示词、参考图路径、额外参数的值', async t => {
+  const tagId = crypto.randomUUID();
+  const messageUuid = crypto.randomUUID();
+  const message = { is_user: false, mes: '<draw>base64</draw>', extra: { stImageAtelier: leanMetadata(tagId, messageUuid) } };
+  let busy = false;
+  const { client, release } = await gatedClient(t, [message], {
+    compatExtra: { currentCharacterKey: () => 'char:a.png', currentCharacterName: () => '阿A' },
+    editsReply: body => {
+      if (busy) return response(503, { error: { message: 'upstream busy sk-test' } });
+      return body.get('input_fidelity') ? response(400, { error: { message: '当前服务尚未接入 input_fidelity 参数' } }) : null;
+    },
+  });
+  release();
+  await client.updatePreset({ extraBody: { background: 'SECRET-VALUE' }, baseUrl: 'https://upstream.test/private/path?token=URLSECRET' });
+  await client.updatePreset({ baseUrl: 'https://upstream.test' });
+  const overview = await client.createReferenceSet({ name: '阿A的脸' });
+  const setId = overview.created.setId;
+  await client.addReference(setId, { bytes: Buffer.from(PNG_BASE64, 'base64'), filename: 'a.png' });
+  await client.updateReferenceSet(setId, { referenceFidelity: 'high' });
+  await client.updateSettings({ enableSmartRetry: true, autoGenerate: true });
+
+  const input = () => ({ ...generationInput(tagId, messageUuid), prompt: '不能出现在诊断信息里的提示词' });
+  const done = await client.generate(input());
+  assert.equal(done.status, 'succeeded');
+  busy = true;
+  await assert.rejects(client.generate(input()));
+
+  const data = await client.diagnostics();
+  assert.equal(data.mode, 'direct');
+  assert.equal(data.settings.enableSmartRetry, true);
+  assert.equal(data.settings.autoGenerate, true);
+  const preset = data.presets.find(item => item.id === data.activePresetId);
+  assert.equal(preset.hasApiKey, true);
+  assert.equal(preset.baseUrl, 'https://upstream.test');
+  assert.equal(preset.selectedModel, 'gpt-image-1');
+  assert.deepEqual(preset.extraBody, { background: true }, '额外请求参数只给名字');
+  assert.deepEqual(data.references, { active: { name: '阿A的脸', count: 1, useReferences: true, fidelity: 'high' }, total: 1 });
+  assert.deepEqual(data.lineMemory.map(item => item.parameter), ['input_fidelity']);
+  assert.match(data.lineMemory[0].line, /\/v1\/images\/edits/);
+
+  assert.equal(data.attempts.length, 2);
+  const [failed, succeeded] = data.attempts;
+  assert.equal(failed.status, 'failed');
+  assert.equal(failed.errorCode, 'UPSTREAM_HTTP_ERROR');
+  assert.match(failed.errorMessage, /503|busy/);
+  assert.equal(failed.referenceCount, 1);
+  assert.equal(failed.compatibilityRetry.remembered, true);
+  assert.equal(succeeded.status, 'succeeded');
+  assert.equal(succeeded.resultCount, 1);
+  assert.deepEqual(succeeded.compatibilityRetry.adjustedParameters, ['input_fidelity']);
+  assert.equal(succeeded.presetNameSnapshot, preset.name);
+  assert.ok(succeeded.createdAt && succeeded.completedAt);
+
+  /* 整份原料里搜不到这些。 */
+  const dump = JSON.stringify(data);
+  for (const secret of ['sk-test', '不能出现在诊断信息里的提示词', 'SECRET-VALUE', 'URLSECRET', 'st-image-atelier-refs', 'promptSnapshot', 'apiKeyMask']) {
+    assert.equal(dump.includes(secret), false, secret);
+  }
+
+  /* 写成文字也一样。 */
+  const { buildDiagnostics } = await import('../../src/ui/pages/settings/diagnostics.js');
+  const text = buildDiagnostics({ ...data, version: '2.8.0' });
+  assert.match(text, /【当前预设】/);
+  assert.match(text, /地址：upstream\.test/);
+  assert.match(text, /这次出图用的：阿A的脸（1 张 · 自动带上 · 高保真）/);
+  assert.match(text, /【线路记忆】\n.+ · 图生图 · gpt-image-1：不带 input_fidelity（还记 24 小时）/);
+  assert.match(text, /1\. .+ 失败 · 手动 · GPT · .+ · 参考图 1 张\n {3}原因：\[UPSTREAM_HTTP_ERROR\]/);
+  assert.match(text, /2\. .+ 成功 · 手动 · GPT · .+ · 参考图 1 张 · 出图 1 张\n {3}回退：重试时去掉了 input_fidelity/);
+  for (const secret of ['sk-test', '不能出现在诊断信息里的提示词', 'SECRET-VALUE', 'URLSECRET']) assert.equal(text.includes(secret), false, secret);
+});
