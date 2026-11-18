@@ -56,6 +56,7 @@ import {
   tagResultIds,
 } from '../state/tag-storage.js';
 import { chatTagsFootprint, describeFootprint, warnIfHeavy } from '../state/tag-footprint.js';
+import { createLineMemory, deviceStorage } from './line-memory.js';
 
 const LEGACY_API_KEY_STORAGE = 'stImageAtelier.directApiKey.v1';
 const API_KEY_STORAGE_PREFIX = 'stImageAtelier.directApiKey.v2:';
@@ -340,6 +341,10 @@ export function createDirectApiClient({
   thumbnailDelayMs = THUMBNAIL_DELAY_MS,
   /* 聊天的生图标签侧文件：默认走酒馆的 user/files；测试注入内存版 (identity) => store。 */
   chatTagStore: chatTagStoreFactory,
+  /* 线路记忆存在哪：默认这台设备的 localStorage；存不了就只记在内存里。 */
+  lineMemoryStorage = deviceStorage(),
+  /* 现在几点（毫秒）；测试里拨钟用。 */
+  nowMs = () => Date.now(),
 }) {
   const { namespace, legacyGallery } = ensureNamespace(extensionSettings);
   const metadataStore = galleryStore || createSillyTavernGalleryMetadataStore(compat);
@@ -349,10 +354,10 @@ export function createDirectApiClient({
      - 只记「要么带、要么不带」的两个：参考图组的高保真 input_fidelity、图片返回格式 response_format。
        size / quality / n 被拒往往是某个取值不行，换个值可能就行，不记。
      - 按线路记：预设 id + 地址 + 用的是生图还是图生图接口 + 模型。预设换了地址或模型就是另一条线路。
-     - 只记在这次打开页面期间：线路以后接上了，下次打开页面自然会再带着试一次。
+     - 记在这台设备上、记一天（见 line-memory.js）：刷新页面不丢；线路以后接上了，第二天自然会再带着试一次。
      - 人主动改了相关的设置等于说「再试一次」：重新拨一次这组的高保真开关、改了预设的「图片返回格式」。 */
   const REMEMBERED_PARAMETERS = ['input_fidelity', 'response_format'];
-  const rejectedParameters = new Map();
+  const lineMemory = createLineMemory({ storage: lineMemoryStorage, now: nowMs });
   const lineKey = (preset, withReferences) => [
     preset.id,
     preset.baseUrl,
@@ -360,11 +365,7 @@ export function createDirectApiClient({
     preset.selectedModel,
   ].join('|');
   function forgetRejected(parameter, presetId = null) {
-    for (const [key, parameters] of rejectedParameters) {
-      if (presetId && !key.startsWith(`${presetId}|`)) continue;
-      parameters.delete(parameter);
-      if (!parameters.size) rejectedParameters.delete(key);
-    }
+    lineMemory.forget(parameter, presetId);
   }
 
   /* ---------- 聊天的生图标签侧文件（按聊天分，按 tagId 记） ---------- */
@@ -1331,16 +1332,15 @@ export function createDirectApiClient({
     const referenceSet = provider === 'novelai' ? null : resolveReferenceSet();
     if (preset) preset.referenceFidelity = referenceSet?.referenceFidelity === 'high' ? 'high' : '';
     const references = provider === 'novelai' ? [] : planReferences(input, referenceSet);
-    /* 这条线路这次打开页面期间已经明确拒过的参数，一开始就不带（preset 是这次请求用的副本，不动存着的预设）。 */
+    /* 这条线路这一天里已经明确拒过的参数，一开始就不带（preset 是这次请求用的副本，不动存着的预设）。 */
     const line = preset ? lineKey(preset, references.length > 0) : '';
     const remembered = [];
     if (preset) {
-      const rejected = rejectedParameters.get(line);
-      if (rejected?.has('input_fidelity') && references.length > 0 && preset.referenceFidelity === 'high') {
+      if (references.length > 0 && preset.referenceFidelity === 'high' && lineMemory.has(line, 'input_fidelity')) {
         preset.referenceFidelity = '';
         remembered.push('input_fidelity');
       }
-      if (rejected?.has('response_format') && preset.responseFormat !== '') {
+      if (preset.responseFormat !== '' && lineMemory.has(line, 'response_format')) {
         const before = buildRequestBody({ preset, prompt: input.prompt, parameters: input.parameters });
         preset.responseFormat = '';
         /* 「额外请求参数 JSON」里自己写了 response_format 的不替人删。 */
@@ -1449,11 +1449,7 @@ export function createDirectApiClient({
             /* 线路点名拒了的参数当场记下（不等重试画成）：拒绝本身就是证据。一次只重试一回，
                一条线路同时不认两个参数时，第一张会失败，但第二张起就不再带第一个，很快就顺了。 */
             const learned = retry.adjustedParameters.filter(name => REMEMBERED_PARAMETERS.includes(name));
-            if (learned.length) {
-              const rejected = rejectedParameters.get(line) || new Set();
-              for (const name of learned) rejected.add(name);
-              rejectedParameters.set(line, rejected);
-            }
+            lineMemory.remember(line, learned);
             /* 这次一开始就没带的（记着不认的）和刚被拒的，都记在这次生成上。 */
             attempt.compatibilityRetry = remembered.length
               ? { ...retry, adjustedParameters: [...new Set([...remembered, ...retry.adjustedParameters])] }

@@ -316,7 +316,7 @@ test('线路不认高保真参考：没自动重试过的失败弹窗给出两�
   assert.equal(recovered.title, '参数被上游拒绝，已自动回退');
   assert.match(recovered.message, /高保真参考 input_fidelity/);
   assert.match(recovered.hint, /参考图照带了，只是没有高保真/);
-  assert.match(recovered.hint, /这次打开页面期间在这条线路上不再带它/);
+  assert.match(recovered.hint, /这一天里在这条线路上不再带它（刷新页面也记得）/);
 
   assert.equal(describeGenerationProblem({
     attempt: { status: 'succeeded', compatibilityRetry: { attempted: false, remembered: true, adjustedParameters: ['input_fidelity'] } },

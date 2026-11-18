@@ -192,7 +192,7 @@ export function describeGenerationProblem({
   const fallbackHint = joinLines(
     qualityDropped && isPremiumQuality(quality) ? premiumQualityNote(quality) : '',
     dropped.includes('input_fidelity')
-      ? '这条线路不认「高保真参考」，参考图照带了，只是没有高保真。这次打开页面期间在这条线路上不再带它；别的线路照常带。'
+      ? '这条线路不认「高保真参考」，参考图照带了，只是没有高保真。这一天里在这条线路上不再带它（刷新页面也记得）；别的线路照常带。'
       : '',
   );
   /* 卡片已经不在眼前，或是后台那张：告诉用户图去了哪，带上 resultId 好「查看」。 */

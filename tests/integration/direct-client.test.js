@@ -881,6 +881,10 @@ async function gatedClient(t, chat, {
   editsReply,
   /* 生图接口怎么回：(请求体, 请求头) => Response；返回空值就照常回一张图。 */
   generationReply,
+  /* 线路记忆存在哪（2.7.1）：默认每个客户端一份新的；想模拟「刷新页面」就几个客户端传同一份。 */
+  lineStorage = memoryLineStorage(),
+  /* 现在几点（毫秒）：线路记忆只记一天，测试里拨钟用。 */
+  nowMs,
 } = {}) {
   const tagStores = new Map();
   const chatTagStoreFactory = chatTagStore || (identity => {
@@ -949,6 +953,8 @@ async function gatedClient(t, chat, {
       setItem: (key, value) => storage.set(key, value),
       removeItem: key => storage.delete(key),
     },
+    lineMemoryStorage: lineStorage,
+    ...(nowMs ? { nowMs } : {}),
   });
   await client.updatePreset({
     baseUrl: 'https://upstream.test',
@@ -956,6 +962,16 @@ async function gatedClient(t, chat, {
     selectedModel: 'gpt-image-1',
   });
   return { client, requests, release, started, deletedPaths, uploads, edits, served, attemptStore, galleryStore, tagStores };
+}
+
+function memoryLineStorage() {
+  const values = new Map();
+  return {
+    values,
+    getItem: key => (values.has(key) ? values.get(key) : null),
+    setItem: (key, value) => { values.set(key, String(value)); },
+    removeItem: key => { values.delete(key); },
+  };
 }
 
 function leanMetadata(tagId, messageUuid, prompt = 'base64') {
@@ -2499,4 +2515,85 @@ test('一条线路同时不认两个参数：一次只重试一回，第一张�
   assert.equal(edits[4].body.get('response_format'), null);
   assert.equal(edits[4].body.get('input_fidelity'), null);
   assert.equal(attempt.compatibilityRetry.remembered, true);
+});
+
+/* 2.7.1 线路记忆存在本机、记一天。Safari 切到后台再回来常会重载页面，只记在内存里的话一重载就忘，
+   下一张图又要先被拒一次。这里「刷新页面」= 用同一份本机存储新开一个客户端。 */
+test('2.7.1 线路不认的参数记在本机：刷新页面后第一张图就不带它；过了一天自动再带着试一次；改了「图片返回格式」的再试也跨刷新', async t => {
+  const realFetch = globalThis.fetch;
+  const lineStorage = memoryLineStorage();
+  let clock = Date.parse('2026-11-18T08:00:00.000Z');
+  const HOUR = 60 * 60 * 1000;
+  /* 这条线路不认 response_format。 */
+  const reply = body => ('response_format' in body ? response(400, { error: { message: "Unknown parameter: 'response_format'." } }) : null);
+  const open = async () => {
+    const tagId = crypto.randomUUID();
+    const messageUuid = crypto.randomUUID();
+    const message = { is_user: false, mes: '<draw>base64</draw>', extra: { stImageAtelier: leanMetadata(tagId, messageUuid) } };
+    const made = await gatedClient(t, [message], { generationReply: reply, lineStorage, nowMs: () => clock });
+    made.release();
+    await made.client.updateSettings({ enableSmartRetry: true });
+    return { ...made, draw: () => made.client.generate(generationInput(tagId, messageUuid)) };
+  };
+  t.after(() => { globalThis.fetch = realFetch; });
+
+  /* 第一次打开页面：第一张带着被拒一次，去掉再发一次。 */
+  const first = await open();
+  let attempt = await first.draw();
+  assert.equal(attempt.status, 'succeeded');
+  assert.equal(first.requests.length, 2);
+  assert.equal(first.requests[0].response_format, 'b64_json');
+
+  /* 刷新页面：第一张图就只发一次。 */
+  const second = await open();
+  attempt = await second.draw();
+  assert.equal(attempt.status, 'succeeded');
+  assert.equal(second.requests.length, 1, '刷新后还记得，不用再被拒一遍');
+  assert.equal('response_format' in second.requests[0], false);
+  assert.equal(attempt.compatibilityRetry.remembered, true);
+  assert.deepEqual(attempt.compatibilityRetry.adjustedParameters, ['response_format'], '记录上照样写着这张没带');
+
+  /* 23 小时后再刷新：还记得。 */
+  clock += 23 * HOUR;
+  const third = await open();
+  await third.draw();
+  assert.equal(third.requests.length, 1);
+
+  /* 满一天：这个页面一直没关也会再带着试一次（线路说不定接上了）；还是被拒，重新记一天。 */
+  clock += HOUR;
+  await third.draw();
+  assert.equal(third.requests.length, 3, '带着试一次，被拒，去掉重发');
+  assert.equal(third.requests[1].response_format, 'b64_json');
+  assert.equal('response_format' in third.requests[2], false);
+  const fourth = await open();
+  await fourth.draw();
+  assert.equal(fourth.requests.length, 1, '重新记下的也跨刷新');
+
+  /* 改了预设的「图片返回格式」等于说「再试一次」：刷新之后也是再试，不会又从本机把旧记性读回来。 */
+  const active = (await fourth.client.getPresets()).activePresetId;
+  await fourth.client.updatePreset(active, { responseFormat: 'url' });
+  const fifth = await open();
+  await fifth.draw();
+  assert.equal(fifth.requests.length, 2);
+  assert.equal(fifth.requests[0].response_format, 'b64_json');
+});
+
+test('2.7.1 本机存不了时（隐私模式、被禁用）：退回只记在这次打开页面期间，照常出图不报错', async t => {
+  const tagId = crypto.randomUUID();
+  const messageUuid = crypto.randomUUID();
+  const message = { is_user: false, mes: '<draw>base64</draw>', extra: { stImageAtelier: leanMetadata(tagId, messageUuid) } };
+  const { client, release, requests } = await gatedClient(t, [message], {
+    generationReply: body => ('response_format' in body ? response(400, { error: { message: "Unknown parameter: 'response_format'." } }) : null),
+    lineStorage: {
+      getItem() { throw new Error('SecurityError'); },
+      setItem() { throw new Error('QuotaExceededError'); },
+      removeItem() { throw new Error('SecurityError'); },
+    },
+  });
+  release();
+  await client.updateSettings({ enableSmartRetry: true });
+  assert.equal((await client.generate(generationInput(tagId, messageUuid))).status, 'succeeded');
+  assert.equal(requests.length, 2);
+  assert.equal((await client.generate(generationInput(tagId, messageUuid))).status, 'succeeded');
+  assert.equal(requests.length, 3, '这次打开页面期间照样记得');
 });

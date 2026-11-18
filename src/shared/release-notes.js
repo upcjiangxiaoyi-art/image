@@ -2,6 +2,7 @@
    设置页最下面的「最近更新」也能展开看。
    每发一版在最前面加一条；测试会检查第一条的版本号等于当前版本，忘了加就过不了。只留最近十来条。 */
 export const RELEASE_NOTES = Object.freeze([
+  { version: '2.7.1', date: '2026-11-18', summary: '线路不认的参数记一天，刷新页面、切后台回来都不用再被拒一次' },
   { version: '2.7.0', date: '2026-11-18', summary: '看图器里左右滑就能看上一张、下一张，不用关掉再点' },
   { version: '2.6.0', date: '2026-11-18', summary: '界面重新打磨：线条图标、画廊竖图格子、看图器整张显示' },
   { version: '2.5.3', date: '2026-11-16', summary: '线路不认的参数第一张图被拒后就记住，后面的图不再重试一遍' },
@@ -13,7 +14,6 @@ export const RELEASE_NOTES = Object.freeze([
   { version: '2.2.0', date: '2026-11-12', summary: '画廊加「只看这个聊天」，点开图可以「跳到所在楼层」' },
   { version: '2.1.0', date: '2026-11-12', summary: '设置页最上面加快捷开关；状态提示贴在面板底边' },
   { version: '2.0.3', date: '2026-11-12', summary: '刷新网页不再重画已有的图；从卡片上掉下来的图自动接回' },
-  { version: '2.0.2', date: '2026-11-09', summary: '出图前的记录写不进酒馆时不再拦着出图' },
 ]);
 
 function parts(version) {
