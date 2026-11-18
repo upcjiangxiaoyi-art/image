@@ -22,7 +22,12 @@ test('看图器：整张图放进屏幕，点一下才放大；底下几行不�
   assert.equal(image.get('inset'), '0');
   assert.equal(image.get('margin'), 'auto');
   assert.equal(image.get('max-height'), '100%');
-  assert.equal(styles.rule('.stia-image-viewer__stage').get('position'), 'relative');
+  /* 2.7.0：图片那一块外面多套了一层（body），stage 铺满它，左右的箭头压在上面。 */
+  assert.equal(styles.rule('.stia-image-viewer__body').get('position'), 'relative');
+  assert.equal(styles.rule('.stia-image-viewer__stage').get('position'), 'absolute');
+  assert.equal(styles.rule('.stia-image-viewer__stage').get('inset'), '0');
+  assert.equal(styles.rule('.stia-image-viewer__nav').get('position'), 'absolute', '箭头不在滚动区里，放大后不跟着滚走');
+  assert.equal(styles.rule('.stia-image-viewer__image.is-loading').get('opacity'), '.4');
   const zoomed = styles.rule('.stia-image-viewer__stage.is-zoomed .stia-image-viewer__image');
   assert.equal(zoomed.get('position'), 'static', '放大后回到文档流，上下滑着看');
   assert.equal(zoomed.get('max-height'), 'none');

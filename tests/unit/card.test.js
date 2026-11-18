@@ -1136,3 +1136,100 @@ test('失败、被中断、已取消的卡片上也有「换预设」：只换�
   assert.equal(failedControl(), null);
   assert.equal(removed.length, 0);
 });
+
+test('2.7.0 卡片上点开原图后也能左右翻这张卡的几张图：提示词、模型跟着换；关掉后卡片停在最后看的那张上', async t => {
+  const { JSDOM } = await import('jsdom');
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'https://tavern.example/' });
+  const previous = { document: globalThis.document, window: globalThis.window, navigator: globalThis.navigator };
+  globalThis.document = dom.window.document;
+  globalThis.window = dom.window;
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: dom.window.navigator });
+  t.after(() => {
+    globalThis.document = previous.document;
+    globalThis.window = previous.window;
+    Object.defineProperty(globalThis, 'navigator', { configurable: true, value: previous.navigator });
+    dom.window.close();
+  });
+
+  const attemptFor = (id, model) => ({
+    attemptId: id, status: 'succeeded', provider: 'openai', model, presetNameSnapshot: '纯爱二号', parameters: { size: '1024x1792' },
+    createdAt: '2026-10-05T01:00:00.000Z', completedAt: '2026-10-05T01:02:00.000Z',
+  });
+  const resultFor = (id, attemptId, prompt, model) => ({ resultId: id, attemptId, status: 'available', prompt, provider: 'openai', apiModel: model });
+  let state = {
+    tag: { latestResultId: 'r3', resultIds: ['r1', 'r2', 'r3'] },
+    attempts: [attemptFor('a3', 'model-c'), attemptFor('a2', 'model-b'), attemptFor('a1', 'model-a')],
+    results: [resultFor('r1', 'a1', '第一版', 'model-a'), resultFor('r2', 'a2', '第二版', 'model-b'), resultFor('r3', 'a3', '第三版', 'model-c')],
+  };
+  const card = createCard({
+    tag: { tagId: 'tag-1', prompt: 'a cat', ratio: 'portrait' },
+    api: { fileUrl: id => `/user/images/${id}.png` },
+    getState: () => state,
+    onGenerate() {},
+    onOpenGallery() {},
+    onCancel() {},
+  });
+  card.render();
+  document.body.append(card.root);
+  const cardSrc = () => card.root.querySelector('.stia-card__image').getAttribute('src');
+  const counter = () => card.root.querySelector('.stia-card__pager-count').textContent;
+  const viewer = () => document.querySelector('.stia-image-viewer');
+  const title = () => viewer().querySelector('.stia-image-viewer__toolbar strong').textContent;
+  const shown = () => viewer().querySelector('.stia-image-viewer__image').getAttribute('src');
+  const arrow = name => viewer().querySelector(`.stia-image-viewer__nav.${name}`);
+
+  /* 点开没翻就关：卡片当作没发生过。不能因此把另外两张原图也先载上（手机上是白花的流量）。 */
+  card.root.querySelector('.stia-card__image').click();
+  viewer().querySelector('.stia-image-viewer__close').click();
+  const created = [];
+  const createElement = document.createElement.bind(document);
+  document.createElement = (name, ...rest) => {
+    if (String(name).toLowerCase() === 'img') created.push(name);
+    return createElement(name, ...rest);
+  };
+  state = { ...state, attempts: [{ ...state.attempts[0], statusMessage: '变了一下' }, ...state.attempts.slice(1)] };
+  card.render();
+  document.createElement = createElement;
+  assert.deepEqual(created, [], '重画时没有去载别的图');
+  assert.equal(cardSrc(), '/user/images/r3.png');
+
+  /* 点卡片上的图：打开的是最新那张，写着是 3 张里的第 3 张。 */
+  card.root.querySelector('.stia-card__image').click();
+  assert.equal(title(), '3 / 3');
+  assert.equal(shown(), '/user/images/r3.png');
+  assert.match(viewer().querySelector('.stia-image-viewer__meta').textContent, /model-c/);
+  assert.equal(arrow('is-next').hidden, true);
+
+  arrow('is-prev').click();
+  assert.equal(title(), '2 / 3');
+  assert.equal(shown(), '/user/images/r2.png');
+  assert.match(viewer().querySelector('.stia-image-viewer__meta').textContent, /model-b/, '模型是这一张的');
+  assert.equal(viewer().querySelector('.stia-image-viewer__prompt pre').textContent, '第二版', '提示词是这一张的');
+  arrow('is-prev').click();
+  assert.equal(shown(), '/user/images/r1.png');
+  assert.equal(arrow('is-prev').hidden, true);
+  assert.equal(cardSrc(), '/user/images/r3.png', '看图器开着时卡片不动');
+
+  /* 关掉：卡片停在最后看的那张上，信息、翻看的数字都跟着。 */
+  viewer().querySelector('.stia-image-viewer__close').click();
+  assert.equal(viewer(), null);
+  assert.equal(cardSrc(), '/user/images/r1.png');
+  assert.equal(counter(), '1 / 3');
+
+  /* 没翻就关：卡片不重画。 */
+  const before = card.root.querySelector('.stia-card__image');
+  before.click();
+  assert.equal(title(), '1 / 3');
+  viewer().querySelector('.stia-image-viewer__close').click();
+  assert.equal(card.root.querySelector('.stia-card__image'), before);
+  assert.equal(counter(), '1 / 3');
+
+  /* 只有一张图的卡片：没有箭头。 */
+  state = { tag: { latestResultId: 'r3', resultIds: ['r3'] }, attempts: [attemptFor('a3', 'model-c')], results: [resultFor('r3', 'a3', '第三版', 'model-c')] };
+  card.render();
+  card.root.querySelector('.stia-card__image').click();
+  assert.equal(title(), '查看原图');
+  assert.equal(arrow('is-prev').hidden, true);
+  assert.equal(arrow('is-next').hidden, true);
+  viewer().querySelector('.stia-image-viewer__close').click();
+});

@@ -481,3 +481,109 @@ test('2.6.0 画廊的样子：搜索框带放大镜，两个开关各带图标�
     Object.defineProperty(globalThis, 'navigator', { configurable: true, value: previous.navigator });
   }
 });
+
+test('2.7.0 画廊里点开一张后在看图器里左右翻：按画廊现在的顺序（筛选之后的全部），删掉一张接着看下一张，关掉后画廊停在最后看的那张上', async () => {
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'https://tavern.example/' });
+  const previous = { document: globalThis.document, window: globalThis.window, navigator: globalThis.navigator };
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: dom.window.navigator });
+  const revealed = [];
+  dom.window.Element.prototype.scrollIntoView = function scrollIntoView(options) {
+    revealed.push([this.dataset.resultId, options?.block]);
+  };
+  const confirmed = [];
+  globalThis.confirm = message => { confirmed.push(message); return true; };
+  try {
+    /* 35 张：一页只加载 30 张，后 5 张在「加载更多」后面。时间从新到旧：n01 最新。 */
+    const values = Array.from({ length: 35 }, (_, index) => {
+      const number = String(index + 1).padStart(2, '0');
+      return item({
+        resultId: `n${number}`,
+        prompt: index % 2 ? `dog ${number}` : `cat ${number}`,
+        createdAt: new Date(Date.UTC(2026, 8, 7, 8, 0, 0) - index * 60_000).toISOString(),
+      });
+    });
+    const deleted = [];
+    const api = {
+      cleanupGallery: async () => ({}),
+      galleryMetadata: async () => ({ items: structuredClone(values), total: values.length }),
+      fileUrl: id => `/images/${id}.png`,
+      downloadUrl: id => `/download/${id}`,
+      setFavorite: async () => ({}),
+      deleteResult: async id => { deleted.push(id); },
+    };
+    const page = createGalleryPage(api);
+    document.body.append(page.root);
+    await page.load();
+    const tiles = () => [...page.root.querySelectorAll('[data-result-id]')].map(node => node.dataset.resultId);
+    const viewer = () => document.querySelector('.stia-image-viewer');
+    const title = () => viewer().querySelector('.stia-image-viewer__toolbar strong').textContent;
+    const shown = () => viewer().querySelector('.stia-image-viewer__image').getAttribute('src');
+    const arrow = name => viewer().querySelector(`.stia-image-viewer__nav.${name}`);
+    const settle = () => new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(tiles().length, 30);
+
+    /* 点开第 30 张（这一页最后一张）：标题写着是 35 张里的第 30 张，还能往后翻到没加载出来的那几张。 */
+    page.root.querySelector('[data-result-id="n30"] img').click();
+    assert.equal(title(), '30 / 35');
+    assert.equal(shown(), '/images/n30.png');
+    arrow('is-next').click();
+    assert.equal(title(), '31 / 35');
+    assert.equal(shown(), '/images/n31.png');
+    assert.match(viewer().textContent, /cat 31/, '提示词是这一张的');
+    arrow('is-prev').click();
+    arrow('is-prev').click();
+    assert.equal(shown(), '/images/n29.png');
+    arrow('is-next').click();
+    arrow('is-next').click();
+    arrow('is-next').click();
+    assert.equal(shown(), '/images/n32.png');
+
+    /* 关掉：画廊加载到这一张，并把它滚到眼前。 */
+    viewer().querySelector('.stia-image-viewer__close').click();
+    assert.equal(viewer(), null);
+    assert.equal(tiles().length, 35, '后面那几张加载出来了');
+    assert.deepEqual(revealed.at(-1), ['n32', 'nearest'], '停在最后看的那张上；本来就在眼前的话不动');
+
+    /* 翻着看时删一张：接着看后面那张，画廊里也少了一张。 */
+    page.root.querySelector('[data-result-id="n02"] img').click();
+    assert.equal(title(), '2 / 35');
+    [...viewer().querySelectorAll('button')].find(node => node.textContent === '删除').click();
+    await settle();
+    assert.deepEqual(deleted, ['n02']);
+    assert.equal(confirmed.length, 1);
+    assert.ok(viewer(), '看图器不关');
+    assert.equal(shown(), '/images/n03.png');
+    assert.equal(title(), '2 / 34');
+    assert.equal(tiles().includes('n02'), false);
+    viewer().querySelector('.stia-image-viewer__close').click();
+
+    /* 搜索之后翻的是搜出来的那些。 */
+    const search = page.root.querySelector('input[type="search"]');
+    search.value = 'dog';
+    search.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    await new Promise(resolve => setTimeout(resolve, 150));
+    page.root.querySelector('[data-result-id="n04"] img').click();
+    assert.equal(title(), '1 / 16', 'n02 删了，剩 16 张 dog');
+    assert.equal(arrow('is-prev').hidden, true);
+    arrow('is-next').click();
+    assert.equal(shown(), '/images/n06.png', '跳过中间那张 cat');
+    viewer().querySelector('.stia-image-viewer__close').click();
+
+    /* 只有一张时没有箭头。 */
+    search.value = 'cat 35';
+    search.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    await new Promise(resolve => setTimeout(resolve, 150));
+    page.root.querySelector('[data-result-id="n35"] img').click();
+    assert.equal(title(), '查看原图');
+    assert.equal(arrow('is-prev').hidden, true);
+    assert.equal(arrow('is-next').hidden, true);
+    viewer().querySelector('.stia-image-viewer__close').click();
+  } finally {
+    delete globalThis.confirm;
+    globalThis.document = previous.document;
+    globalThis.window = previous.window;
+    Object.defineProperty(globalThis, 'navigator', { configurable: true, value: previous.navigator });
+  }
+});

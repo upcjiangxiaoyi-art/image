@@ -255,11 +255,27 @@ export function createGalleryPage(api, { onError = () => {}, onNavigate = () => 
     return true;
   }
 
-  function detail(result) {
+  /* 看图器关掉时：画廊停在最后看的那张上（翻过好多张以后不用再从原来的位置往下找）。
+     那张还没加载出来（在「加载更多」后面）就先加载到它。本来就在眼前的不动。 */
+  function reveal(resultId) {
+    const index = filteredItems.findIndex(item => item.resultId === resultId);
+    if (index < 0) return;
+    if (index >= visibleCount) {
+      visibleCount = Math.ceil((index + 1) / PAGE_SIZE) * PAGE_SIZE;
+      render();
+    }
+    const card = [...grid.children].find(entry => entry.dataset?.resultId === resultId);
+    card?.scrollIntoView?.({ block: 'nearest' });
+  }
+
+  /* 看图器里这张图的内容。左右翻按画廊现在的顺序（搜索、筛选之后的全部，不只是已经加载出来的那几十张），
+     每次都按当时的列表现算：翻着看时删了一张，前后还是接得上。 */
+  function viewerOptions(result) {
     const { info, badges } = galleryBadges(result);
     const scope = currentScope();
     const here = belongsToChat(scope, result);
-    openImageViewer({
+    const indexNow = () => filteredItems.findIndex(item => item.resultId === result.resultId);
+    return {
       src: api.fileUrl(result.resultId),
       alt: promptOf(result).slice(0, 120),
       filename: result.resultId,
@@ -275,7 +291,21 @@ export function createGalleryPage(api, { onError = () => {}, onNavigate = () => 
       ].filter(Boolean).join(' · '),
       onJump: here && typeof api.jumpToResult === 'function' ? () => jumpTo(result) : undefined,
       onDelete: () => removeResult(result),
-    });
+      position: () => {
+        const index = indexNow();
+        return index < 0 ? null : { index, total: filteredItems.length };
+      },
+      neighbor: delta => {
+        const index = indexNow();
+        const target = index < 0 ? null : filteredItems[index + delta];
+        return target ? viewerOptions(target) : null;
+      },
+      onClose: () => reveal(result.resultId),
+    };
+  }
+
+  function detail(result) {
+    openImageViewer(viewerOptions(result));
   }
 
   async function toggleFavorite(result) {

@@ -279,6 +279,63 @@ export function createCard({
     return image;
   }
 
+  /* 一张图的提示词、是哪次生成画的、下面那几项信息、尺寸。卡片上显示的那张和看图器里翻到的那张都用它。 */
+  function describeResult(state, result) {
+    const attempt = state.attempts?.[0];
+    const producer = result
+      ? (state.attempts || []).find(item => item.attemptId === result.attemptId)
+      : null;
+    const info = result ? imageInfo(result, producer) : null;
+    const size = displaySize(attempt?.parameters?.size || '');
+    return {
+      prompt: result?.prompt
+        || result?.promptSnapshot
+        || attempt?.promptSnapshot
+        || attempt?.resolvedPrompt
+        || tag.prompt,
+      producer,
+      info,
+      /* 「历史 N 张」旁边的尺寸跟着这张图；没有生成记录的老图片退回用最近那次的。 */
+      imageSize: info ? (info.size === '默认尺寸' ? '' : info.size || size) : '',
+    };
+  }
+
+  /* 原图查看器里这张图的内容。同一张卡有好几张图时可以在查看器里左右翻（按卡片上翻看的顺序）；
+     关掉时卡片停在最后看的那张上。每次都按当时的记录现算。 */
+  function originalOptions(resultId) {
+    const state = getState(tag.tagId) || {};
+    const available = (state.results || []).filter(result => result.status === 'available');
+    const result = available.find(item => item.resultId === resultId);
+    if (!result) return null;
+    const { prompt, info, imageSize } = describeResult(state, result);
+    const lookup = () => {
+      const list = ((getState(tag.tagId) || {}).results || []).filter(item => item.status === 'available');
+      return { list, index: list.findIndex(item => item.resultId === resultId) };
+    };
+    return {
+      src: api.fileUrl(result.resultId),
+      alt: String(prompt || '').slice(0, 120),
+      filename: result.resultId,
+      prompt,
+      meta: [info.model, imageSize].filter(Boolean).join(' · '),
+      position: () => {
+        const { list, index } = lookup();
+        return index < 0 ? null : { index, total: list.length };
+      },
+      neighbor: delta => {
+        const { list, index } = lookup();
+        const target = index < 0 ? null : list[index + delta];
+        return target ? originalOptions(target.resultId) : null;
+      },
+      onClose: () => {
+        if (!navigation || navigation.ids[navigation.index] === resultId || !navigation.ids.includes(resultId)) return;
+        viewingId = resultId;
+        preloadOthers = true;
+        render();
+      },
+    };
+  }
+
   /* 到头了就停，不绕回去：那边的按钮是灰的。 */
   function step(delta) {
     const target = navigation ? navigation.index + delta : -1;
@@ -534,11 +591,8 @@ export function createCard({
     /* 卡片上显示、下面信息跟着的那张：在翻看就是正在看的，不然是最新那张。 */
     const shown = (viewingId && available.find(result => result.resultId === viewingId)) || latest;
     const shownIndex = shown ? available.indexOf(shown) : -1;
-    const actualPrompt = shown?.prompt
-      || shown?.promptSnapshot
-      || attempt?.promptSnapshot
-      || attempt?.resolvedPrompt
-      || tag.prompt;
+    const described = describeResult(state, shown);
+    const actualPrompt = described.prompt;
     const actualNegativePrompt = shown?.negativePrompt
       || shown?.negativePromptSnapshot
       || attempt?.negativePromptSnapshot
@@ -552,13 +606,8 @@ export function createCard({
       landscape: '横图',
     }[tag.ratio] || '';
     const src = shown ? api.fileUrl(shown.resultId) : '';
-    const producer = shown
-      ? (state.attempts || []).find(item => item.attemptId === shown.attemptId)
-      : null;
+    const { producer, info, imageSize } = described;
     const duration = shown ? generationDuration(producer, shown) : '';
-    const info = shown ? imageInfo(shown, producer) : null;
-    /* 「历史 N 张」旁边的尺寸跟着这张图；没有生成记录的老图片退回用最近那次的。 */
-    const imageSize = info ? (info.size === '默认尺寸' ? '' : info.size || size) : '';
     const running = (state.attempts || []).slice(1).filter(item => ACTIVE_STATUSES.has(item.status));
     /* 失败的卡片上给「换备用线路」：设了备用线路、这次用的不是它、不是 NovelAI 也不在增强模式，
        而且不是审核拦截（换了也照样被拦）或用户自己取消的。 */
@@ -669,13 +718,10 @@ export function createCard({
       const image = imageFor(src);
       if (preloadOthers) sources.forEach(source => imageFor(source, { eager: true }));
       image.alt = actualPrompt.slice(0, 120);
-      const openOriginal = () => openImageViewer({
-        src,
-        alt: image.alt,
-        filename: shown.resultId,
-        prompt: actualPrompt,
-        meta: [info.model, imageSize].filter(Boolean).join(' · '),
-      });
+      const openOriginal = () => {
+        const options = originalOptions(shown.resultId);
+        if (options) openImageViewer(options);
+      };
       openCurrentImage = openOriginal;
       /* 图片上不压任何东西：用时在「已完成」旁边，尺寸在「历史 N 张」旁边，翻看在分隔线下面。 */
       media.append(image);

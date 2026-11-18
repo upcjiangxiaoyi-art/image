@@ -2032,6 +2032,7 @@
   color: var(--stia-secondary);
   font-size: 14px;
   font-weight: 500;
+  font-variant-numeric: tabular-nums;
 }
 
 .stia-image-viewer__close {
@@ -2061,10 +2062,16 @@
   outline-offset: 2px;
 }
 
-.stia-image-viewer__stage {
+/* 图片那一块占满顶栏和底栏中间；图在 stage 里，左右两个箭头压在上面、放大后不跟着滚。 */
+.stia-image-viewer__body {
   position: relative;
   min-width: 0;
   min-height: 0;
+}
+
+.stia-image-viewer__stage {
+  position: absolute;
+  inset: 0;
   overflow: hidden;
   overscroll-behavior: contain;
 }
@@ -2081,6 +2088,53 @@
   margin: auto;
   border-radius: 6px;
   cursor: zoom-in;
+  transition: opacity .12s ease;
+}
+
+/* 翻到下一张、新图还没载好：旧图先淡下去。 */
+.stia-image-viewer__image.is-loading {
+  opacity: .4;
+}
+
+/* 上一张、下一张：压在图片左右两边的小圆键。手机上主要靠左右滑，它们是告诉人「旁边还有」。 */
+.stia-image-viewer__nav {
+  position: absolute;
+  top: 50%;
+  z-index: 1;
+  display: grid;
+  width: 40px;
+  height: 40px;
+  margin-top: -20px;
+  padding: 0;
+  place-items: center;
+  color: #fff;
+  background: rgb(18 16 20 / 50%);
+  border: 0;
+  border-radius: 50%;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.stia-image-viewer__nav.is-prev {
+  left: 8px;
+}
+
+.stia-image-viewer__nav.is-next {
+  right: 8px;
+}
+
+.stia-image-viewer__nav > .stia-icon {
+  width: 20px;
+  height: 20px;
+}
+
+.stia-image-viewer__nav:hover {
+  background: rgb(18 16 20 / 72%);
+}
+
+.stia-image-viewer__nav:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 2px;
 }
 
 /* 点了一下：放大到原始大小，最宽占满屏幕，上下滑着看。 */
