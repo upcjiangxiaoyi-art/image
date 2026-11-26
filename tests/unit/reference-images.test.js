@@ -45,7 +45,7 @@ function setup(handler) {
 }
 const generate = (core, extra = {}) => core.generateImages({ preset, apiKey: 'sk-test', prompt: 'cat', parameters: {}, settings: {}, ...extra });
 
-test('带参考图走 /v1/images/edits：两张用 image[]、一张用 image；gpt-image 不发 response_format；高保真发 input_fidelity', async () => {
+test('带参考图走 /v1/images/edits：两张用 image[]、一张用 image；response_format 照预设发；高保真发 input_fidelity', async () => {
   const { core, calls } = setup(async () => json(200, { data: [{ b64_json: 'A'.repeat(80) }] }));
   const references = [
     { bytes: png, mimeType: 'image/png', name: 'a.png' },
@@ -63,7 +63,9 @@ test('带参考图走 /v1/images/edits：两张用 image[]、一张用 image；g
   assert.equal(body.get('size'), '1024x1536');
   assert.equal(body.get('quality'), 'high');
   assert.equal(body.get('n'), '1');
-  assert.equal(body.get('response_format'), null, 'gpt-image 的 edits 不收 response_format');
+  /* 2.8.1 之前模型名以 gpt-image 开头就不发 response_format（官方接口这类模型只回 base64）。
+     中转不一定：有的渠道不说要 b64_json 就只回一个链接，浏览器下载不了，图画好了却丢了。 */
+  assert.equal(body.get('response_format'), 'b64_json', '模型名是 gpt-image 开头也照预设要 b64_json');
   assert.equal(body.get('input_fidelity'), 'high');
   assert.equal(calls[0].options.headers['Content-Type'], undefined, '边界由浏览器填，不自己写 Content-Type');
   assert.equal(calls[0].options.headers.Authorization, 'Bearer sk-test');
@@ -75,7 +77,10 @@ test('带参考图走 /v1/images/edits：两张用 image[]、一张用 image；g
   assert.equal(single.get('input_fidelity'), null, '没开高保真不发');
 
   await generate(core, { preset: { ...preset, selectedModel: 'dall-e-2', responseFormat: 'url' }, references: [references[0]] });
-  assert.equal(calls[2].options.body.get('response_format'), 'url', 'dall-e-2 才收 response_format');
+  assert.equal(calls[2].options.body.get('response_format'), 'url', '预设选了 url 就发 url');
+  await generate(core, { preset: { ...preset, responseFormat: '' }, references: [references[0]] });
+  assert.equal(calls[3].options.body.get('response_format'), null, '预设选了「不发送」就不发');
+  calls.splice(3, 1);
 
   await generate(core, { references: [] });
   assert.equal(calls[3].url, 'https://relay.test/v1/images/generations', '没有参考图照旧走普通接口');
@@ -164,4 +169,130 @@ test('认得出「线路不认这个参数」的各种说法；没点名参数�
   assert.equal(detect(400, '当前服务尚未接入 gpt-image-2 模型'), null, '没点名任何参数');
   assert.equal(detect(400, '余额不足，且尚未接入 input_fidelity 参数'), null, '余额问题重试也没用');
   assert.equal(detect(400, 'input_fidelity 触发内容审核'), null);
+});
+
+/* 2.8.1 图生图里的 response_format 是画笺照预设加上的；线路点名说不认，就去掉重发，不看「智能重试」开没开，
+   也不占智能重试那一次。别的参数被拒照旧看开关。 */
+const reference = [{ bytes: png, mimeType: 'image/png', name: 'a.png' }];
+const ok = () => json(200, { data: [{ b64_json: 'A'.repeat(80) }] });
+const rejectFormat = () => json(400, { error: { message: "Unknown parameter: 'response_format'." } });
+const rejectFidelity = () => json(400, { error: { message: '当前服务尚未接入 input_fidelity 参数' } });
+const fidelityPreset = { ...preset, referenceFidelity: 'high' };
+
+test('图生图：线路点名不认 response_format，没开智能重试也去掉重发一次；别的参数被拒照旧看开关', async () => {
+  /* 官方接口那样的线路：gpt-image 的图生图不收 response_format。 */
+  let run = setup(async (url, options) => (options.body.get('response_format') ? rejectFormat() : ok()));
+  const retries = [];
+  let sources = await generate(run.core, { references: reference, onCompatibilityRetry: retry => retries.push(retry) });
+  assert.equal(sources.length, 1);
+  assert.equal(run.calls.length, 2, '带着被拒一次，去掉再发一次');
+  assert.equal(run.calls[0].options.body.get('response_format'), 'b64_json');
+  assert.equal(run.calls[1].options.body.get('response_format'), null);
+  assert.ok(run.calls[1].options.body.get('image') instanceof Blob, '参考图照带');
+  assert.equal(run.calls[1].options.body.get('quality'), 'high', '别的参数不动');
+  assert.equal(retries.length, 1);
+  assert.deepEqual(retries[0].adjustedParameters, ['response_format']);
+  assert.equal(retries[0].message, '这条线路不认 response_format 参数，已去掉，正在重试（1/1）');
+
+  /* 中转把上游的话包成自己的 500、也没写 status_code：点名了 response_format 就认。 */
+  run = setup(async (url, options) => (options.body.get('response_format')
+    ? json(500, { error: { message: 'upstream error: unknown parameter response_format' } })
+    : ok()));
+  sources = await generate(run.core, { references: reference });
+  assert.equal(run.calls.length, 2);
+
+  /* 没开智能重试：quality 被拒照旧直接报错，不重发。 */
+  run = setup(async () => json(400, { error: { message: "Unsupported parameter: 'quality'" } }));
+  await assert.rejects(generate(run.core, { references: reference }), error => /quality/.test(error.details));
+  assert.equal(run.calls.length, 1);
+
+  /* 没开智能重试、线路两个都不认：response_format 去掉重发，又被 input_fidelity 拦住，就报这个。 */
+  run = setup(async (url, options) => {
+    if (options.body.get('response_format')) return rejectFormat();
+    return options.body.get('input_fidelity') ? rejectFidelity() : ok();
+  });
+  await assert.rejects(
+    generate(run.core, { preset: fidelityPreset, references: reference }),
+    error => /input_fidelity/.test(error.details) && error.compatibilityRetry.adjustedParameters.join() === 'response_format',
+  );
+  assert.equal(run.calls.length, 2);
+
+  /* 审核、余额这类原因里碰巧提到 response_format：不重发。 */
+  run = setup(async () => json(400, { error: { message: 'insufficient quota; response_format is not supported on free tier' } }));
+  await assert.rejects(generate(run.core, { references: reference }));
+  assert.equal(run.calls.length, 1);
+  /* 401、404、429 这些不是「参数被拒」。 */
+  for (const status of [401, 404, 429]) {
+    run = setup(async () => json(status, { error: { message: 'unknown parameter response_format' } }));
+    await assert.rejects(generate(run.core, { references: reference }));
+    assert.equal(run.calls.length, 1, `HTTP ${status}`);
+  }
+
+  /* 放宽只放给 response_format：普通的 500 里同时点了别的参数的名，别的不算（上游可能已经开始画了）。 */
+  const plain500 = new TestError('UPSTREAM_HTTP_ERROR', 'unknown parameters: response_format, quality', 500);
+  const sent = { response_format: 'b64_json', quality: 'high' };
+  assert.equal(run.core.detectCompatibilityRetry(plain500, sent), null, '不放宽时普通 500 不重试');
+  assert.deepEqual(run.core.detectCompatibilityRetry(plain500, sent, { named5xx: ['response_format'] }).adjustedParameters, ['response_format']);
+  const wrapped400 = new TestError('UPSTREAM_HTTP_ERROR', 'status_code=400, unknown parameters: response_format, quality', 500);
+  assert.deepEqual(
+    run.core.detectCompatibilityRetry(wrapped400, sent, { named5xx: ['response_format'] }).adjustedParameters,
+    ['response_format', 'quality'],
+    '写明上游是 400 的照旧都算',
+  );
+
+  /* 没有参考图的普通生图不变：没开智能重试，response_format 被拒就照原样报错。 */
+  run = setup(async () => rejectFormat());
+  await assert.rejects(generate(run.core, {}), error => /response_format/.test(error.details));
+  assert.equal(run.calls.length, 1);
+});
+
+test('图生图：开着智能重试时，去掉 response_format 不占那一次——线路两个参数都不认，第一张也画得成，最多发三次', async () => {
+  const bothRejected = first => async (url, options) => {
+    const format = options.body.get('response_format');
+    const fidelity = options.body.get('input_fidelity');
+    if (first === 'format' && format) return rejectFormat();
+    if (fidelity) return rejectFidelity();
+    if (format) return rejectFormat();
+    return ok();
+  };
+  for (const first of ['format', 'fidelity']) {
+    const run = setup(bothRejected(first));
+    const retries = [];
+    const sources = await generate(run.core, {
+      preset: fidelityPreset,
+      settings: { enableSmartRetry: true },
+      references: reference,
+      onCompatibilityRetry: retry => retries.push(retry),
+    });
+    assert.equal(sources.length, 1, first);
+    assert.equal(run.calls.length, 3, `${first}：带着两个、去掉一个、两个都去掉`);
+    assert.equal(run.calls[2].options.body.get('response_format'), null);
+    assert.equal(run.calls[2].options.body.get('input_fidelity'), null);
+    assert.equal(retries.length, 2);
+    assert.deepEqual([...retries[1].adjustedParameters].sort(), ['input_fidelity', 'response_format'], '第二次说的是到现在一共去掉了哪些');
+    assert.match(retries[1].message, /^这条线路不认 .+、.+ 参数，已去掉，正在重试（2\/2）$/);
+  }
+
+  /* 一句报错里两个都点了名：一次去掉两个。 */
+  let run = setup(async (url, options) => (options.body.get('response_format') || options.body.get('input_fidelity')
+    ? json(400, { error: { message: 'Unknown parameters: response_format, input_fidelity' } })
+    : ok()));
+  await generate(run.core, { preset: fidelityPreset, settings: { enableSmartRetry: true }, references: reference });
+  assert.equal(run.calls.length, 2);
+
+  /* 智能重试还是只有一次：quality、input_fidelity 先后被拒，第二个不再重发。 */
+  run = setup(async (url, options) => {
+    if (options.body.get('quality')) return json(400, { error: { message: "Unsupported parameter: 'quality'" } });
+    return options.body.get('input_fidelity') ? rejectFidelity() : ok();
+  });
+  await assert.rejects(
+    generate(run.core, { preset: { ...fidelityPreset, responseFormat: '' }, settings: { enableSmartRetry: true }, references: reference }),
+    error => /input_fidelity/.test(error.details),
+  );
+  assert.equal(run.calls.length, 2);
+
+  /* 去掉之后线路还在说 response_format：不会一直发下去。 */
+  run = setup(async () => rejectFormat());
+  await assert.rejects(generate(run.core, { settings: { enableSmartRetry: true }, references: reference }));
+  assert.equal(run.calls.length, 2);
 });

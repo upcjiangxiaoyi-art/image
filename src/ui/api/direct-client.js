@@ -761,7 +761,30 @@ export function createDirectApiClient({
     return payload;
   }
 
-  async function bytesFromSource(source, signal) {
+  /* 线路给的是图片链接、浏览器又下载不了：图已经画好了，说清是谁的问题、该怎么办。
+     inline：这次请求有没有要求把图片本身传回来——'asked' 要求了（b64_json），'dropped' 线路不认
+     response_format、去掉了，其余是预设自己没要。链接只写主机名（常带签名）。 */
+  function downloadAdvice(url, inline) {
+    let host = '';
+    try {
+      host = new URL(url).host;
+    } catch {
+      // 不像个网址：不写主机名。
+    }
+    const where = host ? `在 ${host} 上` : '';
+    if (inline === 'asked') {
+      return `生图成功了，但这条线路没按要求把图片本身传回来，只给了一个链接${where ? `（${where}）` : ''}，浏览器下载不了它。`
+        + '画笺已经要求 b64_json 了，是线路没照办：换一个模型或换一条线路';
+    }
+    if (inline === 'dropped') {
+      return `生图成功了，但这条线路不认 response_format 参数，去掉之后它只给了一个链接${where ? `（${where}）` : ''}，`
+        + '浏览器下载不了它：换一个模型或换一条线路';
+    }
+    return `生图成功了，但浏览器下载不了上游返回的图片（${where ? `${where}；` : ''}图床没开 CORS 或有跳转）；`
+      + '请在“高级设置”把「图片返回格式」设为 b64_json 内嵌返回';
+  }
+
+  async function bytesFromSource(source, signal, inline = '') {
     if (source.sourceType === 'base64') {
       try {
         return base64ToBytes(source.value);
@@ -791,11 +814,11 @@ export function createDirectApiClient({
       if (signal?.aborted) throw error;
       throw new DirectError(
         'DIRECT_FETCH_BLOCKED',
-        `无法下载图片，可能被浏览器 CORS 阻止：${error?.message || 'Failed to fetch'}`,
+        /* 浏览器的报错里万一带着链接原文（常带签名），不写进记录。 */
+        `无法下载图片，可能被浏览器 CORS 阻止：${String(error?.message || 'Failed to fetch').split(source.value).join('[图片链接]')}`,
         0,
         true,
-        '生图成功了，但浏览器下载不了上游返回的图片（图床没开 CORS 或有跳转）；'
-          + '请在“高级设置”把「图片返回格式」设为 b64_json 内嵌返回',
+        downloadAdvice(source.value, inline),
       );
     } finally {
       clearTimeout(timer);
@@ -820,12 +843,12 @@ export function createDirectApiClient({
     return { image: clean, byteLength: Math.floor((clean.length * 3) / 4) - padding, type: detectImageType(head) };
   }
 
-  async function saveSource(source, input, attempt, signal) {
+  async function saveSource(source, input, attempt, signal, inline = '') {
     let payload;
     if (source.sourceType === 'base64') {
       payload = inspectBase64Image(source.value);
     } else {
-      const bytes = await bytesFromSource(source, signal);
+      const bytes = await bytesFromSource(source, signal, inline);
       payload = { image: '', bytes, byteLength: bytes.byteLength, type: detectImageType(bytes) };
     }
     if (payload.byteLength > namespace.settings.maxImageBytes) {
@@ -1470,9 +1493,17 @@ export function createDirectApiClient({
       attempt.status = 'downloading';
       attempt.statusMessage = null;
       await persist({ persist: false });
+      /* 这次请求有没有要求把图片本身传回来：线路只给链接、又下载不了时，报错按这个说（见 downloadAdvice）。 */
+      const inline = provider === 'novelai'
+        ? ''
+        : attempt.compatibilityRetry?.adjustedParameters?.includes('response_format')
+          ? 'dropped'
+          : buildRequestBody({ preset, prompt: input.prompt, parameters: attempt.parameters }).response_format === 'b64_json'
+            ? 'asked'
+            : '';
       for (const source of sources) {
         if (controller.signal.aborted) throw controller.signal.reason || new Error('cancelled');
-        saved.push(await saveSource(source, input, attempt, controller.signal));
+        saved.push(await saveSource(source, input, attempt, controller.signal, inline));
       }
 
       attempt.status = 'saving';

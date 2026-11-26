@@ -2473,7 +2473,7 @@ test('线路不认 response_format：第一张去掉重发，之后这次打开�
   assert.equal(requests.length, 11);
 });
 
-test('一条线路同时不认两个参数：一次只重试一回，第一张失败；但被拒的当场记住，第二张只重试一回就成，第三张起一次就成', async t => {
+test('一条线路同时不认两个参数（图生图）：去掉 response_format 不占智能重试那一次，第一张发三次就成；两个都当场记住，第二张起一次就成', async t => {
   const tagId = crypto.randomUUID();
   const messageUuid = crypto.randomUUID();
   const message = { is_user: false, mes: '<draw>base64</draw>', extra: { stImageAtelier: leanMetadata(tagId, messageUuid) } };
@@ -2493,28 +2493,25 @@ test('一条线路同时不认两个参数：一次只重试一回，第一张�
   await client.addReference(overview.created.setId, { bytes: Buffer.from(PNG_BASE64, 'base64'), filename: 'a.png' });
   await client.updateReferenceSet(overview.created.setId, { referenceFidelity: 'high' });
 
-  await assert.rejects(
-    client.generate(generationInput(tagId, messageUuid)),
-    error => /input_fidelity/.test(error.details),
-    '第一张：去掉 response_format 重试，又被 input_fidelity 拦住',
-  );
-  assert.equal(edits.length, 2);
-
+  /* 2.8.1 之前：一次生成只重试一回，第一张去掉 response_format 后又被 input_fidelity 拦住，失败。 */
   let attempt = await client.generate(generationInput(tagId, messageUuid));
-  assert.equal(attempt.status, 'succeeded');
-  assert.equal(edits.length, 4, '第二张：一开始就不带 response_format，去掉 input_fidelity 重试一回');
-  assert.equal(edits[2].body.get('response_format'), null);
-  assert.equal(edits[2].body.get('input_fidelity'), 'high');
-  assert.equal(edits[3].body.get('input_fidelity'), null);
+  assert.equal(attempt.status, 'succeeded', '第一张就画得成');
+  assert.equal(edits.length, 3, '带着两个、去掉 response_format、再去掉 input_fidelity');
+  assert.equal(edits[0].body.get('response_format'), 'b64_json');
+  assert.equal(edits[1].body.get('response_format'), null);
+  assert.equal(edits[1].body.get('input_fidelity'), 'high');
+  assert.equal(edits[2].body.get('input_fidelity'), null);
+  assert.ok(edits[2].body.get('image') instanceof Blob, '参考图照带');
   assert.deepEqual([...attempt.compatibilityRetry.adjustedParameters].sort(), ['input_fidelity', 'response_format'], '两个都记在这次生成上');
   assert.notEqual(attempt.compatibilityRetry.remembered, true, '这一次真的重试过');
 
   attempt = await client.generate(generationInput(tagId, messageUuid));
   assert.equal(attempt.status, 'succeeded');
-  assert.equal(edits.length, 5, '第三张起：两个都不带，一次就成');
-  assert.equal(edits[4].body.get('response_format'), null);
-  assert.equal(edits[4].body.get('input_fidelity'), null);
+  assert.equal(edits.length, 4, '第二张起：两个都不带，一次就成');
+  assert.equal(edits[3].body.get('response_format'), null);
+  assert.equal(edits[3].body.get('input_fidelity'), null);
   assert.equal(attempt.compatibilityRetry.remembered, true);
+  assert.deepEqual([...attempt.compatibilityRetry.adjustedParameters].sort(), ['input_fidelity', 'response_format']);
 });
 
 /* 2.7.1 线路记忆存在本机、记一天。Safari 切到后台再回来常会重载页面，只记在内存里的话一重载就忘，
@@ -2668,4 +2665,111 @@ test('2.8.0 diagnostics()：给出排查要看的东西，不带密钥、提示�
   assert.match(text, /1\. .+ 失败 · 手动 · GPT · .+ · 参考图 1 张\n {3}原因：\[UPSTREAM_HTTP_ERROR\]/);
   assert.match(text, /2\. .+ 成功 · 手动 · GPT · .+ · 参考图 1 张 · 出图 1 张\n {3}回退：重试时去掉了 input_fidelity/);
   for (const secret of ['sk-test', '不能出现在诊断信息里的提示词', 'SECRET-VALUE', 'URLSECRET']) assert.equal(text.includes(secret), false, secret);
+});
+
+/* 2.8.1：带参考图、模型名以 gpt-image 开头时，图生图请求以前不带 response_format（官方接口这类模型只回 base64）。
+   有的中转渠道不说要 b64_json 就只回一个链接，浏览器下载不了：图画好了、钱花了，却丢了。 */
+async function referenceClient(t, options = {}) {
+  const tagId = crypto.randomUUID();
+  const messageUuid = crypto.randomUUID();
+  const message = { is_user: false, mes: '<draw>base64</draw>', extra: { stImageAtelier: leanMetadata(tagId, messageUuid) } };
+  const made = await gatedClient(t, [message], {
+    compatExtra: { currentCharacterKey: () => 'char:a.png', currentCharacterName: () => '阿A' },
+    ...options,
+  });
+  made.release();
+  const overview = await made.client.createReferenceSet({ name: '阿A的脸' });
+  await made.client.addReference(overview.created.setId, { bytes: Buffer.from(PNG_BASE64, 'base64'), filename: 'a.png' });
+  return { ...made, tagId, draw: () => made.client.generate(generationInput(tagId, messageUuid)) };
+}
+const LINK_ONLY = () => response(200, { data: [{ url: 'https://img.cdn.example/private/a.png?sig=SIGNED' }] });
+
+test('2.8.1 带参考图、模型名以 gpt-image 开头：照预设要 b64_json，线路把图片本身传回来；以前不带它，只拿到一个下载不了的链接', async t => {
+  /* 这条线路：说了要 b64_json 才把图片本身传回来，不说就只给链接（浏览器下载不了）。gatedClient 默认的模型是 gpt-image-1。 */
+  const { draw, edits } = await referenceClient(t, {
+    editsReply: body => (body.get('response_format') === 'b64_json' ? null : LINK_ONLY()),
+  });
+  const attempt = await draw();
+  assert.equal(attempt.status, 'succeeded');
+  assert.equal(edits.length, 1);
+  assert.equal(edits[0].body.get('model'), 'gpt-image-1');
+  assert.equal(edits[0].body.get('response_format'), 'b64_json');
+  assert.equal(attempt.compatibilityRetry ?? null, null);
+});
+
+test('2.8.1 官方接口那样的线路（图生图不收 response_format）：没开智能重试也自动去掉重发，记住后不再带；画得成', async t => {
+  const { client, draw, edits } = await referenceClient(t, {
+    editsReply: body => (body.get('response_format') ? response(400, { error: { message: "Unknown parameter: 'response_format'." } }) : null),
+  });
+  assert.equal((await client.getSettings()).enableSmartRetry, false, '智能重试默认关着');
+  let attempt = await draw();
+  assert.equal(attempt.status, 'succeeded', '不能因为这次改动让这种线路出不了图');
+  assert.equal(edits.length, 2, '带着被拒一次，去掉再发一次');
+  assert.equal(edits[1].body.get('response_format'), null);
+  assert.deepEqual(attempt.compatibilityRetry.adjustedParameters, ['response_format']);
+  attempt = await draw();
+  assert.equal(attempt.status, 'succeeded');
+  assert.equal(edits.length, 3, '记住了：之后一开始就不带，参考图不用白传一遍');
+  assert.equal(edits[2].body.get('response_format'), null);
+  assert.equal(attempt.compatibilityRetry.remembered, true);
+});
+
+test('2.8.1 线路只给链接、浏览器又下载不了时，报错说清是谁的问题、图片在哪台主机上；不再让人去设一个已经设好的 b64_json', async t => {
+  const { fallbackAdvice } = await import('../../src/ui/pages/error-dialog/error-dialog.js');
+  const failure = async (drawing, client, tagId) => {
+    let caught = null;
+    await drawing().catch(error => { caught = error; });
+    assert.equal(caught?.code, 'DIRECT_FETCH_BLOCKED');
+    const [attempt] = (await client.resolveTags([tagId]))[0].attempts;
+    assert.equal(attempt.status, 'failed');
+    for (const text of [caught.message, attempt.errorMessage]) {
+      assert.match(text, /生图成功了/);
+      assert.match(text, /在 img\.cdn\.example 上/, '写明图片在哪台主机上');
+      assert.equal(/SIGNED|private\/a\.png/.test(text), false, '链接里主机名以外的部分不写出来');
+    }
+    assert.match(caught.details, /无法下载图片/);
+    assert.deepEqual(
+      (({ title, auto }) => ({ title, auto }))(fallbackAdvice({ attempt, error: caught })),
+      { title: '图片下载失败', auto: false },
+      '图已经画好了，不自动换线路再花一次',
+    );
+    return { caught, attempt };
+  };
+
+  /* 说了要 b64_json，线路不照办，还是只给链接。 */
+  const asked = await referenceClient(t, { editsReply: LINK_ONLY });
+  let { caught } = await failure(asked.draw, asked.client, asked.tagId);
+  assert.equal(asked.edits[0].body.get('response_format'), 'b64_json');
+  assert.match(caught.message, /没按要求把图片本身传回来/);
+  assert.match(caught.message, /换一个模型或换一条线路/);
+  assert.equal(/设为 b64_json/.test(caught.message), false, '已经要求了，别再让人去设');
+
+  /* 线路不认 response_format，去掉之后只给链接。 */
+  const dropped = await referenceClient(t, {
+    editsReply: body => (body.get('response_format') ? response(400, { error: { message: "Unknown parameter: 'response_format'." } }) : LINK_ONLY()),
+  });
+  ({ caught } = await failure(dropped.draw, dropped.client, dropped.tagId));
+  assert.equal(dropped.edits.length, 2);
+  assert.match(caught.message, /不认 response_format 参数，去掉之后它只给了一个链接/);
+  assert.equal(/设为 b64_json/.test(caught.message), false);
+  /* 记着不带的第二张也一样说。 */
+  ({ caught } = await failure(dropped.draw, dropped.client, dropped.tagId));
+  assert.equal(dropped.edits.length, 3);
+  assert.match(caught.message, /不认 response_format 参数，去掉之后它只给了一个链接/);
+
+  /* 预设自己选了 url：照旧建议改成 b64_json。 */
+  const chosen = await referenceClient(t, { editsReply: LINK_ONLY });
+  await chosen.client.updatePreset({ responseFormat: 'url' });
+  ({ caught } = await failure(chosen.draw, chosen.client, chosen.tagId));
+  assert.equal(chosen.edits[0].body.get('response_format'), 'url');
+  assert.match(caught.message, /把「图片返回格式」设为 b64_json/);
+
+  /* 没有参考图的普通生图也一样。 */
+  const tagId = crypto.randomUUID();
+  const messageUuid = crypto.randomUUID();
+  const message = { is_user: false, mes: '<draw>base64</draw>', extra: { stImageAtelier: leanMetadata(tagId, messageUuid) } };
+  const plain = await gatedClient(t, [message], { generationReply: LINK_ONLY });
+  plain.release();
+  ({ caught } = await failure(() => plain.client.generate(generationInput(tagId, messageUuid)), plain.client, tagId));
+  assert.match(caught.message, /没按要求把图片本身传回来/);
 });

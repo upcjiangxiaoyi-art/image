@@ -437,28 +437,36 @@ export function createOpenAiImagesCore({
     throw fail('UPSTREAM_TIMEOUT', `等上游的异步任务超时；最后一次状态：${describePayload(latest)}`, 504, true);
   }
 
-  function detectCompatibilityRetry(error, body = {}) {
+  /* named5xx：中转自己回的 5xx 里没写上游状态码、但点了这几个参数的名说不认，也算（只给图生图里的
+     response_format 用：一句「unknown parameter response_format」说的就是没开始画）。 */
+  function detectCompatibilityRetry(error, body = {}, { named5xx = [] } = {}) {
     if (!(error instanceof ErrorClass) || error.code !== 'UPSTREAM_HTTP_ERROR') return null;
     const details = String(error.details || '');
     const status = error.upstreamStatus ?? error.status;
     /* 400 / 422 是上游在画之前就拒了。中转自己回的 5xx 只有正文里写明上游是 400 / 422 时才算；
        别的 5xx 上游可能已经开始画了，不重试。 */
-    const rejectedUpFront = [400, 422].includes(status)
-      || (status >= 500 && status < 600 && EMBEDDED_REJECTION_STATUS.test(details));
-    if (!rejectedUpFront) return null;
+    const serverError = status >= 500 && status < 600;
+    const rejectedUpFront = [400, 422].includes(status) || (serverError && EMBEDDED_REJECTION_STATUS.test(details));
+    if (!rejectedUpFront && !(serverError && named5xx.length)) return null;
     if (!PARAMETER_INCOMPATIBLE.test(details)
       || MODERATION_PATTERN.test(details)
       || NEVER_RETRY_REASON.test(details)) return null;
     const adjustedParameters = SMART_RETRY_PARAMETERS
       .filter(([name, pattern]) => Object.hasOwn(body, name) && pattern.test(details))
+      .filter(([name]) => rejectedUpFront || named5xx.includes(name))
       .map(([name]) => name);
     if (!adjustedParameters.length) return null;
+    return retryNotice(adjustedParameters);
+  }
+
+  /* step：这是这次生成里第几次去掉参数重发（图生图里最多两次，见 generateImages）。 */
+  function retryNotice(adjustedParameters, step = 1) {
     return {
       attempted: true,
       adjustedParameters,
       reason: `${adjustedParameters.join('、')} 参数不兼容`,
       /* 画着的卡片上显示的那句。不是报错：这条线路不认这个参数，去掉重发一次就行。 */
-      message: `这条线路不认 ${adjustedParameters.join('、')} 参数，已去掉，正在重试（1/1）`,
+      message: `这条线路不认 ${adjustedParameters.join('、')} 参数，已去掉，正在重试（${step}/${step}）`,
     };
   }
 
@@ -468,11 +476,12 @@ export function createOpenAiImagesCore({
   }
 
   /* 带参考图（图生图）走 /v1/images/edits：multipart 表单，图片文件加上和生图一样的那几个字段。
-     gpt-image 系列的 edits 不收 response_format（它只回 base64），dall-e-2 才收；
-     高保真（input_fidelity: high）按预设开关发。先算出字段对象（智能重试要按字段名删），再装进表单。 */
+     response_format 照预设发（默认 b64_json）。2.8.1 之前模型名以 gpt-image 开头就不发，因为官方接口这类模型
+     的图生图不收它、只回 base64；可中转不一定，有的渠道不说要 b64_json 就只回一个链接，浏览器下载不了，
+     图画好了却丢了。线路点名不认它时，generateImages 会去掉重发，不用人管。
+     高保真（input_fidelity: high）按预设开关发。先算出字段对象（重试要按字段名删），再装进表单。 */
   function buildEditFields({ preset, prompt, parameters = {} }) {
     const fields = buildRequestBody({ preset, prompt, parameters });
-    if (/^gpt-image/i.test(String(preset.selectedModel || '')) || !fields.response_format) delete fields.response_format;
     if (preset.referenceFidelity === 'high') fields.input_fidelity = 'high';
     return fields;
   }
@@ -546,22 +555,40 @@ export function createOpenAiImagesCore({
         body: JSON.stringify(payloadBody),
         signal,
       }, preset.timeoutMs);
+    /* 线路点名说不认某个参数（上游在画之前就拒了，不花钱）：去掉重发。两种，各最多一次：
+       - 智能重试（看开关）：报错里点了名的那些参数一起去掉。
+       - 图生图里的 response_format（不看开关，也不占智能重试那一次）：这是画笺照预设加上的要求，
+         官方接口的 gpt-image 图生图就不收它；线路说不认，去掉就是，不该让人为它去开开关或改预设。
+       所以图生图最多发三次（两个参数先后被拒），普通生图照旧最多两次。 */
     let payload;
-    try {
-      payload = await request(body);
-    } catch (error) {
-      const retry = settings.enableSmartRetry ? detectCompatibilityRetry(error, body) : null;
-      if (!retry || signal?.aborted) throw error;
-      const fallbackBody = { ...body };
-      for (const parameter of retry.adjustedParameters) delete fallbackBody[parameter];
-      console.info('[画笺] 智能兼容重试', retry.reason);
-      await onCompatibilityRetry?.(retry);
-      if (signal?.aborted) throw signal.reason || fail('UPSTREAM_TIMEOUT', '请求已取消', 504, true);
+    let current = body;
+    let retry = null;
+    let smartUsed = false;
+    for (;;) {
       try {
-        payload = await request(fallbackBody);
-      } catch (retryError) {
-        retryError.compatibilityRetry = retry;
-        throw retryError;
+        payload = await request(current);
+        break;
+      } catch (error) {
+        const attach = () => {
+          if (retry && error && typeof error === 'object') error.compatibilityRetry = retry;
+          return error;
+        };
+        if (signal?.aborted) throw attach();
+        const named = detectCompatibilityRetry(error, current, { named5xx: withReferences ? ['response_format'] : [] })
+          ?.adjustedParameters || [];
+        const strict = detectCompatibilityRetry(error, current)?.adjustedParameters || [];
+        /* 去掉之后请求里就没有它了，不会被认成「又被点名」，所以这一条自然只发生一次。 */
+        const format = withReferences && named.includes('response_format') ? ['response_format'] : [];
+        const smart = settings.enableSmartRetry && !smartUsed ? strict.filter(name => !format.includes(name)) : [];
+        const dropped = [...format, ...smart];
+        if (!dropped.length) throw attach();
+        if (smart.length) smartUsed = true;
+        current = { ...current };
+        for (const parameter of dropped) delete current[parameter];
+        retry = retryNotice([...(retry?.adjustedParameters || []), ...dropped], retry ? 2 : 1);
+        console.info('[画笺] 兼容重试', retry.reason);
+        await onCompatibilityRetry?.(retry);
+        if (signal?.aborted) throw signal.reason || fail('UPSTREAM_TIMEOUT', '请求已取消', 504, true);
       }
     }
     payload = await settleAsyncJob(payload, { endpoint, apiKey, timeoutMs: preset.timeoutMs, signal, onAsyncJob });
