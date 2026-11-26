@@ -255,6 +255,8 @@ export function createCard({
   let chooser = null;
   /* 「换预设」正在切换中。 */
   let switching = false;
+  /* 没存进酒馆、直接从线路给的链接显示的图：按链接留着 <img>（重画卡片不重新加载），打不开的记一笔不再试。 */
+  const remoteCache = new Map();
 
   /* 从这次生成开始时算起；同一次生成里状态怎么变都不重新计时。 */
   function elapsedSince(attempt) {
@@ -334,6 +336,62 @@ export function createCard({
         render();
       },
     };
+  }
+
+  /* 这次生成里线路给的图片链接（图画好了却没存进酒馆时记下的）。只认 http / https，最多 4 个。 */
+  function remoteImagesOf(attempt) {
+    if (attempt?.status !== 'failed' || !Array.isArray(attempt.remoteImages)) return [];
+    return attempt.remoteImages
+      .filter(value => typeof value === 'string' && /^https?:\/\//i.test(value))
+      .slice(0, 4);
+  }
+
+  /* 从链接直接显示的那几张：<img> 不受浏览器「不许脚本跨站下载」的限制，下载不了的图照样显示得出来，
+     长按就能存到相册。不带来源页地址（有的图床看到别的网站来要图会拒绝）。打不开就换成一句话。 */
+  function remoteMedia(links, prompt, onBroken) {
+    const media = document.createElement('div');
+    media.className = 'stia-card__media stia-card__media--remote';
+    for (const key of remoteCache.keys()) {
+      if (!links.includes(key)) remoteCache.delete(key);
+    }
+    for (const link of links) {
+      let entry = remoteCache.get(link);
+      if (!entry) {
+        const image = document.createElement('img');
+        image.className = 'stia-card__image';
+        image.referrerPolicy = 'no-referrer';
+        image.setAttribute('referrerpolicy', 'no-referrer');
+        image.decoding = 'async';
+        image.alt = String(prompt || '').slice(0, 120);
+        image.src = link;
+        makeImageSaveable(image, () => openImageViewer({
+          src: link,
+          alt: image.alt,
+          prompt,
+          meta: '线路给的临时链接，没存进酒馆 · 长按图片存到相册',
+          remote: true,
+        }));
+        entry = { image, broken: false };
+        const current = entry;
+        image.addEventListener('error', () => {
+          current.broken = true;
+          if (image.isConnected) image.replaceWith(brokenNote());
+          current.onBroken?.();
+        }, { once: true });
+        remoteCache.set(link, entry);
+      }
+      /* 图片元素是留着重用的，卡片重画后说明那行字是新的：每次都换成这一次的回调。 */
+      entry.onBroken = onBroken;
+      media.append(entry.broken ? brokenNote() : entry.image);
+    }
+    return media;
+  }
+
+  function brokenNote() {
+    const note = document.createElement('p');
+    note.className = 'stia-card__remote-broken';
+    note.textContent = '这个链接现在打不开：可能已经过期，或者这台设备连不上放图的那台主机。可以点下面的键在新标签页里再试一次。';
+    return note;
   }
 
   /* 到头了就停，不绕回去：那边的按钮是灰的。 */
@@ -639,7 +697,7 @@ export function createCard({
     if (chooserStale) chooser = null;
     const signature = JSON.stringify([
       attempt?.attemptId, attempt?.status, attempt?.requestMode, attempt?.statusMessage,
-      attempt?.model, attempt?.provider, attempt?.errorMessage, size,
+      attempt?.model, attempt?.provider, attempt?.errorMessage, attempt?.remoteImages, size,
       shown?.resultId, shown?.provider, src, available.map(result => result.resultId), shownIndex,
       Boolean(state.tag?.resultIds?.length), actualPrompt, actualNegativePrompt, canAdjust, ratioLabel,
       running.map(item => item.attemptId),
@@ -809,15 +867,52 @@ export function createCard({
     body.className = 'stia-card__body';
     if (attempt && ['failed', 'interrupted', 'cancelled'].includes(attempt.status)) {
       root.classList.add('stia-card--failed');
-      body.append(statusHeading(
-        attempt.status === 'cancelled' ? 'close' : 'alert',
-        attempt.status === 'failed' ? '生成失败' : STATUS_TEXT[attempt.status],
-        attempt.errorMessage || '请稍后重试',
-        'is-danger',
-      ));
+      /* 图画好了却没存进酒馆（线路只给了链接、下载不了）：钱已经花了，图直接从链接显示出来，能长按存走。 */
+      const remote = remoteImagesOf(attempt);
       const actions = document.createElement('div');
       actions.className = 'stia-actions stia-actions--fill';
-      actions.append(button('重试', 'stia-button--danger-soft', () => {
+      if (remote.length) {
+        root.classList.add('stia-card--salvaged');
+        const heading = statusHeading('alert', '图画好了，没能存进酒馆', ' ', 'is-warning');
+        const subtitle = heading.querySelector('small');
+        /* 图加载不出来是过后才知道的（链接过期了、这台设备连不上那台主机）：说明跟着改，别还写着「上面这张」。 */
+        const describe = () => {
+          subtitle.textContent = remote.every(link => remoteCache.get(link)?.broken)
+            ? '线路给了图片链接，但现在打不开，图显示不出来。可以点下面的键在新标签页里再试一次。再画一张会再扣一次钱。'
+            : '上面这张是直接从线路给的链接显示的。长按图片可以存到相册；链接过一阵会失效，想留就现在存。再画一张会再扣一次钱。';
+        };
+        root.append(remoteMedia(remote, actualPrompt, describe));
+        describe();
+        body.append(heading);
+        const why = document.createElement('details');
+        why.className = 'stia-card__salvage-reason';
+        const summary = document.createElement('summary');
+        summary.textContent = '为什么没存进酒馆';
+        const text = document.createElement('p');
+        text.textContent = attempt.errorMessage || '下载不了线路给的图片';
+        why.append(summary, text);
+        body.append(why);
+        remote.forEach((link, index) => {
+          const open = document.createElement('a');
+          open.className = 'stia-button';
+          open.href = link;
+          open.target = '_blank';
+          open.rel = 'noopener noreferrer';
+          open.referrerPolicy = 'no-referrer';
+          const label = document.createElement('span');
+          label.textContent = remote.length > 1 ? `打开第 ${index + 1} 张` : '打开图片链接';
+          open.append(icon('expand'), label);
+          actions.append(open);
+        });
+      } else {
+        body.append(statusHeading(
+          attempt.status === 'cancelled' ? 'close' : 'alert',
+          attempt.status === 'failed' ? '生成失败' : STATUS_TEXT[attempt.status],
+          attempt.errorMessage || '请稍后重试',
+          'is-danger',
+        ));
+      }
+      actions.append(button(remote.length ? '重新画一张' : '重试', remote.length ? '' : 'stia-button--danger-soft', () => {
         void Promise.resolve(onGenerate(tag, 'manual')).catch(() => {});
       }, 'refresh'));
       if (canUseBackup) {

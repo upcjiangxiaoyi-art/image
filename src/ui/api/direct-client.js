@@ -761,6 +761,19 @@ export function createDirectApiClient({
     return payload;
   }
 
+  /* 上游这次回的图片链接里能直接显示的那些：只收 http / https，去重，最多 4 个。
+     图没存进酒馆时记在这次生成上，失败的卡片从链接把图显示出来（见 generate 的收尾）。 */
+  function remoteLinks(sources) {
+    const links = [];
+    for (const source of sources || []) {
+      const value = source?.sourceType === 'url' ? String(source.value || '') : '';
+      if (!/^https?:\/\//i.test(value) || value.length > 4000 || links.includes(value)) continue;
+      links.push(value);
+      if (links.length === 4) break;
+    }
+    return links;
+  }
+
   /* 线路给的是图片链接、浏览器又下载不了：图已经画好了，说清是谁的问题、该怎么办。
      inline：这次请求有没有要求把图片本身传回来——'asked' 要求了（b64_json），'dropped' 线路不认
      response_format、去掉了，其余是预设自己没要。链接只写主机名（常带签名）。 */
@@ -1440,8 +1453,9 @@ export function createDirectApiClient({
     }
 
     const saved = [];
+    /* 上游回来的图（链接或 base64）。放在 try 外面：存的时候出了错，收尾要看它是不是链接。 */
+    let sources = null;
     try {
-      let sources;
       if (provider === 'novelai') {
         const generated = await generateNovelAiImages({
           config: { ...novelAi, negativePrompt: attempt.negativePromptSnapshot },
@@ -1562,6 +1576,13 @@ export function createDirectApiClient({
       attempt.errorMessage = cancelled ? '已取消' : `${error.message || '生成失败'}${withDetail}`;
       if (!cancelled && attempt.compatibilityRetry && !attempt.compatibilityRetry.remembered) {
         attempt.errorMessage += `；已尝试移除 ${attempt.compatibilityRetry.adjustedParameters.join('、')} 后重试一次`;
+      }
+      /* 图是画好了的（上游已经回了链接）、钱也花了，只是没存进酒馆：下载不了，或者下载了存不进去。
+         把链接记在这次生成上，失败的卡片直接从链接把图显示出来，至少能长按存到相册。
+         链接是线路给的临时地址，过一阵会失效；它常带签名，不进诊断信息。 */
+      if (!cancelled) {
+        const links = remoteLinks(sources);
+        if (links.length) attempt.remoteImages = links;
       }
       attempt.completedAt = now();
       persist().catch(() => {});

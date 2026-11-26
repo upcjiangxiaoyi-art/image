@@ -167,6 +167,10 @@ export function describeGenerationProblem({
       message,
       hint: joinLines(
         moved?.failure,
+        /* 图是画好了的，只是没存进酒馆；卡片在眼前时它正从线路给的链接显示着。 */
+        !moved && !interrupted && attempt?.remoteImages?.length
+          ? '图还在：卡片上直接显示着线路给的那张，长按可以存到相册。链接过一阵会失效。'
+          : '',
         parameterRejected && isPremiumQuality(quality)
           ? `${premiumQualityNote(quality)}如果报错说的是 quality，请换用这两个模型，或把默认质量改回 high。`
           : '',

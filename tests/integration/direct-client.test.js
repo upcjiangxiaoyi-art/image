@@ -2773,3 +2773,43 @@ test('2.8.1 线路只给链接、浏览器又下载不了时，报错说清是�
   ({ caught } = await failure(() => plain.client.generate(generationInput(tagId, messageUuid)), plain.client, tagId));
   assert.match(caught.message, /没按要求把图片本身传回来/);
 });
+
+/* 2.9.0：线路只给链接、图又没存进酒馆时，把链接记在这次生成上，失败的卡片直接从链接把图显示出来。 */
+test('2.9.0 图画好了却没存进酒馆：线路给的链接记在这次生成上（刷新后还在），诊断信息里不带链接；别的失败、取消的不记', async t => {
+  const link = 'https://img.cdn.example/private/a.png?sig=SIGNED';
+  const linked = await referenceClient(t, { editsReply: LINK_ONLY });
+  await assert.rejects(linked.draw(), error => error.code === 'DIRECT_FETCH_BLOCKED');
+  let [attempt] = (await linked.client.resolveTags([linked.tagId]))[0].attempts;
+  assert.equal(attempt.status, 'failed');
+  assert.deepEqual(attempt.remoteImages, [link]);
+  /* 落进独立存储的那份也带着：刷新页面后卡片照样显示得出来。 */
+  assert.deepEqual(linked.attemptStore.get(attempt.attemptId).remoteImages, [link]);
+  const dump = JSON.stringify(await linked.client.diagnostics());
+  assert.equal(dump.includes('SIGNED'), false, '带签名的链接不进诊断信息');
+
+  /* 只收 http / https 的链接；重复的只留一个；最多 4 个。 */
+  const many = await referenceClient(t, {
+    editsReply: () => response(200, { data: [
+      { url: 'https://img.cdn.example/1.png' }, { url: 'https://img.cdn.example/1.png' }, { url: 'http://img.cdn.example/2.png' },
+      { url: 'https://img.cdn.example/3.png' }, { url: 'https://img.cdn.example/4.png' }, { url: 'https://img.cdn.example/5.png' },
+    ] }),
+  });
+  await assert.rejects(many.draw());
+  [attempt] = (await many.client.resolveTags([many.tagId]))[0].attempts;
+  assert.deepEqual(attempt.remoteImages, [
+    'https://img.cdn.example/1.png', 'http://img.cdn.example/2.png', 'https://img.cdn.example/3.png', 'https://img.cdn.example/4.png',
+  ]);
+
+  /* 还没画出来就失败的（上游报错）：没有链接可记。 */
+  const refused = await referenceClient(t, { editsReply: () => response(502, { error: { message: 'bad gateway' } }) });
+  await assert.rejects(refused.draw());
+  [attempt] = (await refused.client.resolveTags([refused.tagId]))[0].attempts;
+  assert.equal(attempt.status, 'failed');
+  assert.equal('remoteImages' in attempt, false);
+
+  /* 正常画成的：不记。 */
+  const fine = await referenceClient(t);
+  attempt = await fine.draw();
+  assert.equal(attempt.status, 'succeeded');
+  assert.equal('remoteImages' in attempt, false);
+});

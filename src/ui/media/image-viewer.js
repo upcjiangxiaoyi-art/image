@@ -61,7 +61,9 @@ function emptyOut(element) {
   else for (const child of [...element.children]) child.remove();
 }
 
-/* options：src、alt、filename、prompt、meta、onJump、jumpLabel、onDelete、onClose。
+/* options：src、alt、filename、prompt、meta、onJump、jumpLabel、onDelete、onClose；
+   remote: true 表示图在别处的链接上（没存进酒馆）：不给「分享、保存」（脚本下载不了它，分享不了），
+   要图时不带来源页地址（有的图床看到别的网站来要图会拒绝）。
    想让人在查看器里左右翻，再给两个函数（都按「现在」的列表现算，中途删了图也对）：
    - neighbor(delta)：往前（-1）或往后（1）那一张的 options，没有就返回 null；
    - position()：这张是第几张，{ index, total }；不在列表里了返回 null。 */
@@ -193,7 +195,7 @@ export function openImageViewer(options, environment = {}) {
 
     const actions = documentRef.createElement('div');
     actions.className = 'stia-image-viewer__actions';
-    if (typeof navigatorRef?.share === 'function' && typeof FileRef === 'function' && typeof fetchRef === 'function') {
+    if (shown.remote !== true && typeof navigatorRef?.share === 'function' && typeof FileRef === 'function' && typeof fetchRef === 'function') {
       const share = createButton(documentRef, '分享、保存', 'stia-button stia-button--primary', async () => {
         share.disabled = true;
         status.textContent = '正在准备原图…';
@@ -283,6 +285,7 @@ export function openImageViewer(options, environment = {}) {
       /* 新图没载好之前浏览器还显示着旧图：先淡下去，免得底下的信息已经换了、图还是上一张的样子。 */
       if (!initial) image.classList.add('is-loading');
       shownSrc = target.src;
+      image.referrerPolicy = target.remote === true ? 'no-referrer' : '';
       image.src = target.src;
     }
     image.alt = target.alt || '生成图片原图';

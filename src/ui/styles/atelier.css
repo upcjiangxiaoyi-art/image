@@ -940,6 +940,68 @@
   border-color: color-mix(in srgb, var(--stia-danger) 32%, var(--stia-border-subtle));
 }
 
+/* 图画好了却没存进酒馆、直接从线路给的链接显示着：不是红的「失败」，是黄的「留意」。 */
+.stia-card--failed.stia-card--salvaged {
+  border-color: color-mix(in srgb, var(--stia-warning) 38%, var(--stia-border-subtle));
+}
+
+/* 好几张时上下排开。 */
+.stia-card__media--remote {
+  display: grid;
+  gap: 2px;
+}
+
+.stia-card__remote-broken {
+  margin: 0;
+  padding: 28px 18px;
+  color: var(--stia-muted);
+  text-align: center;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.stia-card__salvage-reason {
+  color: var(--stia-muted);
+  font-size: 12px;
+}
+
+.stia-card__salvage-reason > summary {
+  display: flex;
+  width: fit-content;
+  min-height: 30px;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.stia-card__salvage-reason > summary::-webkit-details-marker {
+  display: none;
+}
+
+.stia-card__salvage-reason > summary::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  margin-top: -3px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
+}
+
+.stia-card__salvage-reason[open] > summary::after {
+  margin-top: 3px;
+  transform: rotate(-135deg);
+}
+
+.stia-card__salvage-reason > p {
+  margin: 2px 0 0;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
 .stia-card__body {
   display: flex;
   flex-direction: column;

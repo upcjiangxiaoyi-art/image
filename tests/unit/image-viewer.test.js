@@ -363,3 +363,18 @@ test('2.7.0 翻到别的图再关：onClose 是最后看的那张的', () => {
   viewer.close();
   assert.deepEqual(log, ['close c']);
 });
+
+test('2.9.0 remote: true（图在别处的链接上）：不给「分享、保存」，要图时不带来源页地址', () => {
+  const environment = fakeEnvironment();
+  environment.navigator = { share: async () => {} };
+  const extras = { fetch: async () => ({ ok: true, blob: async () => ({ type: 'image/png' }) }), File: class {} };
+  const labels = viewer => everything(viewer.root).filter(element => element.tagName === 'button').map(element => element.textContent);
+  let viewer = openImageViewer({ src: 'https://img.cdn.example/a.png', remote: true }, { ...environment, ...extras });
+  assert.equal(labels(viewer).includes('分享、保存'), false);
+  assert.equal(viewer.image.referrerPolicy, 'no-referrer');
+  viewer.destroy();
+  viewer = openImageViewer({ src: '/user/images/a.png' }, { ...environment, ...extras });
+  assert.equal(labels(viewer).includes('分享、保存'), true, '平常照旧有');
+  assert.equal(viewer.image.referrerPolicy, '');
+  viewer.destroy();
+});

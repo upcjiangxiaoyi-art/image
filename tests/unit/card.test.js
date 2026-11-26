@@ -1233,3 +1233,127 @@ test('2.7.0 卡片上点开原图后也能左右翻这张卡的几张图：提�
   assert.equal(arrow('is-next').hidden, true);
   viewer().querySelector('.stia-image-viewer__close').click();
 });
+
+test('2.9.0 图画好了却没存进酒馆（线路只给了链接）：失败的卡片直接从链接把图显示出来，写明长按能存、链接会失效、重画要再花钱；点开能看大图；链接打不开时说清楚', async t => {
+  const { JSDOM } = await import('jsdom');
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'https://tavern.example/' });
+  const previous = { document: globalThis.document, window: globalThis.window, navigator: globalThis.navigator };
+  globalThis.document = dom.window.document;
+  globalThis.window = dom.window;
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: dom.window.navigator });
+  t.after(() => {
+    globalThis.document = previous.document;
+    globalThis.window = previous.window;
+    Object.defineProperty(globalThis, 'navigator', { configurable: true, value: previous.navigator });
+    dom.window.close();
+  });
+  /* 这台「手机」有系统分享：看图器里的「分享、保存」要先把图下载下来，这张下载不了，所以不给。 */
+  Object.defineProperty(dom.window.navigator, 'share', { configurable: true, value: async () => {} });
+
+  const link = 'https://img.cdn.example/private/a.png?sig=SIGNED';
+  const reason = '生图成功了，但这条线路没按要求把图片本身传回来，只给了一个链接（在 img.cdn.example 上），浏览器下载不了它。';
+  const failed = extra => ({ attemptId: 'a1', status: 'failed', provider: 'openai', presetId: 'p1', model: 'gpt-image-2.5-sunburst-4k', errorCode: 'DIRECT_FETCH_BLOCKED', errorMessage: reason, ...extra });
+  let state = { tag: {}, attempts: [failed({ remoteImages: [link] })], results: [] };
+  const generated = [];
+  const card = createCard({
+    tag: { tagId: 'tag-1', prompt: 'a cat', ratio: 'portrait' },
+    api: { fileUrl: id => `/user/images/${id}.png` },
+    getState: () => state,
+    onGenerate: (tag, mode) => { generated.push([tag.tagId, mode]); },
+    onOpenGallery() {},
+    onCancel() {},
+    onRemove() {},
+  });
+  card.render();
+  document.body.append(card.root);
+  const root = card.root;
+  const image = () => root.querySelector('.stia-card__media--remote img');
+  const labels = () => [...root.querySelectorAll('.stia-actions > *')].map(node => node.textContent);
+
+  /* 图直接从链接显示；不带来源页地址（有的图床看到别的网站来要图会拒绝）。 */
+  assert.ok(root.classList.contains('stia-card--failed'));
+  assert.ok(root.classList.contains('stia-card--salvaged'));
+  assert.equal(image().getAttribute('src'), link);
+  assert.equal(image().getAttribute('referrerpolicy'), 'no-referrer');
+  assert.ok(image().classList.contains('stia-saveable-image'), '长按保存的菜单不拦');
+  assert.equal(root.querySelector('.stia-card__media').nextElementSibling.className, 'stia-card__body', '图在上，说明和按钮在下');
+
+  /* 说清楚：图是有的、怎么留、会过期、重画要再花钱。 */
+  const heading = root.querySelector('.stia-card__status');
+  assert.ok(heading.classList.contains('is-warning'), '不是红的「生成失败」');
+  assert.equal(heading.querySelector('strong').textContent, '图画好了，没能存进酒馆');
+  assert.match(heading.textContent, /长按图片可以存到相册/);
+  assert.match(heading.textContent, /链接过一阵会失效/);
+  assert.match(root.textContent, /再画一张会再扣一次钱/);
+  assert.equal(iconOf(heading), 'alert');
+  /* 原因收在下面，点开才看。 */
+  const why = root.querySelector('.stia-card__salvage-reason');
+  assert.equal(why.tagName, 'DETAILS');
+  assert.equal(why.open, false);
+  assert.equal(why.querySelector('summary').textContent, '为什么没存进酒馆');
+  assert.match(why.textContent, /没按要求把图片本身传回来/);
+
+  /* 按钮：打开链接、重新画一张（就是原来的重试）、删除。 */
+  assert.deepEqual(labels(), ['打开图片链接', '重新画一张', '删除']);
+  const open = root.querySelector('.stia-actions > a');
+  assert.equal(open.getAttribute('href'), link);
+  assert.equal(open.getAttribute('target'), '_blank');
+  assert.deepEqual(open.getAttribute('rel').split(' ').sort(), ['noopener', 'noreferrer']);
+  assert.equal(iconOf(open), 'expand');
+  assert.deepEqual(blankIcons(root), []);
+  [...root.querySelectorAll('button')].find(node => node.textContent === '重新画一张').click();
+  assert.deepEqual(generated, [['tag-1', 'manual']]);
+
+  /* 点图片：看图器里放大看、长按存。不给「分享、保存」。 */
+  image().click();
+  const viewer = () => document.querySelector('.stia-image-viewer');
+  assert.equal(viewer().querySelector('.stia-image-viewer__image').getAttribute('src'), link);
+  assert.match(viewer().querySelector('.stia-image-viewer__meta').textContent, /线路给的临时链接/);
+  assert.equal([...viewer().querySelectorAll('button')].some(node => node.textContent === '分享、保存'), false);
+  viewer().querySelector('.stia-image-viewer__close').click();
+
+  /* 别的原因重画卡片：图片元素还是那个，不重新加载。 */
+  const kept = image();
+  state = { ...state, attempts: [failed({ remoteImages: [link], statusMessage: '变了一下' })] };
+  card.render();
+  assert.equal(image(), kept);
+
+  /* 链接打不开了（过期、这台设备连不上那台主机）：换成一句话，打开链接的键还在。重画卡片也不再去试。 */
+  image().dispatchEvent(new dom.window.Event('error'));
+  assert.equal(image(), null);
+  assert.match(root.querySelector('.stia-card__media--remote').textContent, /这个链接现在打不开/);
+  assert.ok(root.querySelector('.stia-actions > a'));
+  /* 图显示不出来了，说明也跟着改：不能还写着「上面这张……长按可以存」。 */
+  const subtitle = () => root.querySelector('.stia-card__status small').textContent;
+  assert.match(subtitle(), /图显示不出来/);
+  assert.equal(/长按图片可以存到相册/.test(subtitle()), false);
+  assert.match(subtitle(), /再画一张会再扣一次钱/);
+  state = { ...state, attempts: [failed({ remoteImages: [link], statusMessage: '又变了一下' })] };
+  card.render();
+  assert.equal(image(), null);
+  assert.match(root.querySelector('.stia-card__media--remote').textContent, /这个链接现在打不开/);
+  assert.match(subtitle(), /图显示不出来/, '重画卡片后还是这么说');
+
+  /* 好几张：都显示，各有各的打开键。 */
+  state = { tag: {}, attempts: [failed({ attemptId: 'a2', remoteImages: ['https://img.cdn.example/1.png', 'https://img.cdn.example/2.png'] })], results: [] };
+  card.render();
+  assert.deepEqual([...root.querySelectorAll('.stia-card__media--remote img')].map(node => node.getAttribute('src')), ['https://img.cdn.example/1.png', 'https://img.cdn.example/2.png']);
+  assert.deepEqual(labels(), ['打开第 1 张', '打开第 2 张', '重新画一张', '删除']);
+  /* 两张里坏了一张：另一张还看得到，说明照旧。 */
+  root.querySelector('.stia-card__media--remote img').dispatchEvent(new dom.window.Event('error'));
+  assert.equal(root.querySelectorAll('.stia-card__media--remote img').length, 1);
+  assert.match(subtitle(), /长按图片可以存到相册/);
+
+  /* 没有链接的失败、不是 http(s) 的东西、被中断的：照旧是普通的失败卡片。 */
+  for (const attempt of [
+    failed({ attemptId: 'a3' }),
+    failed({ attemptId: 'a4', remoteImages: ['javascript:alert(1)', 'data:image/png;base64,AAAA', 42, ''] }),
+    failed({ attemptId: 'a5', status: 'interrupted', remoteImages: [link] }),
+  ]) {
+    state = { tag: {}, attempts: [attempt], results: [] };
+    card.render();
+    assert.equal(root.querySelector('.stia-card__media--remote'), null, attempt.attemptId);
+    assert.equal(root.classList.contains('stia-card--salvaged'), false, attempt.attemptId);
+    assert.equal(labels()[0], '重试', attempt.attemptId);
+  }
+});

@@ -717,3 +717,19 @@ test('弹窗里「换备用线路重画」：写着备用线路的名字，点�
   assert.deepEqual(runs, ['backup-a', 'backup-b'], '两张都换备用线路，原线路不重跑');
   assert.equal(dialog.root.hidden, true, '只有这一条，点了就关');
 });
+
+test('2.9.0 图画好了没存进酒馆、但卡片上从链接显示着：弹窗里说一声图还在，别让人以为白花了钱', () => {
+  const attempt = {
+    status: 'failed',
+    errorCode: 'DIRECT_FETCH_BLOCKED',
+    errorMessage: '生图成功了，但这条线路没按要求把图片本身传回来，只给了一个链接（在 img.cdn.example 上），浏览器下载不了它。',
+    remoteImages: ['https://img.cdn.example/a.png'],
+  };
+  const problem = describeGenerationProblem({ attempt });
+  assert.equal(problem.title, '图片下载失败');
+  assert.match(problem.hint, /图还在：卡片上直接显示着线路给的那张，长按可以存到相册/);
+  assert.equal(describeGenerationProblem({ attempt: { ...attempt, remoteImages: [] } }).hint.includes('图还在'), false);
+  assert.equal(describeGenerationProblem({ attempt: { ...attempt, remoteImages: undefined } }).hint.includes('图还在'), false);
+  /* 卡片不在眼前（滑走了、切了聊天）：不说「卡片上显示着」。 */
+  assert.equal(describeGenerationProblem({ attempt, placement: 'gone' }).hint.includes('图还在'), false);
+});
