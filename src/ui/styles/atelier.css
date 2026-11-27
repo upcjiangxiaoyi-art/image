@@ -173,7 +173,6 @@
   margin: 0;
   font-size: 17px;
   font-weight: 650;
-  letter-spacing: .2px;
 }
 
 .stia-health {
@@ -206,7 +205,6 @@
   border-radius: 999px;
   font-size: 11px;
   font-weight: 500;
-  letter-spacing: 0;
   vertical-align: 2px;
 }
 
@@ -364,8 +362,9 @@
   background: var(--stia-fill-strong);
 }
 
-.stia-button:active {
-  transform: scale(.98);
+/* 按下去缩一点点：手指底下有回应。 */
+:is(.stia-button, .stia-icon-button):active:not(:disabled) {
+  transform: scale(.97);
 }
 
 .stia-button:focus-visible,
@@ -926,6 +925,9 @@
   border: 1px solid var(--stia-border-subtle);
   border-radius: var(--stia-radius);
   font: 400 13px/1.5 var(--stia-font);
+  /* 正文常是两端对齐、保留换行的：卡片里不跟。 */
+  text-align: start;
+  white-space: normal;
 }
 
 .stia-card--generating {
@@ -1043,7 +1045,7 @@
   grid-row: 1;
   color: var(--stia-muted);
   font-size: 12px;
-  font-variant-numeric: tabular-nums;
+  font-variant-numeric: tabular-nums !important;
   white-space: nowrap;
 }
 
@@ -1119,9 +1121,12 @@
 
 .stia-card__shimmer {
   position: relative;
-  height: 96px;
+  height: 112px;
   overflow: hidden;
-  background: var(--stia-fill);
+  /* 中间一个淡淡的画框：看得出这里等会儿是一张图，不是一块空着的灰底。 */
+  background:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='1.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='4' y='5' width='16' height='14' rx='2.6'/%3E%3Ccircle cx='9' cy='10' r='1.6'/%3E%3Cpath d='M4.8 17l4.7-4.6 3 2.9 2.4-2.3 4.3 4.2'/%3E%3C/svg%3E") center / 34px no-repeat,
+    var(--stia-fill);
   border-radius: var(--stia-radius-control);
 }
 
@@ -1146,6 +1151,12 @@
   width: 100%;
   max-height: 72vh;
   object-fit: contain;
+  transition: opacity .28s ease;
+}
+
+/* 等了好几分钟的图不是「啪」一下跳出来：载好之前透明，载好了淡进来。 */
+.stia-card__image.is-arriving {
+  opacity: 0;
 }
 
 /* 手机上让图尽量铺满宽度：竖着的漫画页（9:16）铺满时差不多一屏高，字看得清；再长的才收一收，不超过一屏。 */
@@ -1197,7 +1208,7 @@
 .stia-card__duration {
   color: var(--stia-muted);
   font-size: 12px;
-  font-variant-numeric: tabular-nums;
+  font-variant-numeric: tabular-nums !important;
 }
 
 /* 「历史 N 张 | 1024×1792」；一行放不下时折到下一行，仍然靠右。 */
@@ -1213,38 +1224,30 @@
   color: var(--stia-secondary);
   border-left: 1px solid var(--stia-line);
   font-size: 12px;
-  font-variant-numeric: tabular-nums;
+  font-variant-numeric: tabular-nums !important;
 }
 
 /* 这张图用的预设、画质、模型：一行预设 + 画质，模型单独一行，下面一条分隔线隔开按钮。 */
 .stia-card__info {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 5px 12px;
+  /* 这张图用的预设、画质、模型、参考图：一排小标签，放得下就排一行。 */
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
   margin: 0;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--stia-line);
+  padding: 0;
   font-size: 12px;
   line-height: 1.5;
 }
 
 .stia-card__info-item {
-  display: flex;
-  gap: 8px;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
   min-width: 0;
-}
-
-.stia-card__info-item.is-start {
-  grid-column: 1;
-}
-
-.stia-card__info-item.is-end {
-  grid-column: 2;
-  justify-self: end;
-}
-
-.stia-card__info-item.is-wide {
-  grid-column: 1 / -1;
+  max-width: 100%;
+  padding: 3px 10px;
+  background: var(--stia-fill);
+  border-radius: 10px;
 }
 
 .stia-card__info dt {
@@ -1325,10 +1328,10 @@
 }
 
 .stia-card__pager .stia-card__nav {
-  width: 36px;
-  height: 36px;
-  min-width: 36px;
-  min-height: 36px;
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  min-height: 32px;
   color: var(--stia-text);
   background: var(--stia-fill);
 }
@@ -1346,7 +1349,7 @@
   min-width: 4.4em;
   color: var(--stia-secondary);
   font-size: 12px;
-  font-variant-numeric: tabular-nums;
+  font-variant-numeric: tabular-nums !important;
   text-align: center;
 }
 
@@ -1608,7 +1611,7 @@
 .stia-gallery-count {
   color: var(--stia-secondary);
   font-size: 13px;
-  font-variant-numeric: tabular-nums;
+  font-variant-numeric: tabular-nums !important;
 }
 
 .stia-gallery-clear {
@@ -1756,7 +1759,7 @@
 .stia-gallery-card time {
   color: var(--stia-muted);
   font-size: 11px;
-  font-variant-numeric: tabular-nums;
+  font-variant-numeric: tabular-nums !important;
 }
 
 /* 画廊卡片上的渠道 / 画质小标：GPT 预设用主题色，NovelAI 画师串用绿色，画质用暖色，一眼分得开。 */
@@ -2153,7 +2156,7 @@
   color: var(--stia-secondary);
   font-size: 14px;
   font-weight: 500;
-  font-variant-numeric: tabular-nums;
+  font-variant-numeric: tabular-nums !important;
 }
 
 .stia-image-viewer__close {
@@ -2498,6 +2501,130 @@
 .stia-actions--fill.stia-actions--pairs > .stia-button,
 .stia-actions--fill.stia-actions--pairs > .stia-card__remove {
   flex: 1 1 calc(50% - var(--stia-gap) / 2);
+}
+
+/* ---------- 不被酒馆主题带歪 ----------
+   卡片长在聊天正文（.mes_text）里。酒馆主题和角色卡的 CSS 常按标签名给正文里的东西加装饰：字距拉开、
+   首行缩进、details 套一圈虚线框、图片加圆角和阴影、strong 换颜色……这些会一路渗进卡片。
+   下面两层把它们挡在外面；带 !important 是因为主题的选择器可能比我们的更具体、也写在我们后面。 */
+
+/* 第一层：会继承下来的排版。画笺哪儿都不用字距、大小写变换、文字阴影、首行缩进、斜体，整棵树钉死。 */
+:is(.stia-card, .stia-panel, .stia-image-viewer, .stia-error-dialog, .stia-prompt-override),
+:is(.stia-card, .stia-panel, .stia-image-viewer, .stia-error-dialog, .stia-prompt-override) * {
+  letter-spacing: normal !important;
+  word-spacing: normal !important;
+  text-transform: none !important;
+  text-shadow: none !important;
+  text-indent: 0 !important;
+  font-style: normal !important;
+  font-variant-caps: normal !important;
+}
+
+/* 第二层：卡片里按标签名会被装饰到的那几种元素，把框、底色、阴影、外边距定回我们自己的样子。 */
+.stia-card :is(details, summary) {
+  margin: 0 !important;
+  padding: 0 !important;
+  background: none !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+
+.stia-card summary {
+  color: var(--stia-muted) !important;
+  font-size: 12px !important;
+  font-weight: 400 !important;
+  line-height: 1.5 !important;
+}
+
+.stia-card p {
+  margin: 0 !important;
+  line-height: 1.6 !important;
+}
+
+.stia-card :is(dl, dt, dd) {
+  margin: 0 !important;
+  border: 0 !important;
+  font-weight: 400 !important;
+}
+
+.stia-card pre {
+  margin: 4px 0 0 !important;
+  padding: 10px 12px !important;
+  color: var(--stia-secondary) !important;
+  background: var(--stia-fill) !important;
+  border: 0 !important;
+  border-radius: var(--stia-radius-control) !important;
+  box-shadow: none !important;
+  font: 12px/1.6 var(--stia-font) !important;
+  white-space: pre-wrap !important;
+}
+
+.stia-card img {
+  margin: 0 !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  filter: none !important;
+}
+
+.stia-card .stia-card__image {
+  display: block !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  border-radius: 0 !important;
+  object-fit: contain !important;
+}
+
+.stia-card :is(strong, small, em, span, a) {
+  opacity: 1 !important;
+  text-decoration: none !important;
+}
+
+.stia-card .stia-card__status strong {
+  color: var(--stia-text) !important;
+  font-size: 14px !important;
+  font-weight: 600 !important;
+}
+
+.stia-card .stia-card__status small {
+  color: var(--stia-muted) !important;
+  font-size: 12px !important;
+  font-weight: 400 !important;
+}
+
+.stia-card .stia-card__status.is-accent strong {
+  color: var(--stia-accent-text) !important;
+}
+
+.stia-card .stia-card__status.is-warning strong {
+  color: var(--stia-warning) !important;
+}
+
+.stia-card .stia-card__status.is-danger strong {
+  color: var(--stia-danger) !important;
+}
+
+/* 按钮（含画成按钮的链接）：边框的样子、圆角、字体不跟主题走。 */
+.stia-card :is(.stia-button, .stia-icon-button) {
+  border-style: solid !important;
+  border-width: 1px !important;
+  border-color: transparent !important;
+  border-radius: var(--stia-radius-control) !important;
+  box-shadow: none !important;
+  font-family: var(--stia-font) !important;
+}
+
+.stia-card .stia-button--ghost {
+  border-color: var(--stia-line) !important;
+}
+
+.stia-card .stia-icon-button {
+  border-width: 0 !important;
+  border-radius: 50% !important;
+}
+
+.stia-card a.stia-button {
+  color: var(--stia-text) !important;
 }
 
 /* 触屏设备上不做毛玻璃：WebKit 得把顶栏、遮罩底下的整片内容每帧重新模糊一遍，滑画廊、翻长聊天时是持续的 GPU 开销，

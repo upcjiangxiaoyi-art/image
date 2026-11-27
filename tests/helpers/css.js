@@ -11,7 +11,22 @@ export async function readStyles() {
   const rules = [];
   /* 顶层规则：选择器从行首开始，右花括号也在行首。 */
   for (const match of text.matchAll(/^([^\s@}][^{}]*?)\s*\{\n([\s\S]*?)\n\}/gm)) {
-    const selectors = match[1].split(',').map(item => item.trim().replace(/\s+/g, ' '));
+    /* 只在括号外面的逗号处分开：:is(a, b) 里的逗号是选择器自己的。 */
+    const selectors = [];
+    let depth = 0;
+    let current = '';
+    for (const char of match[1]) {
+      if (char === '(') depth += 1;
+      if (char === ')') depth -= 1;
+      if (char === ',' && depth === 0) {
+        selectors.push(current);
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+    selectors.push(current);
+    for (let index = 0; index < selectors.length; index += 1) selectors[index] = selectors[index].trim().replace(/\s+/g, ' ');
     const declarations = new Map();
     for (const line of match[2].split('\n')) {
       const pair = /^\s*([\w-]+):\s*(.+?);?\s*$/.exec(line);

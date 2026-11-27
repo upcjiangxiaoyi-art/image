@@ -275,6 +275,14 @@ export function createCard({
       /* 异步解码：几 MB 的 PNG 不在主线程上解，滑动时不卡。 */
       image.decoding = 'async';
       image.src = source;
+      /* 载好之前透明、载好了淡进来（样式在 .is-arriving）：等了好几分钟的图不是「啪」一下跳出来。
+         已经载好的不用；测试用的极简假页面没有这些就跳过。 */
+      if (image.complete !== true && typeof image.classList?.remove === 'function') {
+        image.classList.add('is-arriving');
+        const arrived = () => image.classList.remove('is-arriving');
+        image.addEventListener('load', arrived, { once: true });
+        image.addEventListener('error', arrived, { once: true });
+      }
       makeImageSaveable(image, () => openCurrentImage?.());
       imageCache.set(source, image);
     }

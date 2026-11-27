@@ -1357,3 +1357,55 @@ test('2.9.0 图画好了却没存进酒馆（线路只给了链接）：失败�
     assert.equal(labels()[0], '重试', attempt.attemptId);
   }
 });
+
+test('2.10.0 图片淡入：没载好时带 is-arriving（透明），载好或载不出来就去掉；已经载好的图不闪', async t => {
+  const { JSDOM } = await import('jsdom');
+  const dom = new JSDOM('<!doctype html><html><body></body></html>');
+  const previous = { document: globalThis.document, window: globalThis.window };
+  globalThis.document = dom.window.document;
+  globalThis.window = dom.window;
+  t.after(() => {
+    globalThis.document = previous.document;
+    globalThis.window = previous.window;
+    dom.window.close();
+  });
+  /* 第二张图当成「已经在缓存里、一创建就是载好的」。 */
+  const createElement = document.createElement.bind(document);
+  let complete = false;
+  document.createElement = (name, ...rest) => {
+    const node = createElement(name, ...rest);
+    if (String(name).toLowerCase() === 'img') Object.defineProperty(node, 'complete', { configurable: true, get: () => complete });
+    return node;
+  };
+  const stateFor = id => ({
+    tag: { latestResultId: id, resultIds: [id] },
+    attempts: [{ attemptId: `a-${id}`, status: 'succeeded', provider: 'openai', createdAt: '2026-10-05T01:00:00.000Z', completedAt: '2026-10-05T01:02:00.000Z' }],
+    results: [{ resultId: id, attemptId: `a-${id}`, status: 'available', prompt: 'cat', provider: 'openai' }],
+  });
+  let state = stateFor('r1');
+  const card = createCard({
+    tag: { tagId: 'tag-1', prompt: 'cat' },
+    api: { fileUrl: id => `/user/images/${id}.png` },
+    getState: () => state,
+    onGenerate() {},
+    onOpenGallery() {},
+    onCancel() {},
+  });
+  card.render();
+  const image = () => card.root.querySelector('.stia-card__image');
+  assert.ok(image().classList.contains('is-arriving'), '还没载好：透明着');
+  image().dispatchEvent(new dom.window.Event('load'));
+  assert.equal(image().classList.contains('is-arriving'), false, '载好了：淡进来');
+
+  state = stateFor('r2');
+  card.render();
+  assert.ok(image().classList.contains('is-arriving'));
+  image().dispatchEvent(new dom.window.Event('error'));
+  assert.equal(image().classList.contains('is-arriving'), false, '载不出来也不能一直透明');
+
+  complete = true;
+  state = stateFor('r3');
+  card.render();
+  assert.equal(image().getAttribute('src'), '/user/images/r3.png');
+  assert.equal(image().classList.contains('is-arriving'), false, '已经载好的不闪一下');
+});

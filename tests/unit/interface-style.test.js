@@ -84,3 +84,55 @@ test('图标的样式：默认 16px，转圈的那个只动 transform', async ()
   assert.match(styles.rule('.stia-icon.is-spinning').get('animation'), /^stia-spin /);
   assert.match(styles.css, /@keyframes stia-spin \{\s*to \{ transform: rotate\(360deg\); \}\s*\}/);
 });
+
+/* 2.10.0 卡片长在聊天正文里，酒馆主题按标签名加的装饰（字距、虚线框、阴影、斜体……）会渗进来。
+   真机上的验证是：套上一套很夸张的主题前后，卡片里每个元素的计算样式逐项相同。这里看挡它们的那几条规则在不在。 */
+test('不被酒馆主题带歪：会继承的排版整棵树钉死；卡片里的 details、p、pre、图片、按钮定回自己的样子', async () => {
+  const styles = await readStyles();
+  const roots = ':is(.stia-card, .stia-panel, .stia-image-viewer, .stia-error-dialog, .stia-prompt-override)';
+  for (const selector of [roots, `${roots} *`]) {
+    const rule = styles.rule(selector);
+    for (const [name, value] of [
+      ['letter-spacing', 'normal'], ['word-spacing', 'normal'], ['text-transform', 'none'], ['text-shadow', 'none'],
+      ['text-indent', '0'], ['font-style', 'normal'], ['font-variant-caps', 'normal'],
+    ]) {
+      assert.equal(rule.get(name), `${value} !important`, `${selector} 的 ${name}`);
+    }
+  }
+  assert.equal(styles.rule('.stia-card').get('text-align'), 'start', '正文两端对齐，卡片里不跟');
+
+  const box = styles.rule('.stia-card :is(details, summary)');
+  for (const name of ['margin', 'padding', 'border', 'border-radius', 'box-shadow']) {
+    assert.match(box.get(name), /^0 !important$|^none !important$/, `details / summary 的 ${name}`);
+  }
+  assert.equal(box.get('background'), 'none !important');
+  assert.equal(styles.rule('.stia-card p').get('margin'), '0 !important');
+  assert.equal(styles.rule('.stia-card pre').get('border'), '0 !important');
+  assert.equal(styles.rule('.stia-card img').get('box-shadow'), 'none !important');
+  assert.equal(styles.rule('.stia-card img').get('border'), '0 !important');
+  assert.equal(styles.rule('.stia-card img').has('opacity'), false, '不钉透明度：图片淡入要用');
+  const buttons = styles.rule('.stia-card :is(.stia-button, .stia-icon-button)');
+  assert.equal(buttons.get('border-style'), 'solid !important');
+  assert.equal(buttons.get('box-shadow'), 'none !important');
+  assert.equal(styles.rule('.stia-card .stia-button--ghost').get('border-color'), 'var(--stia-line) !important');
+  assert.equal(styles.rule('.stia-card .stia-card__status strong').get('color'), 'var(--stia-text) !important');
+  /* 等宽数字：主题一句 font-variant: small-caps 就会把它冲掉，所以每处都带 !important。 */
+  const tabular = styles.css.split('\n').filter(line => /font-variant-numeric: tabular-nums/.test(line));
+  assert.ok(tabular.length >= 5);
+  assert.ok(tabular.every(line => / !important;$/.test(line)));
+});
+
+test('2.10.0 卡片细节：信息排成一排小标签；正在画的占位里有个画框；图片淡入；按钮按下去有回应', async () => {
+  const styles = await readStyles();
+  const info = styles.rule('.stia-card__info');
+  assert.equal(info.get('display'), 'flex');
+  assert.equal(info.get('flex-wrap'), 'wrap');
+  assert.equal(info.has('border-bottom'), false, '下面不再拉一条线');
+  const chip = styles.rule('.stia-card__info-item');
+  assert.equal(chip.get('background'), 'var(--stia-fill)');
+  assert.equal(chip.get('max-width'), '100%', '模型名再长也不撑出卡片');
+  assert.match(styles.css, /\.stia-card__shimmer \{[^}]*url\("data:image\/svg\+xml,/);
+  assert.equal(styles.rule('.stia-card__image.is-arriving').get('opacity'), '0');
+  assert.match(styles.rule('.stia-card__image').get('transition'), /^opacity /);
+  assert.equal(styles.rule(':is(.stia-button, .stia-icon-button):active:not(:disabled)').get('transform'), 'scale(.97)');
+});
