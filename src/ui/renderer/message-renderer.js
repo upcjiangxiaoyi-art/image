@@ -436,6 +436,8 @@ export function createMessageRenderer(dependencies) {
       onReferenceRegenerate: actions.referenceRegenerate,
       getPresetChoices: actions.presetChoices,
       onSwitchPreset: actions.switchPreset,
+      getBackupChoices: actions.backupChoices,
+      onSwitchBackup: actions.switchBackup,
       listPresets: async () => {
         const data = await api.getPresets();
         const backupId = store.state.settings?.backupPresetId;

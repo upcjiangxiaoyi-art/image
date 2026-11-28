@@ -705,7 +705,8 @@ export function createToolPanel({ api, store, onError = () => {} }) {
     backupSelector.value = presets.some(preset => preset.id === current) ? current : '';
   }
 
-  backupSelector.addEventListener('change', async () => {
+  /* 把下拉里选中的那个存成备用线路；没存成就把下拉拨回去。卡片上的「备用」也走这里。 */
+  async function switchBackupPreset() {
     const previous = store.state.settings?.backupPresetId || '';
     const desired = backupSelector.value;
     const name = presets.find(preset => preset.id === desired)?.name || '';
@@ -715,7 +716,9 @@ export function createToolPanel({ api, store, onError = () => {} }) {
       status.textContent = desired ? `备用线路已设为“${name}”` : '已不用备用线路';
     });
     if ((store.state.settings?.backupPresetId || '') !== desired) backupSelector.value = previous;
-  });
+  }
+
+  backupSelector.addEventListener('change', switchBackupPreset);
 
   function parseExtraBody() {
     try {
@@ -2171,5 +2174,26 @@ export function createToolPanel({ api, store, onError = () => {} }) {
   }
 
   void load();
-  return { show, hide, load, presetChoices, selectActivePreset };
+  /* 卡片上的「备用」用的两个：可选的备用线路（「不用」加所有 API 预设）和当前是哪个；
+     available 为 false 是这会儿用不了备用线路（NovelAI、增强模式）。 */
+  function backupChoices() {
+    return {
+      available: !backupField.hidden,
+      activeId: backupSelector.value,
+      busy: backupSelector.disabled,
+      items: [...backupSelector.options].map(option => ({ id: option.value, name: option.textContent })),
+    };
+  }
+
+  async function selectBackupPreset(id) {
+    const target = [...backupSelector.options].find(option => option.value === id);
+    if (!target || backupField.hidden || backupSelector.disabled) return { switched: false, name: '' };
+    if (backupSelector.value !== id) {
+      backupSelector.value = id;
+      await switchBackupPreset();
+    }
+    return { switched: backupSelector.value === id, name: target.textContent };
+  }
+
+  return { show, hide, load, presetChoices, selectActivePreset, backupChoices, selectBackupPreset };
 }

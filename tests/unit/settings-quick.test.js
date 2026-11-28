@@ -448,3 +448,43 @@ test('2.8.0 设置页「复制诊断信息」：点一下把版本、开关、�
   button.click();
   await waitFor(() => /没读到：这个版本的接口不提供/.test(preview.value), '没有接口时也给得出');
 });
+
+test('2.11.0 面板给卡片用的备用线路接口：backupChoices() 说出可选的和当前是哪个，selectBackupPreset() 走面板原来的保存、面板里的下拉跟着变', async t => {
+  const { api, store, panel, page } = setup(t);
+  await waitFor(() => store.state.preset?.id === 'p1', '设置面板未完成初始化');
+  const updates = [];
+  const updateSettings = api.updateSettings;
+  api.updateSettings = async patch => { updates.push(patch); return updateSettings(patch); };
+  const selector = () => page().querySelector('select[aria-label="选择备用线路"]');
+
+  assert.deepEqual(panel.backupChoices(), {
+    available: true,
+    activeId: '',
+    busy: false,
+    items: [{ id: '', name: '不用' }, { id: 'p1', name: '港' }, { id: 'p2', name: '备用站' }],
+  });
+  assert.deepEqual(await panel.selectBackupPreset('p2'), { switched: true, name: '备用站' });
+  assert.deepEqual(updates, [{ backupPresetId: 'p2' }]);
+  assert.equal(store.state.settings.backupPresetId, 'p2');
+  assert.equal(selector().value, 'p2', '面板里的下拉跟着换');
+  assert.equal(panel.backupChoices().activeId, 'p2');
+  assert.match(page().querySelector('.stia-status').textContent, /备用线路已设为“备用站”/);
+
+  assert.deepEqual(await panel.selectBackupPreset('p2'), { switched: true, name: '备用站' }, '已经是它：直接算成功');
+  assert.equal(updates.length, 1, '不重复存');
+  assert.deepEqual(await panel.selectBackupPreset(''), { switched: true, name: '不用' });
+  assert.equal(store.state.settings.backupPresetId, '');
+  assert.deepEqual(await panel.selectBackupPreset('nope'), { switched: false, name: '' }, '没有这个预设');
+
+  /* 存不进去：返回没成功，下拉回到原来那个。 */
+  api.updateSettings = async () => { throw new Error('存不进去'); };
+  assert.deepEqual(await panel.selectBackupPreset('p1'), { switched: false, name: '港' });
+  assert.equal(selector().value, '');
+  assert.equal(panel.backupChoices().busy, false, '不会卡在忙着');
+  api.updateSettings = updateSettings;
+
+  /* NovelAI 没有备用线路。 */
+  [...page().querySelectorAll('button')].find(button => button.textContent === 'NovelAI').click();
+  await waitFor(() => panel.backupChoices().available === false, '切到 NovelAI 后备用线路还显示可用');
+  assert.deepEqual(await panel.selectBackupPreset('p2'), { switched: false, name: '' });
+});

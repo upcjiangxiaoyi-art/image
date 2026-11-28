@@ -223,6 +223,10 @@ export function createCard({
      onSwitchPreset(id) 把当前预设切过去。两个都给了、可选的不止一个才显示。 */
   getPresetChoices,
   onSwitchPreset,
+  /* 「备用」：getBackupChoices() 给出 { available, activeId, busy, items: [{ id, name }] }（items 第一个是「不用」），
+     onSwitchBackup(id) 把备用线路换过去。用得了备用线路、可挑的预设不止一个才显示。 */
+  getBackupChoices,
+  onSwitchBackup,
 }) {
   const root = document.createElement('section');
   root.className = 'stia-card';
@@ -255,6 +259,8 @@ export function createCard({
   let chooser = null;
   /* 「换预设」正在切换中。 */
   let switching = false;
+  /* 「备用」正在切换中。 */
+  let switchingBackup = false;
   /* 没存进酒馆、直接从线路给的链接显示的图：按链接留着 <img>（重画卡片不重新加载），打不开的记一笔不再试。 */
   const remoteCache = new Map();
 
@@ -593,44 +599,83 @@ export function createCard({
      画成按钮的样子，上面盖一个透明的系统选择框：点哪儿都是打开系统自己的选择器，手机上最顺手。
      换的是全局的当前预设，之后新出的图都用它；这张图是哪个预设画的看上面的信息栏。
      只换预设，不替人点「重试」：重试要花钱，得自己点。 */
-  function presetSwitch(choices) {
-    const artist = choices.kind === 'artist';
-    const current = choices.items.find(item => item.id === choices.activeId);
-    const busy = switching || choices.busy === true;
+  /* 画成按钮样子的选择框：上面写着现在选的是哪个，整块盖着一个透明的系统选择框，点哪儿都是打开系统的选择器。
+     「预设」和「备用」共用。onPick(id) 在选了别的那个时调用。 */
+  function selectButton({ className = '', iconName, text, ariaLabel, items, activeId, busy, onPick }) {
     const control = document.createElement('label');
-    control.className = `stia-button stia-card__preset${busy ? ' is-busy' : ''}`;
-    /* 和设置页「API 配置」一个图标；「换备用线路」用的是来回箭头，两个挨着不能长一样。 */
-    const glyph = icon('sliders');
+    control.className = `stia-button stia-card__preset${className ? ` ${className}` : ''}${busy ? ' is-busy' : ''}`;
     const name = document.createElement('span');
     name.className = 'stia-card__preset-name';
-    name.textContent = switching ? '正在切换…' : `${artist ? '画师串' : '预设'}：${current?.name || '未选择'}`;
+    name.textContent = text;
     const select = document.createElement('select');
     select.className = 'stia-card__preset-select';
-    select.setAttribute('aria-label', artist ? '切换当前画师串预设' : '切换当前生图预设');
+    select.setAttribute('aria-label', ariaLabel);
     select.disabled = busy;
-    for (const item of choices.items) {
+    for (const item of items) {
       const option = document.createElement('option');
       option.value = item.id;
       option.textContent = item.name;
       select.append(option);
     }
-    select.value = choices.activeId;
+    select.value = activeId;
     select.addEventListener('change', () => {
-      const nextId = select.value;
-      if (!nextId || nextId === choices.activeId) return;
-      switching = true;
-      render();
-      /* 切成没切成都重画一遍：没切成时选择框回到原来那个。 */
-      Promise.resolve()
-        .then(() => onSwitchPreset(nextId))
-        .catch(() => false)
-        .then(() => {
-          switching = false;
-          render();
-        });
+      if (select.value === activeId) return;
+      onPick(select.value);
     });
-    control.append(glyph, name, select);
+    control.append(icon(iconName), name, select);
     return control;
+  }
+
+  function presetSwitch(choices) {
+    const artist = choices.kind === 'artist';
+    const current = choices.items.find(item => item.id === choices.activeId);
+    return selectButton({
+      /* 和设置页「API 配置」一个图标；「换备用线路」用的是来回箭头，两个挨着不能长一样。 */
+      iconName: 'sliders',
+      text: switching ? '正在切换…' : `${artist ? '画师串' : '预设'}：${current?.name || '未选择'}`,
+      ariaLabel: artist ? '切换当前画师串预设' : '切换当前生图预设',
+      items: choices.items,
+      activeId: choices.activeId,
+      busy: switching || choices.busy === true,
+      onPick: nextId => {
+        if (!nextId) return;
+        switching = true;
+        render();
+        /* 切成没切成都重画一遍：没切成时选择框回到原来那个。 */
+        Promise.resolve()
+          .then(() => onSwitchPreset(nextId))
+          .catch(() => false)
+          .then(() => {
+            switching = false;
+            render();
+          });
+      },
+    });
+  }
+
+  /* 「备用」：换设置里的备用线路（主线路失败时换它重画的那条），紧跟在「预设」后面。第一项是「不用」。 */
+  function backupSwitch(backup) {
+    const current = backup.items.find(item => item.id === backup.activeId);
+    return selectButton({
+      className: 'stia-card__backup',
+      iconName: 'shield',
+      text: switchingBackup ? '正在切换…' : `备用：${current?.name || '不用'}`,
+      ariaLabel: '选择备用线路',
+      items: backup.items,
+      activeId: backup.activeId,
+      busy: switchingBackup || backup.busy === true,
+      onPick: nextId => {
+        switchingBackup = true;
+        render();
+        Promise.resolve()
+          .then(() => onSwitchBackup(nextId))
+          .catch(() => false)
+          .then(() => {
+            switchingBackup = false;
+            render();
+          });
+      },
+    });
   }
 
   /* 之后又 roll 过、还在后台画的那几张：说一声有几张、最早那张画了多久。 */
@@ -698,6 +743,13 @@ export function createCard({
       ? getPresetChoices()
       : null;
     const canSwitch = Array.isArray(choices?.items) && choices.items.length > 1;
+    /* 「备用」：同样只在出了图和失败的卡片上；这会儿用得了备用线路、除了「不用」还有不止一个预设可挑才有意义。 */
+    const backup = (shown || failed) && typeof getBackupChoices === 'function' && typeof onSwitchBackup === 'function'
+      ? getBackupChoices()
+      : null;
+    const canBackup = backup?.available === true
+      && Array.isArray(backup.items)
+      && backup.items.filter(item => item.id).length > 1;
     /* 卡片换了状态（开始画了、画完了），对应的选择就收起。 */
     const chooserStale = chooser?.mode === 'regenerate' || chooser?.mode === 'reference'
       ? (!shown || ACTIVE_STATUSES.has(attempt?.status))
@@ -712,6 +764,7 @@ export function createCard({
       chooser && [chooser.mode, chooser.attemptId, chooser.presets, chooser.reference?.path || chooser.reference?.resultId, chooser.uploading, chooser.error],
       duration, info, imageSize, canUseBackup, canReference,
       canSwitch && [choices.kind, choices.activeId, choices.busy === true, choices.items, switching],
+      canBackup && [backup.activeId, backup.busy === true, backup.items, switchingBackup],
     ]);
     if (signature === lastSignature) {
       /* 卡片被摘下又放回（酒馆重建这一层）时计时可能停了，顺手续上。 */
@@ -844,8 +897,9 @@ export function createCard({
           reference: { resultId: shown.resultId },
         }), 'portrait'));
       }
-      /* 和「参考重画」各占一半；没有「参考重画」时自己一行。 */
+      /* 和「参考重画」各占一半；没有「参考重画」时自己一行。有「备用」时它俩排一行（见下面的排法）。 */
       if (canSwitch) actions.append(presetSwitch(choices));
+      if (canBackup) actions.append(backupSwitch(backup));
       if (canAdjust) {
         actions.append(button('调整后重绘', '', () => onAdjustRegenerate(tag, {
           prompt: actualPrompt,
@@ -855,8 +909,21 @@ export function createCard({
           attempt,
         }), 'pencil'));
       }
-      /* 第一行那三个之后的，两个一行。 */
+      /* 第一行那三个之后的，两个一行，最后落单的占一整行。「预设」「备用」是一对，要排在同一行：
+         它俩前面要是只剩半行（比如「参考重画」已经占了一半），就让前面那个占一整行。 */
       actions.classList.add('stia-actions--result');
+      const rest = [...actions.children].slice(3);
+      let half = null;
+      rest.forEach((node, index) => {
+        const startsPair = node.classList.contains('stia-card__preset')
+          && rest[index + 1]?.classList.contains('stia-card__backup');
+        if (startsPair && half) {
+          half.classList.add('is-wide');
+          half = null;
+        }
+        half = half ? null : node;
+      });
+      half?.classList.add('is-wide');
       if (actions.children.length >= 4) actions.classList.add('stia-actions--pairs');
       body.append(completion);
       const details = infoList(info);
@@ -930,6 +997,7 @@ export function createCard({
       }
       /* 这条线路不行就在这儿换一个，再点「重试」：重试用的是当前预设。 */
       if (canSwitch) actions.append(presetSwitch(choices));
+      if (canBackup) actions.append(backupSwitch(backup));
       if (canAdjust) actions.append(button('调整后重绘', '', () => onAdjustRegenerate(tag, {
         prompt: actualPrompt,
         negativePrompt: actualNegativePrompt,

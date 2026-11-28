@@ -792,7 +792,8 @@
   padding-inline: 6px;
 }
 
-.stia-actions--result > :nth-child(n+4):nth-child(even):last-child {
+/* 占一整行的（卡片排按钮时标上的：落单的最后一个、给「预设」「备用」让出一行的那个）。 */
+.stia-actions--result > .is-wide {
   grid-column: 1 / -1;
 }
 
@@ -2540,6 +2541,15 @@
 .stia-card p {
   margin: 0 !important;
   line-height: 1.6 !important;
+}
+
+/* 有的主题把正文里所有 div 的圆角抹平：卡片自己和信息小标签的圆角定住。 */
+.stia-card.stia-card {
+  border-radius: var(--stia-radius) !important;
+}
+
+.stia-card .stia-card__info-item {
+  border-radius: 10px !important;
 }
 
 .stia-card :is(dl, dt, dd) {

@@ -911,7 +911,19 @@ async function presetSwitchSetup(t, { provider = 'openai', withReference = true 
       context.switched.push(id);
       return context.switchResult(id);
     },
+    /* 2.11.0「备用」：测试里给了 context.backup 才有。 */
+    getBackupChoices: () => context.backup || null,
+    onSwitchBackup: async id => {
+      context.backupSwitched.push(id);
+      return context.backupResult(id);
+    },
   });
+  context.backupSwitched = [];
+  context.backupResult = id => {
+    context.backup = { ...context.backup, activeId: id };
+    context.settings = { ...context.settings, backupPresetId: id };
+    return true;
+  };
   context.card.render();
   context.actions = () => [...context.card.root.querySelector('.stia-actions').children];
   context.control = () => context.card.root.querySelector('.stia-card__preset');
@@ -1408,4 +1420,115 @@ test('2.10.0 图片淡入：没载好时带 is-arriving（透明），载好或�
   card.render();
   assert.equal(image().getAttribute('src'), '/user/images/r3.png');
   assert.equal(image().classList.contains('is-arriving'), false, '已经载好的不闪一下');
+});
+
+test('2.11.0 卡片上「预设」旁边有「备用」：写着当前备用线路，点开是「不用」加所有预设；和「预设」排一行，「参考重画」自己一行', async t => {
+  const context = await presetSwitchSetup(t);
+  const { card, actions, settle, dom } = context;
+  const backupControl = () => card.root.querySelector('.stia-card__backup');
+  const backupSelect = () => backupControl()?.querySelector('select');
+  const chooseBackup = id => {
+    const select = backupSelect();
+    select.value = id;
+    select.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+  };
+  assert.equal(backupControl(), null, '没给备用线路的可选项时没有');
+
+  const items = [{ id: '', name: '不用' }, { id: 'old', name: '走十六方' }, { id: 'cheap', name: '纯爱二号' }, { id: 'stable', name: '稳定组' }];
+  context.backup = { available: true, activeId: 'stable', busy: false, items };
+  card.render();
+  assert.deepEqual(
+    actions().map(node => node.textContent.replace(/(不用)?走十六方纯爱二号稳定组$/, '')),
+    ['重新生成', '原图', '画廊', '参考重画', '预设：纯爱二号', '备用：稳定组'],
+    '紧跟在「预设」后面',
+  );
+  assert.equal(backupControl().tagName, 'LABEL', '和「预设」一样，整块都是选择框的标签');
+  assert.ok(backupControl().classList.contains('stia-button'));
+  assert.ok(backupControl().classList.contains('stia-card__preset'), '样子、压在上面的透明选择框都和「预设」共用');
+  assert.equal(iconOf(backupControl()), 'shield', '和「预设」「换备用线路」的图标都不一样');
+  assert.deepEqual(blankIcons(card.root), []);
+  assert.equal(backupSelect().getAttribute('aria-label'), '选择备用线路');
+  assert.deepEqual([...backupSelect().options].map(option => [option.value, option.textContent]), items.map(item => [item.id, item.name]));
+  assert.equal(backupSelect().value, 'stable');
+  /* 排法：「参考重画」占一整行，「预设」「备用」并排。 */
+  const wide = () => actions().filter(node => node.classList.contains('is-wide')).map(node => node.textContent.slice(0, 4));
+  assert.deepEqual(wide(), ['参考重画']);
+
+  /* 选一个：走给的回调，写上新的。 */
+  chooseBackup('old');
+  assert.match(backupControl().textContent, /正在切换/);
+  assert.equal(backupSelect().disabled, true);
+  await settle();
+  assert.deepEqual(context.backupSwitched, ['old']);
+  assert.match(backupControl().textContent, /^备用：走十六方/);
+  assert.deepEqual(context.switched, [], '当前预设没动');
+  /* 选「不用」。 */
+  chooseBackup('');
+  await settle();
+  assert.deepEqual(context.backupSwitched, ['old', '']);
+  assert.match(backupControl().textContent, /^备用：不用/);
+  assert.equal(backupSelect().value, '');
+  /* 没切成：回到原来那个。 */
+  context.backupResult = () => false;
+  chooseBackup('stable');
+  await settle();
+  assert.match(backupControl().textContent, /^备用：不用/);
+  assert.equal(backupSelect().value, '');
+  /* 选回同一个：不折腾。 */
+  const calls = context.backupSwitched.length;
+  chooseBackup('');
+  await settle();
+  assert.equal(context.backupSwitched.length, calls);
+
+  /* 面板正忙：按不动。 */
+  context.backup = { ...context.backup, busy: true };
+  card.render();
+  assert.equal(backupSelect().disabled, true);
+  assert.ok(backupControl().classList.contains('is-busy'));
+
+  /* 用不了备用线路的时候（NovelAI、增强模式）、只有一个预设可挑的时候：不显示。 */
+  for (const backup of [
+    { available: false, activeId: '', busy: false, items },
+    { available: true, activeId: '', busy: false, items: items.slice(0, 2) },
+    null,
+  ]) {
+    context.backup = backup;
+    card.render();
+    assert.equal(backupControl(), null);
+    assert.deepEqual(wide(), [], '没有「备用」时「参考重画」和「预设」照旧各占一半');
+  }
+});
+
+test('2.11.0 没有「参考重画」时：「预设」「备用」并排，前面不用谁让出一整行', async t => {
+  const context = await presetSwitchSetup(t, { withReference: false });
+  context.backup = { available: true, activeId: '', busy: false, items: [{ id: '', name: '不用' }, { id: 'old', name: '走十六方' }, { id: 'cheap', name: '纯爱二号' }] };
+  context.card.render();
+  const labels = context.actions().map(node => node.textContent.slice(0, 2));
+  assert.deepEqual(labels, ['重新', '原图', '画廊', '预设', '备用']);
+  assert.deepEqual(context.actions().filter(node => node.classList.contains('is-wide')), []);
+  /* 没有「备用」：「预设」落单，自己占一整行。 */
+  context.backup = null;
+  context.card.render();
+  assert.deepEqual(context.actions().filter(node => node.classList.contains('is-wide')).map(node => node.textContent.slice(0, 2)), ['预设']);
+});
+
+test('2.11.0 失败的卡片上也有「备用」，跟在「预设」后面；没出过图、正在画的卡片上没有', async t => {
+  const context = await presetSwitchSetup(t);
+  const { card } = context;
+  const items = [{ id: '', name: '不用' }, { id: 'old', name: '走十六方' }, { id: 'cheap', name: '纯爱二号' }, { id: 'stable', name: '稳定组' }];
+  context.backup = { available: true, activeId: '', busy: false, items };
+  const labels = () => [...card.root.querySelectorAll('.stia-actions > *')].map(node => node.textContent.replace(/(不用)?走十六方纯爱二号稳定组$/, ''));
+  context.state = { tag: {}, attempts: [{ attemptId: 'f1', status: 'failed', provider: 'openai', presetId: 'cheap', errorMessage: '上游超时' }], results: [] };
+  card.render();
+  assert.deepEqual(labels(), ['重试', '预设：纯爱二号', '备用：不用']);
+  assert.ok(card.root.querySelector('.stia-card__backup'));
+
+  for (const state of [
+    { tag: {}, attempts: [], results: [] },
+    { tag: {}, attempts: [{ attemptId: 'g1', status: 'generating', provider: 'openai', createdAt: new Date().toISOString() }], results: [] },
+  ]) {
+    context.state = state;
+    card.render();
+    assert.equal(card.root.querySelector('.stia-card__backup'), null);
+  }
 });

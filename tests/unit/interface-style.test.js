@@ -116,6 +116,12 @@ test('不被酒馆主题带歪：会继承的排版整棵树钉死；卡片里�
   assert.equal(buttons.get('box-shadow'), 'none !important');
   assert.equal(styles.rule('.stia-card .stia-button--ghost').get('border-color'), 'var(--stia-line) !important');
   assert.equal(styles.rule('.stia-card .stia-card__status strong').get('color'), 'var(--stia-text) !important');
+  /* 有的主题把正文里所有 div 的圆角抹平。 */
+  assert.equal(styles.rule('.stia-card.stia-card').get('border-radius'), 'var(--stia-radius) !important');
+  assert.equal(styles.rule('.stia-card .stia-card__info-item').get('border-radius'), '10px !important');
+  /* 2.11.0 出图后的按钮：占一整行的靠卡片标的 is-wide，不再按第几个算（「预设」「备用」要排在同一行）。 */
+  assert.equal(styles.rule('.stia-actions--result > .is-wide').get('grid-column'), '1 / -1');
+  assert.doesNotMatch(styles.css, /\.stia-actions--result > :nth-child\(n\+4\)/);
   /* 等宽数字：主题一句 font-variant: small-caps 就会把它冲掉，所以每处都带 !important。 */
   const tabular = styles.css.split('\n').filter(line => /font-variant-numeric: tabular-nums/.test(line));
   assert.ok(tabular.length >= 5);

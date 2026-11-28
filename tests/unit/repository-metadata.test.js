@@ -271,6 +271,11 @@ test('2.5.0 卡片上的「换预设」：卡片问面板要可选的预设、�
   const renderer = await fs.readFile(path.join(root, 'src/ui/renderer/message-renderer.js'), 'utf8');
   assert.match(renderer, /getPresetChoices: actions\.presetChoices/);
   assert.match(renderer, /onSwitchPreset: actions\.switchPreset/);
+  /* 2.11.0 卡片上的「备用」也一样接到面板。 */
+  assert.match(index, /backupChoices: \(\) => panel\?\.backupChoices\?\.\(\) \|\| null/);
+  assert.match(index, /switchBackup: async presetId => \{\s*const outcome = await panel\.selectBackupPreset\(presetId\);/);
+  assert.match(renderer, /getBackupChoices: actions\.backupChoices/);
+  assert.match(renderer, /onSwitchBackup: actions\.switchBackup/);
   const css = await fs.readFile(path.join(root, 'src/ui/styles/atelier.css'), 'utf8');
   const select = /\.stia-card__preset > \.stia-card__preset-select \{([\s\S]*?)\n\}/.exec(css)?.[1] || '';
   assert.match(select, /opacity: 0 !important/, '看不见，但点得到');

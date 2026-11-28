@@ -148,6 +148,19 @@ const actions = {
     }
     return outcome.switched;
   },
+  /* 卡片上的「备用」：换的是设置里的备用线路，同样问面板要、让面板去存。 */
+  backupChoices: () => panel?.backupChoices?.() || null,
+  switchBackup: async presetId => {
+    const outcome = await panel.selectBackupPreset(presetId);
+    if (outcome.switched && typeof globalThis.toastr?.success === 'function') {
+      globalThis.toastr.success(
+        presetId ? `备用线路换成「${outcome.name}」了，主线路失败时可以换它重画` : '已不用备用线路',
+        '画笺',
+        { timeOut: 4000 },
+      );
+    }
+    return outcome.switched;
+  },
   openGallery: () => panel.show('gallery'),
   remove: async tag => removeTag(tag),
 };
